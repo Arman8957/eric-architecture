@@ -1,6 +1,6 @@
 // common/decorators/roles.decorator.ts
 import { SetMetadata } from '@nestjs/common';
-import { UserRole } from 'generated/prisma';
+import { UserRole } from '@prisma/client';
 
 
 export const ROLES_KEY = 'roles';
