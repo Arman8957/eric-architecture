@@ -16,7 +16,7 @@ export class RegisterStaffDto {
   name?: string;
 
   @IsEnum(UserRole, {
-    message: 'Invalid role. Allowed: ADMIN, FINANCE, HIGHER_MANAGER, CRAFTER, EMPLOYEE, USER',
+    message: 'Invalid role. Allowed: ADMIN, FINANCE, HIGHER_MANAGER, DRAFTER, EMPLOYEE, USER',
   })
   role: UserRole;
 }

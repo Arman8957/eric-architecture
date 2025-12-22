@@ -9,6 +9,12 @@ import {
   HttpCode,
   HttpStatus,
   UseGuards,
+  UnauthorizedException,
+  BadRequestException,
+  InternalServerErrorException,
+  ForbiddenException,
+  UsePipes,
+  ValidationPipe,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import express from 'express';
@@ -22,6 +28,10 @@ import { UserRole } from '@prisma/client';
 import { RegisterUserDto } from './dto/register-user.dto';
 import { RegisterStaffDto } from './dto/register-staff.dto'; // ← Use RegisterStaffDto instead of RegisterAdminDto
 import { VerifyEmailDto } from './dto/verify-email.dto';
+import { LoginDto } from './dto/login.dto';
+import { RegisterSuperAdminDto } from './dto/register-super-admin.dto';
+import { User } from '@prisma/client';
+
 
 @Controller('auth')
 export class AuthController {
@@ -37,7 +47,10 @@ export class AuthController {
   @Post('register')
   @Public()
   @HttpCode(HttpStatus.CREATED)
-  async register(@Body() dto: RegisterUserDto, @Res({ passthrough: true }) res: express.Response) {
+  async register(
+    @Body() dto: RegisterUserDto,
+    @Res({ passthrough: true }) res: express.Response,
+  ) {
     const result = await this.authService.registerUser(dto, this.frontendUrl);
 
     return res.status(HttpStatus.CREATED).json({
@@ -46,6 +59,57 @@ export class AuthController {
       data: { user: result.user },
     });
   }
+
+ @Post('register-super-admin')
+@Public()
+@HttpCode(HttpStatus.CREATED)
+async registerSuperAdmin(
+  @Body() dto: RegisterSuperAdminDto,
+  @Req() req: Request,
+) {
+  const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:3000';
+
+  return this.authService.registerSuperAdmin(dto, frontendUrl);
+}
+
+  // @Post('register-super-admin')
+  // @Public() // Allows first-time registration without login
+  // @HttpCode(HttpStatus.CREATED)
+  // @UsePipes(new ValidationPipe({ whitelist: true, forbidNonWhitelisted: true }))
+  // async registerSuperAdmin(
+  //   @Body() dto: RegisterSuperAdminDto,
+  //   @Req() req: Request,
+  // ) {
+  //   try {
+  //     const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:3000';
+  //     const requestingUser = req.user; // optional, only if logged in
+  //     const result = await this.authService.registerSuperAdmin(
+  //       dto,
+  //       frontendUrl,
+  //       requestingUser,
+  //     );
+
+  //     return {
+  //       success: true,
+  //       message: result.message,
+  //       user: result.user,
+  //     };
+  //   } catch (error) {
+  //     // Handle known NestJS exceptions
+  //     if (
+  //       error instanceof ForbiddenException ||
+  //       error instanceof BadRequestException
+  //     ) {
+  //       throw error;
+  //     }
+
+  //     // Log unknown errors
+  //     console.error('registerSuperAdmin error:', error);
+
+  //     // Generic server error
+  //     throw new InternalServerErrorException('Internal server error');
+  //   }
+  // }
 
   @Post('staff/register') // ← Renamed to /staff/register (cleaner than /admin/register)
   @UseGuards(JwtAuthGuard, RolesGuard)
@@ -56,7 +120,11 @@ export class AuthController {
     @Req() req: express.Request & { user: any },
     @Res({ passthrough: true }) res: express.Response,
   ) {
-    const result = await this.authService.registerStaff(dto, req.user, this.frontendUrl);
+    const result = await this.authService.registerStaff(
+      dto,
+      req.user,
+      this.frontendUrl,
+    );
 
     return res.status(HttpStatus.CREATED).json({
       success: true,
@@ -68,7 +136,10 @@ export class AuthController {
   @Post('verify-email')
   @Public()
   @HttpCode(HttpStatus.OK)
-  async verifyEmail(@Body() dto: VerifyEmailDto, @Res({ passthrough: true }) res: express.Response) {
+  async verifyEmail(
+    @Body() dto: VerifyEmailDto,
+    @Res({ passthrough: true }) res: express.Response,
+  ) {
     const result = await this.authService.verifyEmail(dto);
 
     return res.status(HttpStatus.OK).json({
@@ -84,7 +155,10 @@ export class AuthController {
     @Body('email') email: string,
     @Res({ passthrough: true }) res: express.Response,
   ) {
-    const result = await this.authService.resendVerification(email, this.frontendUrl);
+    const result = await this.authService.resendVerification(
+      email,
+      this.frontendUrl,
+    );
 
     return res.status(HttpStatus.OK).json({
       success: true,
@@ -96,11 +170,10 @@ export class AuthController {
   @Public()
   @HttpCode(HttpStatus.OK)
   async login(
-    @Body('email') email: string,
-    @Body('password') password: string,
+    @Body() dto: LoginDto, // ✅ Use DTO instead of individual @Body params
     @Res({ passthrough: true }) res: express.Response,
   ) {
-    const result = await this.authService.login(email, password);
+    const result = await this.authService.login(dto.email, dto.password);
 
     res.cookie('refreshToken', result.refreshToken, {
       httpOnly: true,
@@ -109,20 +182,23 @@ export class AuthController {
       maxAge: 7 * 24 * 60 * 60 * 1000,
     });
 
-    return res.status(HttpStatus.OK).json({
+    return {
       success: true,
       message: 'Login successful',
       data: {
         accessToken: result.accessToken,
         user: result.user,
       },
-    });
+    };
   }
 
   @Post('logout')
   @UseGuards(JwtAuthGuard)
   @HttpCode(HttpStatus.OK)
-  async logout(@Req() req: express.Request & { user: { sub: string } }, @Res({ passthrough: true }) res: express.Response) {
+  async logout(
+    @Req() req: express.Request & { user: { sub: string } },
+    @Res({ passthrough: true }) res: express.Response,
+  ) {
     const result = await this.authService.logout(req.user.sub);
 
     res.clearCookie('refreshToken');
@@ -136,7 +212,10 @@ export class AuthController {
   @Post('refresh')
   @Public()
   @HttpCode(HttpStatus.OK)
-  async refresh(@Body('refreshToken') token: string, @Res({ passthrough: true }) res: express.Response) {
+  async refresh(
+    @Body('refreshToken') token: string,
+    @Res({ passthrough: true }) res: express.Response,
+  ) {
     const result = await this.authService.refresh(token);
 
     return res.status(HttpStatus.OK).json({

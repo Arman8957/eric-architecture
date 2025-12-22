@@ -5,6 +5,7 @@ import {
   UnauthorizedException,
   ForbiddenException,
   Logger,
+  InternalServerErrorException,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { JwtService } from '@nestjs/jwt';
@@ -13,7 +14,7 @@ import * as bcrypt from 'bcrypt';
 import * as crypto from 'crypto';
 // import { UserRole } from 'generated/prisma';
 
-import { UserRole, User } from '@prisma/client';
+import { UserRole, User, Prisma } from '@prisma/client';
 // import { UserRole } from 'generated/prisma'; // ← Use Prisma enum
 import { RegisterUserDto } from './dto/register-user.dto';
 import { RegisterStaffDto } from './dto/register-staff.dto';
@@ -33,19 +34,26 @@ export class AuthService {
     private config: ConfigService,
     private mailer: MailerService,
   ) {
-    this.emailVerifyExpiry = parseInt(this.config.get('EMAIL_VERIFY_EXPIRY', '24')) * 60 * 60 * 1000;
+    this.emailVerifyExpiry =
+      parseInt(this.config.get('EMAIL_VERIFY_EXPIRY', '24')) * 60 * 60 * 1000;
   }
 
   private async generateTokens(userId: string) {
     const [access, refresh] = await Promise.all([
-      this.jwt.signAsync({ sub: userId }, {
-        secret: this.config.get('JWT_ACCESS_SECRET'),
-        expiresIn: this.config.get('JWT_ACCESS_EXPIRES'),
-      }),
-      this.jwt.signAsync({ sub: userId }, {
-        secret: this.config.get('JWT_REFRESH_SECRET'),
-        expiresIn: this.config.get('JWT_REFRESH_EXPIRES'),
-      }),
+      this.jwt.signAsync(
+        { sub: userId },
+        {
+          secret: this.config.get('JWT_ACCESS_SECRET'),
+          expiresIn: this.config.get('JWT_ACCESS_EXPIRES'),
+        },
+      ),
+      this.jwt.signAsync(
+        { sub: userId },
+        {
+          secret: this.config.get('JWT_REFRESH_SECRET'),
+          expiresIn: this.config.get('JWT_REFRESH_EXPIRES'),
+        },
+      ),
     ]);
     return { access, refresh };
   }
@@ -68,20 +76,35 @@ export class AuthService {
     });
 
     const verifyUrl = `${frontendUrl}/verify-email`;
-    await this.mailer.sendEmailVerification(user.email, token, user.name ?? 'User', verifyUrl);
+    await this.mailer.sendEmailVerification(
+      user.email,
+      token,
+      user.name ?? 'User',
+      verifyUrl,
+    );
   }
 
   private sanitizeUser(user: User) {
-    const { password, refreshToken, emailVerifyToken, emailVerifyExpiry, ...safe } = user;
+    const {
+      password,
+      refreshToken,
+      emailVerifyToken,
+      emailVerifyExpiry,
+      ...safe
+    } = user;
     return safe;
   }
 
   async registerUser(dto: RegisterUserDto, frontendUrl: string) {
-    const existing = await this.prisma.user.findUnique({ where: { email: dto.email.toLowerCase() } });
+    const existing = await this.prisma.user.findUnique({
+      where: { email: dto.email.toLowerCase() },
+    });
     if (existing) {
-      throw new BadRequestException(existing.emailVerified
-        ? 'Email already registered and verified.'
-        : 'Email already registered. Check your inbox or resend verification.');
+      throw new BadRequestException(
+        existing.emailVerified
+          ? 'Email already registered and verified.'
+          : 'Email already registered. Check your inbox or resend verification.',
+      );
     }
 
     const hashed = await bcrypt.hash(dto.password, 12);
@@ -97,37 +120,51 @@ export class AuthService {
 
     try {
       await this.sendVerificationEmail(user, frontendUrl);
-      return { message: 'Registration successful! Please verify your email.', user: this.sanitizeUser(user) };
+      return {
+        message: 'Registration successful! Please verify your email.',
+        user: this.sanitizeUser(user),
+      };
     } catch (error) {
       await this.prisma.user.delete({ where: { id: user.id } });
-      throw new BadRequestException('Failed to send verification email. Try again later.');
+      throw new BadRequestException(
+        'Failed to send verification email. Try again later.',
+      );
     }
   }
 
-  async registerStaff(dto: RegisterStaffDto, requestingUser: User, frontendUrl: string) {
-
-//    if (![UserRole.SUPER_ADMIN, UserRole.ADMIN].includes(requestingUser.role)) {
-//       throw new ForbiddenException('Only ADMIN or SUPER_ADMIN can create staff accounts.');
-//     }
+  async registerStaff(
+    dto: RegisterStaffDto,
+    requestingUser: User,
+    frontendUrl: string,
+  ) {
+    //    if (![UserRole.SUPER_ADMIN, UserRole.ADMIN].includes(requestingUser.role)) {
+    //       throw new ForbiddenException('Only ADMIN or SUPER_ADMIN can create staff accounts.');
+    //     }
 
     if (dto.role === UserRole.SUPER_ADMIN) {
-      throw new BadRequestException('Cannot create SUPER_ADMIN via staff registration.');
+      throw new BadRequestException(
+        'Cannot create SUPER_ADMIN via staff registration.',
+      );
     }
 
     const allowedRoles = [
       UserRole.ADMIN,
       UserRole.FINANCE,
       UserRole.HIGHER_MANAGER,
-      UserRole.CRAFTER,
+      UserRole.PROJECT_MANAGER,
+      UserRole.DRAFTER,
       UserRole.EMPLOYEE,
       UserRole.USER,
+      UserRole.MEDIA_MANAGER,
     ];
 
     if (!allowedRoles.includes(dto.role)) {
       throw new BadRequestException('Invalid role for staff creation.');
     }
 
-    const existing = await this.prisma.user.findUnique({ where: { email: dto.email.toLowerCase() } });
+    const existing = await this.prisma.user.findUnique({
+      where: { email: dto.email.toLowerCase() },
+    });
     if (existing) throw new BadRequestException('Email already registered.');
 
     const hashed = await bcrypt.hash(dto.password, 12);
@@ -142,21 +179,37 @@ export class AuthService {
     });
 
     await this.sendVerificationEmail(user, frontendUrl);
-    this.logger.log(`Staff created: ${user.email} (${dto.role}) by ${requestingUser.email}`);
+    this.logger.log(
+      `Staff created: ${user.email} (${dto.role}) by ${requestingUser.email}`,
+    );
 
-    return { message: `Staff account created (${dto.role}). Verification email sent.`, user: this.sanitizeUser(user) };
+    return {
+      message: `Staff account created (${dto.role}). Verification email sent.`,
+      user: this.sanitizeUser(user),
+    };
   }
 
-  async registerSuperAdmin(dto: RegisterUserDto, frontendUrl: string, requestingUser?: User) {
+  async registerSuperAdmin(
+    dto: RegisterUserDto,
+    frontendUrl: string,
+    requestingUser?: User,
+  ) {
     if (requestingUser && requestingUser.role !== UserRole.SUPER_ADMIN) {
-      throw new ForbiddenException('Only SUPER_ADMIN can create another SUPER_ADMIN.');
+      throw new ForbiddenException(
+        'Only SUPER_ADMIN can create another SUPER_ADMIN.',
+      );
     }
     if (!requestingUser) {
-      const count = await this.prisma.user.count({ where: { role: UserRole.SUPER_ADMIN } });
-      if (count > 0) throw new ForbiddenException('SUPER_ADMIN already exists.');
+      const count = await this.prisma.user.count({
+        where: { role: UserRole.SUPER_ADMIN },
+      });
+      if (count > 0)
+        throw new ForbiddenException('SUPER_ADMIN already exists.');
     }
 
-    const existing = await this.prisma.user.findUnique({ where: { email: dto.email.toLowerCase() } });
+    const existing = await this.prisma.user.findUnique({
+      where: { email: dto.email.toLowerCase() },
+    });
     if (existing) throw new BadRequestException('Email already registered.');
 
     const hashed = await bcrypt.hash(dto.password, 12);
@@ -171,7 +224,10 @@ export class AuthService {
     });
 
     await this.sendVerificationEmail(user, frontendUrl);
-    return { message: 'SUPER_ADMIN created. Please verify email.', user: this.sanitizeUser(user) };
+    return {
+      message: 'SUPER_ADMIN created. Please verify email.',
+      user: this.sanitizeUser(user),
+    };
   }
 
   async verifyEmail(dto: VerifyEmailDto) {
@@ -186,35 +242,64 @@ export class AuthService {
 
     await this.prisma.user.update({
       where: { id: user.id },
-      data: { emailVerified: true, emailVerifyToken: null, emailVerifyExpiry: null },
+      data: {
+        emailVerified: true,
+        emailVerifyToken: null,
+        emailVerifyExpiry: null,
+      },
     });
 
     return { message: 'Email verified! You can now log in.' };
   }
 
   async login(email: string, password: string): Promise<AuthResponseDto> {
-    const user = await this.prisma.user.findUnique({ where: { email: email.toLowerCase() } });
-    if (!user || !user.emailVerified) {
-      throw new UnauthorizedException('Invalid credentials or unverified email.');
+    const normalizedEmail = email.toLowerCase().trim();
+
+    const user = await this.prisma.user.findUnique({
+      where: { email: normalizedEmail },
+    });
+
+    if (!user) {
+      throw new UnauthorizedException('Invalid credentials.');
     }
+
+    if (!user.emailVerified) {
+      throw new UnauthorizedException(
+        'Please verify your email before logging in.',
+      );
+    }
+
     if (!user.password || !(await bcrypt.compare(password, user.password))) {
       throw new UnauthorizedException('Invalid credentials.');
     }
 
-    await this.prisma.user.update({ where: { id: user.id }, data: { lastLoginAt: new Date() } });
+    // Update last login
+    await this.prisma.user.update({
+      where: { id: user.id },
+      data: { lastLoginAt: new Date() },
+    });
+
     return this.issueTokens(user);
   }
 
   async refresh(token: string): Promise<AuthResponseDto> {
-    const payload = await this.jwt.verifyAsync(token, { secret: this.config.get('JWT_REFRESH_SECRET') });
-    const user = await this.prisma.user.findUnique({ where: { id: payload.sub } });
-    if (!user || !user.refreshToken || !(await bcrypt.compare(token, user.refreshToken))) {
+    const payload = await this.jwt.verifyAsync(token, {
+      secret: this.config.get('JWT_REFRESH_SECRET'),
+    });
+    const user = await this.prisma.user.findUnique({
+      where: { id: payload.sub },
+    });
+    if (
+      !user ||
+      !user.refreshToken ||
+      !(await bcrypt.compare(token, user.refreshToken))
+    ) {
       throw new UnauthorizedException('Invalid refresh token.');
     }
     return this.issueTokens(user);
   }
 
-async issueTokens(user: User): Promise<AuthResponseDto> {
+  async issueTokens(user: User): Promise<AuthResponseDto> {
     const { access, refresh } = await this.generateTokens(user.id);
     const hashed = await this.hashRefreshToken(refresh);
 
@@ -237,11 +322,19 @@ async issueTokens(user: User): Promise<AuthResponseDto> {
     };
   }
 
-  async validateOrCreateGoogleUser(data: { email: string; googleId: string; name?: string }): Promise<User> {
-    let user = await this.prisma.user.findUnique({ where: { googleId: data.googleId } });
+  async validateOrCreateGoogleUser(data: {
+    email: string;
+    googleId: string;
+    name?: string;
+  }): Promise<User> {
+    let user = await this.prisma.user.findUnique({
+      where: { googleId: data.googleId },
+    });
 
     if (!user) {
-      user = await this.prisma.user.findUnique({ where: { email: data.email.toLowerCase() } });
+      user = await this.prisma.user.findUnique({
+        where: { email: data.email.toLowerCase() },
+      });
     }
 
     if (user) {
@@ -274,18 +367,23 @@ async issueTokens(user: User): Promise<AuthResponseDto> {
 
   async resendVerification(email: string, frontendUrl: string) {
     // Add this method if missing
-    const user = await this.prisma.user.findUnique({ where: { email: email.toLowerCase() } });
-    if (!user) throw new BadRequestException('No account found with this email.');
-    if (user.emailVerified) throw new BadRequestException('Email already verified.');
+    const user = await this.prisma.user.findUnique({
+      where: { email: email.toLowerCase() },
+    });
+    if (!user)
+      throw new BadRequestException('No account found with this email.');
+    if (user.emailVerified)
+      throw new BadRequestException('Email already verified.');
 
     await this.sendVerificationEmail(user, frontendUrl);
     return { message: 'Verification email resent.' };
   }
 
-
-
   async logout(userId: string) {
-    await this.prisma.user.update({ where: { id: userId }, data: { refreshToken: null } });
+    await this.prisma.user.update({
+      where: { id: userId },
+      data: { refreshToken: null },
+    });
     return { message: 'Logged out successfully' };
   }
 }

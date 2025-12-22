@@ -100,8 +100,22 @@ async function bootstrap() {
       forbidNonWhitelisted: true,
       transform: true,
       disableErrorMessages: process.env.NODE_ENV === 'production',
+      transformOptions: {
+        enableImplicitConversion: true,
+      },
     }),
   );
+
+  //   app.useGlobalPipes(
+  //   new ValidationPipe({
+  //     whitelist: true,
+  //     forbidNonWhitelisted: true,
+  //     transform: true,
+  //     transformOptions: {
+  //       enableImplicitConversion: true,
+  //     },
+  //   }),
+  // );
 
   // Swagger
   if (process.env.NODE_ENV !== 'production') {
@@ -145,20 +159,25 @@ async function bootstrap() {
       if (process.env.NODE_ENV !== 'production') {
         Logger.log(`📚 Swagger: http://localhost:${port}/docs`, 'Bootstrap');
       }
-      break; 
+      break;
     } catch (error) {
       if (error.code === 'EADDRINUSE') {
-        Logger.warn(`Port ${port} is occupied, trying ${port + 1}...`, 'Bootstrap');
+        Logger.warn(
+          `Port ${port} is occupied, trying ${port + 1}...`,
+          'Bootstrap',
+        );
         port++;
         attempt++;
       } else {
-        throw error; 
+        throw error;
       }
     }
   }
 
   if (attempt === maxRetries) {
-    throw new Error(`Could not find available port after ${maxRetries} attempts`);
+    throw new Error(
+      `Could not find available port after ${maxRetries} attempts`,
+    );
   }
 }
 

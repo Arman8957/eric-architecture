@@ -1,4 +1,3 @@
-// modules/auth/dto/auth-response.dto.ts
 import { UserRole } from '@prisma/client';
 
 export class AuthResponseDto {
