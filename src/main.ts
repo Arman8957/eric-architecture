@@ -145,14 +145,14 @@ async function bootstrap() {
       if (process.env.NODE_ENV !== 'production') {
         Logger.log(`📚 Swagger: http://localhost:${port}/docs`, 'Bootstrap');
       }
-      break; // Success, exit loop
+      break; 
     } catch (error) {
       if (error.code === 'EADDRINUSE') {
         Logger.warn(`Port ${port} is occupied, trying ${port + 1}...`, 'Bootstrap');
         port++;
         attempt++;
       } else {
-        throw error; // Re-throw non-port errors
+        throw error; 
       }
     }
   }
