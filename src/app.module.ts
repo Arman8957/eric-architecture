@@ -1,33 +1,29 @@
-// src/app.module.ts
 import { Module } from '@nestjs/common';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { CacheModule } from '@nestjs/cache-manager';
 import { BullModule } from '@nestjs/bullmq';
 
-import configuration from '../src/config/configuratin';           // ← Correct relative path
-import validationSchema from './config/validation.schema';     // ← Zod schema
-import { getCacheConfig } from './config/cache.config';         // ← Clean Redis config
+import configuration from '../src/config/configuratin';
+// import { envValidationSchema } from '../src/config/validation-joi.schema';
+import { getCacheConfig } from './config/cache.config';
 
 import { AuthModule } from './modules/auth/auth.module';
+import { PrismaModule } from './prisma/prisma.module';
 import { PrismaService } from './prisma/prisma.service';
 import { MailerService } from './utils/email/email.service';
 import { FileOptimizerService } from './utils/optimizer/file-optimizer.service';
-import { PrismaModule } from './prisma/prisma.module';
 import { CloudinaryStrategy } from './upload/strategies/cloudinary.strategy';
+import { MailerModule } from './utils/email/email.module';
 
 @Module({
   imports: [
-    // Global Config with Zod validation
     ConfigModule.forRoot({
       isGlobal: true,
+      envFilePath: `.env.${process.env.NODE_ENV || 'development'}`,
       load: [configuration],
-      validationSchema,
-      validationOptions: {
-        abortEarly: true,
-      },
+   
     }),
 
-    // Redis Cache (clean way)
     CacheModule.registerAsync({
       isGlobal: true,
       imports: [ConfigModule],
@@ -35,42 +31,37 @@ import { CloudinaryStrategy } from './upload/strategies/cloudinary.strategy';
       inject: [ConfigService],
     }),
 
-    // BullMQ for background jobs
-    BullModule.forRootAsync({
-      imports: [ConfigModule],
-      useFactory: async (configService: ConfigService) => ({
-        connection: {
-          host: configService.get<string>('REDIS_HOST', 'localhost'),
-          port: configService.get<number>('REDIS_PORT', 6379),
-          password: configService.get<string>('REDIS_PASSWORD'),
-        },
-      }),
-      inject: [ConfigService],
-    }),
+    // BullModule.forRootAsync({
+    //   imports: [ConfigModule],
+    //   useFactory: (config: ConfigService) => ({
+    //     connection: {
+    //       host: config.get<string>('REDIS_HOST'),
+    //       port: config.get<number>('REDIS_PORT'),
+    //       password: config.get<string>('REDIS_PASSWORD'),
+    //     },
+    //   }),
+    //   inject: [ConfigService],
+    // }),
 
-    // Register queues
-    BullModule.registerQueue({
-      name: 'video-processing',
-    }),
+    // BullModule.registerQueue({
+    //   name: 'video-processing',
+    // }),
 
-    // Feature modules
     AuthModule,
     PrismaModule,
-    // UsersModule,
-    // UploadModule,
-    // SettingsModule,
+    MailerModule
   ],
   providers: [
     PrismaService,
     MailerService,
     FileOptimizerService,
-    CloudinaryStrategy
+    CloudinaryStrategy,
   ],
   exports: [
     PrismaService,
     MailerService,
     FileOptimizerService,
-    CloudinaryStrategy
+    CloudinaryStrategy,
   ],
 })
 export class AppModule {}

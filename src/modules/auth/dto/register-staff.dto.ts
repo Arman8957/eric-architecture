@@ -1,6 +1,6 @@
 // modules/auth/dto/register-staff.dto.ts
 import { IsEmail, IsString, MinLength, IsOptional, IsEnum } from 'class-validator';
-import { UserRole, User } from '../../../generated/prisma';
+import { UserRole } from '@prisma/client';
 
 
 export class RegisterStaffDto {

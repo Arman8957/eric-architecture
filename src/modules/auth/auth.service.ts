@@ -13,7 +13,7 @@ import * as bcrypt from 'bcrypt';
 import * as crypto from 'crypto';
 // import { UserRole } from 'generated/prisma';
 
-import { UserRole, User } from '../../../generated/prisma';
+import { UserRole, User } from '@prisma/client';
 // import { UserRole } from 'generated/prisma'; // ← Use Prisma enum
 import { RegisterUserDto } from './dto/register-user.dto';
 import { RegisterStaffDto } from './dto/register-staff.dto';

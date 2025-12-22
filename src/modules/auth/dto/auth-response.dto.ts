@@ -1,5 +1,5 @@
 // modules/auth/dto/auth-response.dto.ts
-import { UserRole, User } from '../../../generated/prisma';// ← Use Prisma enum (critical)
+import { UserRole } from '@prisma/client';
 
 export class AuthResponseDto {
   accessToken: string;

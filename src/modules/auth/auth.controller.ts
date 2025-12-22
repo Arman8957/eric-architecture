@@ -18,7 +18,7 @@ import { JwtAuthGuard } from '../../common/guards/auth.guard'; // ← Correct gu
 import { Roles } from '../../common/decorators/roles.decorator';
 import { Public } from '../../common/decorators/public.decorator'; // ← Fixed import
 // import { UserRole } from 'generated/prisma';
-import { UserRole, User } from '../../../generated/prisma';
+import { UserRole } from '@prisma/client';
 import { RegisterUserDto } from './dto/register-user.dto';
 import { RegisterStaffDto } from './dto/register-staff.dto'; // ← Use RegisterStaffDto instead of RegisterAdminDto
 import { VerifyEmailDto } from './dto/verify-email.dto';

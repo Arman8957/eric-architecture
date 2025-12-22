@@ -5,7 +5,7 @@ import express from 'express';
 import { ConfigService } from '@nestjs/config';
 import { Public } from '../../../common/decorators/public.decorator';
 import { AuthService } from '../auth.service';
-import {  User } from '../../../generated/prisma';
+import {  User } from '@prisma/client';
 
 @Controller('auth/google')
 export class GoogleController {

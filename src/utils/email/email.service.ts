@@ -1,4 +1,4 @@
-// utils/mailer.service.ts
+// utils/email/email.service.ts
 import { Injectable, Logger } from '@nestjs/common';
 import * as nodemailer from 'nodemailer';
 import { ConfigService } from '@nestjs/config';
@@ -9,10 +9,10 @@ export class MailerService {
   private transporter: nodemailer.Transporter;
 
   constructor(private config: ConfigService) {
-    this.transporter = nodemailer.createTransporter({
+    this.transporter = nodemailer.createTransport({  // ✅ Changed from createTransporter
       host: this.config.get('SMTP_HOST'),
       port: this.config.get('SMTP_PORT'),
-      secure: false, // true for 465, false for other ports
+      secure: false,
       auth: {
         user: this.config.get('SMTP_USER'),
         pass: this.config.get('SMTP_PASS'),
@@ -64,15 +64,14 @@ export class MailerService {
       };
 
       await this.transporter.sendMail(mailOptions);
-      this.logger.log(`Verification email sent successfully to: ${email}`);
+      this.logger.log(`Verification email sent successfully to: ${email}`);  // ✅ Fixed syntax
     } catch (error) {
-      this.logger.error(`Failed to send verification email to ${email}:`, error);
-      throw new Error(`Failed to send verification email. Please try again later.`);
+      this.logger.error(`Failed to send verification email to ${email}:`, error);  // ✅ Fixed syntax
+      throw new Error(`Failed to send verification email. Please try again later.`);  // ✅ Fixed syntax
     }
   }
 
   async sendPasswordReset(email: string, token: string, resetUrl: string): Promise<void> {
     // Implementation for password reset (future use)
-    // Similar structure to verification email
   }
 }

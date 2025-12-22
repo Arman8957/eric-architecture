@@ -12,11 +12,14 @@ import { GoogleStrategy } from './google/google.strategy';
 import { PrismaModule } from '../../prisma/prisma.module';
 import { GoogleController } from './google/google.controller';
 import { JwtStrategy } from './jwt/jwt.strategy';
+import { MailerService } from 'src/utils/email/email.service';
+import { MailerModule } from 'src/utils/email/email.module';
 
 @Module({
   imports: [
     PrismaModule,
     PassportModule,
+    MailerModule,
     JwtModule.registerAsync({
       imports: [ConfigModule],
       useFactory: (config: ConfigService) => ({
@@ -26,7 +29,7 @@ import { JwtStrategy } from './jwt/jwt.strategy';
     }),
   ],
   controllers: [AuthController, GoogleController],
-  providers: [AuthService, JwtStrategy, JwtRefreshStrategy, GoogleStrategy],
+  providers: [AuthService,MailerService, JwtStrategy, JwtRefreshStrategy, GoogleStrategy],
   exports: [AuthService],
 })
 export class AuthModule {}

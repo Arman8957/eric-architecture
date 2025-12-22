@@ -4,7 +4,7 @@ import { PassportStrategy } from '@nestjs/passport';
 import { ExtractJwt, Strategy } from 'passport-jwt';
 import { ConfigService } from '@nestjs/config';
 
-import { User } from 'generated/prisma'; // Prisma User type
+import { AuthUser } from '../dto/auth-user.dto'; // ← Custom interface
 import { PrismaService } from 'src/prisma/prisma.service';
 
 @Injectable()
@@ -20,7 +20,7 @@ export class JwtStrategy extends PassportStrategy(Strategy, 'jwt') {
     });
   }
 
-  async validate(payload: { sub: string }): Promise<User> {
+  async validate(payload: { sub: string }): Promise<AuthUser> {
     const user = await this.prisma.user.findUnique({
       where: { id: payload.sub },
       select: {
@@ -29,7 +29,7 @@ export class JwtStrategy extends PassportStrategy(Strategy, 'jwt') {
         name: true,
         role: true,
         avatar: true,
-        isEmailVerified: true,
+        emailVerified: true, // ← Correct field name from schema
         isActive: true,
       },
     });
@@ -42,10 +42,18 @@ export class JwtStrategy extends PassportStrategy(Strategy, 'jwt') {
       throw new UnauthorizedException('Account is deactivated');
     }
 
-    if (!user.isEmailVerified) {
+    if (!user.emailVerified) {
       throw new UnauthorizedException('Email not verified');
     }
 
-    return user; // Attached to req.user
+    return {
+      id: user.id,
+      email: user.email,
+      name: user.name,
+      role: user.role,
+      avatar: user.avatar,
+      isEmailVerified: user.emailVerified,
+      isActive: user.isActive,
+    };
   }
 }

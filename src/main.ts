@@ -1,6 +1,6 @@
 import { NestFactory } from '@nestjs/core';
 import { ValidationPipe, VersioningType, Logger } from '@nestjs/common';
-import { NestExpressApplication } from '@nestjs/platform-express'; // ← Add this import
+import { NestExpressApplication } from '@nestjs/platform-express';
 import helmet from 'helmet';
 import compression from 'compression';
 import rateLimit from 'express-rate-limit';
@@ -12,7 +12,6 @@ import * as winston from 'winston';
 import { Request, Response } from 'express';
 
 async function bootstrap() {
-  // Type as NestExpressApplication
   const app = await NestFactory.create<NestExpressApplication>(AppModule, {
     logger: WinstonModule.createLogger({
       level: process.env.NODE_ENV === 'production' ? 'info' : 'debug',
@@ -128,18 +127,38 @@ async function bootstrap() {
       memory: process.memoryUsage(),
     });
   });
-  // Start Server
-  const port = configService.get<number>('PORT', 3000);
-  await app.listen(port, '0.0.0.0');
 
-  Logger.log(`🚀 Server running on port ${port}`, 'Bootstrap');
-  Logger.log(
-    `📁 Environment: ${process.env.NODE_ENV || 'development'}`,
-    'Bootstrap',
-  );
-  Logger.log(`🌐 URL: http://localhost:${port}`, 'Bootstrap');
-  if (process.env.NODE_ENV !== 'production') {
-    Logger.log(`📚 Swagger: http://localhost:${port}/docs`, 'Bootstrap');
+  // Start Server with auto port increment
+  let port = configService.get<number>('PORT', 3000);
+  const maxRetries = 10;
+  let attempt = 0;
+
+  while (attempt < maxRetries) {
+    try {
+      await app.listen(port, '0.0.0.0');
+      Logger.log(`🚀 Server running on port ${port}`, 'Bootstrap');
+      Logger.log(
+        `📁 Environment: ${process.env.NODE_ENV || 'development'}`,
+        'Bootstrap',
+      );
+      Logger.log(`🌐 URL: http://localhost:${port}`, 'Bootstrap');
+      if (process.env.NODE_ENV !== 'production') {
+        Logger.log(`📚 Swagger: http://localhost:${port}/docs`, 'Bootstrap');
+      }
+      break; // Success, exit loop
+    } catch (error) {
+      if (error.code === 'EADDRINUSE') {
+        Logger.warn(`Port ${port} is occupied, trying ${port + 1}...`, 'Bootstrap');
+        port++;
+        attempt++;
+      } else {
+        throw error; // Re-throw non-port errors
+      }
+    }
+  }
+
+  if (attempt === maxRetries) {
+    throw new Error(`Could not find available port after ${maxRetries} attempts`);
   }
 }
 
