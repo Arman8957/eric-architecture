@@ -1,0 +1,297 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+// Looking for ways to speed up your queries, or scale easily with your serverless or edge functions?
+// Try Prisma Accelerate: https://pris.ly/cli/accelerate-init
+
+generator client {
+  provider = "prisma-client-js"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum UserRole {
+  SUPER_ADMIN
+  ADMIN
+  FINANCE
+  HIGHER_MANAGER
+  CRAFTER
+  EMPLOYEE
+  USER
+}
+
+enum ProjectStatus {
+  DRAFT
+  PUBLISHED
+  ARCHIVED
+}
+
+enum ProjectCategory {
+  RESIDENTIAL
+  COMMERCIAL
+  INSTITUTIONAL
+  LANDSCAPE
+  INTERIOR
+  URBAN_PLANNING
+}
+
+enum AssetType {
+  IMAGE_2D // Photos, renders
+  DRAWING_2D // Floor plans, sections (PDF, SVG, PNG)
+  DOCUMENT_1D // Specifications, contracts (PDF, DOCX)
+  MODEL_3D // GLB/GLTF/USDZ
+  TOUR_360 // 360° panorama or virtual tour
+  VIDEO // MP4 walkthroughs, animations
+}
+
+// ──────────────────────────────────────────────────────────────
+// Core Models (unchanged + small improvements)
+// ──────────────────────────────────────────────────────────────
+model User {
+  id                String           @id @default(uuid())
+  email             String           @unique
+  name              String?
+  googleId          String?          @unique
+  avatar            String?
+  role              UserRole         @default(USER)
+  isActive          Boolean          @default(true)
+  lastLoginAt       DateTime?
+  createdAt         DateTime         @default(now())
+  updatedAt         DateTime         @updatedAt
+  password          String? // hashed, optional for OAuth users
+  refreshToken      String?
+  emailVerified     Boolean          @default(false)
+  emailVerifyToken  String?          @unique // for email verification
+  emailVerifyExpiry DateTime? // token expiry
+  projects          Project[]
+  assets            ProjectAsset[] // new: unified assets
+  comments          Comment[]
+  likes             Like[]
+  employeeProfile   EmployeeProfile?
+
+  @@index([email])
+  @@index([googleId])
+  @@index([role])
+  @@map("users")
+}
+
+model EmployeeProfile {
+  id         String   @id @default(uuid())
+  userId     String   @unique
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  employeeId String   @unique
+  department String?
+  position   String?
+  joinDate   DateTime @default(now())
+  phone      String?
+  address    String?
+  salary     Decimal? @db.Decimal(10, 2)
+
+  @@index([employeeId])
+  @@map("employee_profiles")
+}
+
+// ──────────────────────────────────────────────────────────────
+// PROJECT – now uses unified assets
+// ──────────────────────────────────────────────────────────────
+model Project {
+  id             String          @id @default(uuid())
+  title          String
+  slug           String          @unique
+  description    String          @db.Text
+  shortDesc      String?         @db.VarChar(300)
+  category       ProjectCategory
+  status         ProjectStatus   @default(DRAFT)
+  location       String?
+  area           Float?
+  completionYear Int?
+  clientName     String?
+
+  // SEO
+  metaTitle       String?
+  metaDescription String?
+  metaKeywords    String[]
+
+  // Media (now via ProjectAsset)
+  coverImage String? // You can keep this or remove it
+  assets     ProjectAsset[]
+
+  // Performance & Relations
+  viewCount     Int          @default(0)
+  featuredOrder Int?
+  authorId      String
+  author        User         @relation(fields: [authorId], references: [id])
+  tags          ProjectTag[]
+  comments      Comment[]
+  likes         Like[]
+  publishedAt   DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([slug])
+  @@index([status])
+  @@index([category])
+  @@index([authorId])
+  @@index([featuredOrder])
+  @@index([publishedAt])
+  @@map("projects")
+}
+
+// ──────────────────────────────────────────────────────────────
+// UNIFIED ASSET SYSTEM (replaces ProjectImage + ProjectVideo)
+// ──────────────────────────────────────────────────────────────
+model ProjectAsset {
+  id           String  @id @default(uuid())
+  projectId    String
+  project      Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  uploadedById String?
+  uploadedBy   User?   @relation(fields: [uploadedById], references: [id])
+
+  type    AssetType
+  title   String?
+  caption String?
+  order   Int       @default(0)
+
+  // Universal
+  originalUrl String
+  cdnUrl      String // optimized CDN URL
+  fileSize    Int
+  mimeType    String
+
+  // 2D Image / Drawing
+  width    Int?
+  height   Int?
+  format   String? // webp, avif, jpg, png, svg
+  blurHash String?
+  altText  String?
+  sizes    Json? // { thumb: url, sm: url, md: url, lg: url }
+
+  // 3D Model
+  modelUrl      String? // compressed .glb
+  usdzUrl       String? // iOS AR
+  thumbnailUrl  String?
+  polygonCount  Int?
+  hasAnimations Boolean? @default(false)
+
+  // Video
+  streamingUrl String? // HLS .m3u8
+  duration     Int? // seconds
+  resolution   String? // 1080p, 4K
+
+  // 360 / Document
+  pageCount    Int?
+  isSearchable Boolean? @default(false)
+
+  // Processing state
+  isProcessed   Boolean @default(false)
+  processStatus String? // pending | processing | completed | failed
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([projectId])
+  @@index([type])
+  @@index([order])
+  @@index([isProcessed])
+  @@index([uploadedById])
+  @@map("project_assets")
+}
+
+// ──────────────────────────────────────────────────────────────
+// Rest of your models
+// ──────────────────────────────────────────────────────────────
+model Tag {
+  id        String       @id @default(uuid())
+  name      String       @unique
+  slug      String       @unique
+  projects  ProjectTag[]
+  createdAt DateTime     @default(now())
+
+  @@index([slug])
+  @@map("tags")
+}
+
+model ProjectTag {
+  projectId String
+  tagId     String
+  project   Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  tag       Tag     @relation(fields: [tagId], references: [id], onDelete: Cascade)
+
+  @@id([projectId, tagId])
+  @@map("project_tags")
+}
+
+model Comment {
+  id         String    @id @default(uuid())
+  content    String    @db.Text
+  projectId  String
+  project    Project   @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  userId     String
+  user       User      @relation(fields: [userId], references: [id])
+  parentId   String?
+  parent     Comment?  @relation("CommentReplies", fields: [parentId], references: [id])
+  replies    Comment[] @relation("CommentReplies")
+  isApproved Boolean   @default(false)
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
+
+  @@index([projectId])
+  @@index([userId])
+  @@index([parentId])
+  @@map("comments")
+}
+
+model Like {
+  id        String   @id @default(uuid())
+  projectId String
+  project   Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  userId    String
+  user      User     @relation(fields: [userId], references: [id])
+  createdAt DateTime @default(now())
+
+  @@unique([projectId, userId])
+  @@index([projectId])
+  @@index([userId])
+  @@map("likes")
+}
+
+model ContactInquiry {
+  id        String   @id @default(uuid())
+  name      String
+  email     String
+  phone     String?
+  subject   String
+  message   String   @db.Text
+  isRead    Boolean  @default(false)
+  isReplied Boolean  @default(false)
+  createdAt DateTime @default(now())
+
+  @@index([isRead])
+  @@index([createdAt])
+  @@map("contact_inquiries")
+}
+
+model Newsletter {
+  id           String   @id @default(uuid())
+  email        String   @unique
+  isActive     Boolean  @default(true)
+  subscribedAt DateTime @default(now())
+
+  @@index([email])
+  @@map("newsletters")
+}
+
+model SiteSettings {
+  id          String   @id @default(uuid())
+  key         String   @unique
+  value       String   @db.Text
+  description String?
+  updatedAt   DateTime @updatedAt
+
+  @@map("site_settings")
+}

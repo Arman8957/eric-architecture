@@ -1,0 +1,152 @@
+// modules/auth/auth.controller.ts
+import {
+  Controller,
+  Post,
+  Body,
+  Get,
+  Res,
+  Req,
+  HttpCode,
+  HttpStatus,
+  UseGuards,
+} from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
+import express from 'express';
+import { AuthService } from './auth.service';
+import { RolesGuard } from '../../common/guards/roles.guard';
+import { JwtAuthGuard } from '../../common/guards/auth.guard'; // ← Correct guard
+import { Roles } from '../../common/decorators/roles.decorator';
+import { Public } from '../../common/decorators/public.decorator'; // ← Fixed import
+// import { UserRole } from 'generated/prisma';
+import { UserRole, User } from '../../../generated/prisma';
+import { RegisterUserDto } from './dto/register-user.dto';
+import { RegisterStaffDto } from './dto/register-staff.dto'; // ← Use RegisterStaffDto instead of RegisterAdminDto
+import { VerifyEmailDto } from './dto/verify-email.dto';
+
+@Controller('auth')
+export class AuthController {
+  private readonly frontendUrl: string;
+
+  constructor(
+    private authService: AuthService,
+    private config: ConfigService,
+  ) {
+    this.frontendUrl = this.config.get('FRONTEND_URL', 'http://localhost:3000');
+  }
+
+  @Post('register')
+  @Public()
+  @HttpCode(HttpStatus.CREATED)
+  async register(@Body() dto: RegisterUserDto, @Res({ passthrough: true }) res: express.Response) {
+    const result = await this.authService.registerUser(dto, this.frontendUrl);
+
+    return res.status(HttpStatus.CREATED).json({
+      success: true,
+      message: result.message,
+      data: { user: result.user },
+    });
+  }
+
+  @Post('staff/register') // ← Renamed to /staff/register (cleaner than /admin/register)
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(UserRole.SUPER_ADMIN, UserRole.ADMIN)
+  @HttpCode(HttpStatus.CREATED)
+  async registerStaff(
+    @Body() dto: RegisterStaffDto,
+    @Req() req: express.Request & { user: any },
+    @Res({ passthrough: true }) res: express.Response,
+  ) {
+    const result = await this.authService.registerStaff(dto, req.user, this.frontendUrl);
+
+    return res.status(HttpStatus.CREATED).json({
+      success: true,
+      message: result.message,
+      data: { user: result.user },
+    });
+  }
+
+  @Post('verify-email')
+  @Public()
+  @HttpCode(HttpStatus.OK)
+  async verifyEmail(@Body() dto: VerifyEmailDto, @Res({ passthrough: true }) res: express.Response) {
+    const result = await this.authService.verifyEmail(dto);
+
+    return res.status(HttpStatus.OK).json({
+      success: true,
+      message: result.message,
+    });
+  }
+
+  @Post('resend-verification')
+  @Public()
+  @HttpCode(HttpStatus.OK)
+  async resendVerification(
+    @Body('email') email: string,
+    @Res({ passthrough: true }) res: express.Response,
+  ) {
+    const result = await this.authService.resendVerification(email, this.frontendUrl);
+
+    return res.status(HttpStatus.OK).json({
+      success: true,
+      message: result.message,
+    });
+  }
+
+  @Post('login')
+  @Public()
+  @HttpCode(HttpStatus.OK)
+  async login(
+    @Body('email') email: string,
+    @Body('password') password: string,
+    @Res({ passthrough: true }) res: express.Response,
+  ) {
+    const result = await this.authService.login(email, password);
+
+    res.cookie('refreshToken', result.refreshToken, {
+      httpOnly: true,
+      secure: process.env.NODE_ENV === 'production',
+      sameSite: 'strict',
+      maxAge: 7 * 24 * 60 * 60 * 1000,
+    });
+
+    return res.status(HttpStatus.OK).json({
+      success: true,
+      message: 'Login successful',
+      data: {
+        accessToken: result.accessToken,
+        user: result.user,
+      },
+    });
+  }
+
+  @Post('logout')
+  @UseGuards(JwtAuthGuard)
+  @HttpCode(HttpStatus.OK)
+  async logout(@Req() req: express.Request & { user: { sub: string } }, @Res({ passthrough: true }) res: express.Response) {
+    const result = await this.authService.logout(req.user.sub);
+
+    res.clearCookie('refreshToken');
+
+    return res.status(HttpStatus.OK).json({
+      success: true,
+      message: result.message,
+    });
+  }
+
+  @Post('refresh')
+  @Public()
+  @HttpCode(HttpStatus.OK)
+  async refresh(@Body('refreshToken') token: string, @Res({ passthrough: true }) res: express.Response) {
+    const result = await this.authService.refresh(token);
+
+    return res.status(HttpStatus.OK).json({
+      success: true,
+      message: 'Token refreshed successfully',
+      data: {
+        accessToken: result.accessToken,
+        refreshToken: result.refreshToken,
+        user: result.user,
+      },
+    });
+  }
+}
