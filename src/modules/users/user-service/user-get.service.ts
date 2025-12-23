@@ -2,6 +2,7 @@ import { Injectable, NotFoundException } from "@nestjs/common";
 import { Prisma, User, UserRole } from "@prisma/client";
 import { FindAllOptions } from "src/modules/auth/constant";
 import { PrismaService } from "src/prisma/prisma.service";
+import { SafeUser } from "../types/user.type";
 
 @Injectable()
 export class UsersGetService {
@@ -99,14 +100,13 @@ export class UsersGetService {
 
     return user as User;
   }
-
-  async findByRole(role: UserRole) {
-    return this.prisma.user.findMany({
-      where: { role },
-      select: this.baseSelect,
-      orderBy: { name: 'asc' },
-    });
-  }
+async findByRole(role: UserRole): Promise<SafeUser[]> {
+  return this.prisma.user.findMany({
+    where: { role },
+    select: this.baseSelect,
+    orderBy: { name: 'asc' },
+  }) as Promise<SafeUser[]>;
+}
 
   async getSafeUser(id: string) {
     return this.findById(id);
