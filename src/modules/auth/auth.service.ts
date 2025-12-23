@@ -6,6 +6,7 @@ import {
   ForbiddenException,
   Logger,
   InternalServerErrorException,
+  NotFoundException,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { JwtService } from '@nestjs/jwt';
@@ -21,6 +22,7 @@ import { RegisterStaffDto } from './dto/register-staff.dto';
 import { VerifyEmailDto } from './dto/verify-email.dto';
 import { AuthResponseDto } from './dto/auth-response.dto';
 import { MailerService } from 'src/utils/email/email.service';
+import { FindAllOptions } from './constant';
 // import { User } from 'generated/prisma'; // ← Prisma User type
 
 @Injectable()
@@ -386,4 +388,10 @@ export class AuthService {
     });
     return { message: 'Logged out successfully' };
   }
+
+
+
+  ////// all get api's 
+
+ 
 }

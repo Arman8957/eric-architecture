@@ -15,6 +15,9 @@ import {
   ForbiddenException,
   UsePipes,
   ValidationPipe,
+  ParseUUIDPipe,
+  Param,
+  Query,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import express from 'express';
@@ -24,14 +27,24 @@ import { JwtAuthGuard } from '../../common/guards/auth.guard'; // ← Correct gu
 import { Roles } from '../../common/decorators/roles.decorator';
 import { Public } from '../../common/decorators/public.decorator'; // ← Fixed import
 // import { UserRole } from 'generated/prisma';
-import { UserRole } from '@prisma/client';
+import * as client from '@prisma/client';
 import { RegisterUserDto } from './dto/register-user.dto';
 import { RegisterStaffDto } from './dto/register-staff.dto'; // ← Use RegisterStaffDto instead of RegisterAdminDto
 import { VerifyEmailDto } from './dto/verify-email.dto';
 import { LoginDto } from './dto/login.dto';
 import { RegisterSuperAdminDto } from './dto/register-super-admin.dto';
-import { User } from '@prisma/client';
 
+import { CurrentUser } from 'src/common/decorators/current-user.decorator';
+import { ProjectRequestService } from '../users/user-service/project-request.service';
+
+
+
+
+interface AuthResponse {
+  success: boolean;
+  message: string;
+  data?: any;
+}
 
 @Controller('auth')
 export class AuthController {
@@ -40,6 +53,7 @@ export class AuthController {
   constructor(
     private authService: AuthService,
     private config: ConfigService,
+     private usersService: ProjectRequestService,
   ) {
     this.frontendUrl = this.config.get('FRONTEND_URL', 'http://localhost:3000');
   }
@@ -113,7 +127,7 @@ async registerSuperAdmin(
 
   @Post('staff/register') // ← Renamed to /staff/register (cleaner than /admin/register)
   @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles(UserRole.SUPER_ADMIN, UserRole.ADMIN)
+  @Roles(client.UserRole.SUPER_ADMIN, client.UserRole.ADMIN)
   @HttpCode(HttpStatus.CREATED)
   async registerStaff(
     @Body() dto: RegisterStaffDto,
@@ -228,4 +242,8 @@ async registerSuperAdmin(
       },
     });
   }
+
+  //// all get controllers 
+
+  
 }

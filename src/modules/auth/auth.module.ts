@@ -14,12 +14,15 @@ import { GoogleController } from './google/google.controller';
 import { JwtStrategy } from './jwt/jwt.strategy';
 import { MailerService } from 'src/utils/email/email.service';
 import { MailerModule } from 'src/utils/email/email.module';
+import { ProjectRequestModule } from '../users/user.module';
+import { ProjectRequestService } from '../users/user-service/project-request.service';
 
 @Module({
   imports: [
     PrismaModule,
     PassportModule,
     MailerModule,
+    ProjectRequestModule,
     JwtModule.registerAsync({
       imports: [ConfigModule],
       useFactory: (config: ConfigService) => ({
@@ -29,7 +32,7 @@ import { MailerModule } from 'src/utils/email/email.module';
     }),
   ],
   controllers: [AuthController, GoogleController],
-  providers: [AuthService,MailerService, JwtStrategy, JwtRefreshStrategy, GoogleStrategy],
+  providers: [AuthService,MailerService,ProjectRequestService, JwtStrategy, JwtRefreshStrategy, GoogleStrategy],
   exports: [AuthService],
 })
 export class AuthModule {}
