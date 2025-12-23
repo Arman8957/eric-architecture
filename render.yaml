@@ -1,12 +1,13 @@
 services:
   - type: web
     name: nestjs-backend
-    runtime: node
-    region: singapore # closest stable region to Bangladesh
+    env: node
+    region: singapore
     plan: free
 
     buildCommand: |
       npm install
+      npx prisma generate   # ← this is required!
       npm run build
 
     startCommand: npm run start:prod
@@ -14,6 +15,5 @@ services:
     envVars:
       - key: NODE_ENV
         value: production
-
       - key: PORT
         value: 10000
