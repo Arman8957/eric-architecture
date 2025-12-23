@@ -28,7 +28,7 @@ export class ProjectRequestService {
     [StatusEnum.CANCELLED]: [],
   };
 
-  async create(dto: CreateProjectRequestDto, userId?: string) {
+  async create(dto: CreateProjectRequestDto, files: Express.Multer.File[], userId?: string) {
     try {
       const projectData = dto.projectLocationSameAsClient
         ? {

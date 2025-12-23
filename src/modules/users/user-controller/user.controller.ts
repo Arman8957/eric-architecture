@@ -12,8 +12,9 @@ import {
   HttpStatus,
   UseInterceptors,
   UploadedFile,
+  UploadedFiles,
 } from '@nestjs/common';
-import { FileInterceptor } from '@nestjs/platform-express';
+import { FileInterceptor, FilesInterceptor } from '@nestjs/platform-express';
 
 import { UserRole } from '@prisma/client';
 import { ProjectRequestService } from '../user-service/project-request.service';
@@ -38,15 +39,27 @@ export class ProjectRequestController {
   /**
    * Create new project request - Public endpoint
    */
-  @Post()
-  @Public() // if you have public decorator, otherwise remove guard
-  @HttpCode(HttpStatus.CREATED)
-  async create(
-    @Body() createDto: CreateProjectRequestDto,
-    @CurrentUser() user?: AuthenticatedUser,
-  ) {
-    return this.projectRequestService.create(createDto, user?.id);
-  }
+  // @Post()
+  // @Public() // if you have public decorator, otherwise remove guard
+  // @HttpCode(HttpStatus.CREATED)
+  // async create(
+  //   @Body() createDto: CreateProjectRequestDto,
+  //   @CurrentUser() user?: AuthenticatedUser,
+  // ) {
+  //   return this.projectRequestService.create(createDto, user?.id);
+  // }
+
+@Post()
+@Public()
+@UseInterceptors(FilesInterceptor('files', 10)) // allow up to 10 files
+@HttpCode(HttpStatus.CREATED)
+async create(
+  @Body() dto: CreateProjectRequestDto,
+  @UploadedFiles() files: Express.Multer.File[] = [],
+  @CurrentUser() user?: AuthenticatedUser,
+) {
+  return this.projectRequestService.create(dto, files, user?.id);
+}
 
   /**
    * Upload file/document to existing request
