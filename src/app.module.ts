@@ -14,6 +14,7 @@ import { MailerService } from './utils/email/email.service';
 import { FileOptimizerService } from './utils/optimizer/file-optimizer.service';
 import { CloudinaryStrategy } from './upload/strategies/cloudinary.strategy';
 import { MailerModule } from './utils/email/email.module';
+import { ProjectRequestModule } from './modules/users/user.module';
 
 @Module({
   imports: [
@@ -49,7 +50,8 @@ import { MailerModule } from './utils/email/email.module';
 
     AuthModule,
     PrismaModule,
-    MailerModule
+    MailerModule,
+    ProjectRequestModule,
   ],
   providers: [
     PrismaService,
