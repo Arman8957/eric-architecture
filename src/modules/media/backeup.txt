@@ -26,33 +26,30 @@ import { UpdateMediaContentDto } from './dto/update-media-content.dto';
 import { MediaQueryDto } from './dto/media-query.dto';
 import { CurrentUser } from 'src/common/decorators/current-user.decorator';
 import * as client from '@prisma/client';
-import { MediaRoles } from 'src/common/constant/roles.constant';
-import { JwtAuthGuard } from 'src/common/guards/auth.guard';
 
-@UseGuards(JwtAuthGuard, RolesGuard)
 @Controller('media')
 export class MediaController {
   constructor(private readonly mediaService: MediaService) {}
 
+  // ──────────────────────────────────────────────────────────────
+  // CREATE - Media Content
+  // ──────────────────────────────────────────────────────────────
   @Post()
-  @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles(...MediaRoles)
+  @UseGuards(RolesGuard)
+  @Roles(client.UserRole.MEDIA_MANAGER, client.UserRole.ADMIN, client.UserRole.SUPER_ADMIN)
   async create(
     @Body() dto: CreateMediaContentDto,
     @CurrentUser() user: client.User,
   ) {
-    console.log('[MediaController] create - Current user:', user);
-    console.log('[MediaController] create - User role:', user.role);
-
     try {
       const created = await this.mediaService.create(dto, user.id, user.role);
+
       return {
         status: 'success',
         message: 'Media content created successfully (status: DRAFT)',
         data: created,
       };
     } catch (error) {
-      console.error('[MediaController] create - Error:', error);
       if (error instanceof HttpException) throw error;
       throw new HttpException(
         { status: 'error', message: 'Failed to create media content' },
@@ -61,9 +58,12 @@ export class MediaController {
     }
   }
 
+  // ──────────────────────────────────────────────────────────────
+  // UPLOAD ASSETS
+  // ──────────────────────────────────────────────────────────────
   @Post(':id/assets')
-  @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles(...MediaRoles)
+  @UseGuards(RolesGuard)
+  @Roles(client.UserRole.MEDIA_MANAGER, client.UserRole.ADMIN, client.UserRole.SUPER_ADMIN)
   @UseInterceptors(
     FilesInterceptor('files', 10, {
       limits: { fileSize: 25 * 1024 * 1024 }, // 25MB per file
@@ -92,12 +92,7 @@ export class MediaController {
     }
 
     try {
-      const result = await this.mediaService.addAssets(
-        id,
-        files,
-        user.id,
-        user.role,
-      );
+      const result = await this.mediaService.addAssets(id, files, user.id, user.role);
 
       return {
         status: 'success',
@@ -115,6 +110,9 @@ export class MediaController {
     }
   }
 
+  // ──────────────────────────────────────────────────────────────
+  // LIST ALL (with filters & pagination)
+  // ──────────────────────────────────────────────────────────────
   @Get()
   async findAll(@Query() query: MediaQueryDto) {
     try {
@@ -142,6 +140,9 @@ export class MediaController {
     }
   }
 
+  // ──────────────────────────────────────────────────────────────
+  // FEATURED ITEMS
+  // ──────────────────────────────────────────────────────────────
   @Get('featured')
   async getFeatured() {
     try {
@@ -160,6 +161,9 @@ export class MediaController {
     }
   }
 
+  // ──────────────────────────────────────────────────────────────
+  // GET ONE BY SLUG (public)
+  // ──────────────────────────────────────────────────────────────
   @Get(':slug')
   async findOne(@Param('slug') slug: string) {
     try {
@@ -173,10 +177,7 @@ export class MediaController {
     } catch (error) {
       if (error instanceof NotFoundException) {
         throw new HttpException(
-          {
-            status: 'error',
-            message: 'Media content not found or not published',
-          },
+          { status: 'error', message: 'Media content not found or not published' },
           HttpStatus.NOT_FOUND,
         );
       }
@@ -193,21 +194,19 @@ export class MediaController {
     }
   }
 
+  // ──────────────────────────────────────────────────────────────
+  // UPDATE
+  // ──────────────────────────────────────────────────────────────
   @Patch(':id')
-  @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles(...MediaRoles)
+  @UseGuards(RolesGuard)
+  @Roles(client.UserRole.MEDIA_MANAGER, client.UserRole.ADMIN, client.UserRole.SUPER_ADMIN)
   async update(
     @Param('id') id: string,
     @Body() dto: UpdateMediaContentDto,
     @CurrentUser() user: client.User,
   ) {
     try {
-      const updated = await this.mediaService.update(
-        id,
-        dto,
-        user.id,
-        user.role,
-      );
+      const updated = await this.mediaService.update(id, dto, user.id, user.role);
 
       return {
         status: 'success',
@@ -228,9 +227,12 @@ export class MediaController {
     }
   }
 
+  // ──────────────────────────────────────────────────────────────
+  // DELETE
+  // ──────────────────────────────────────────────────────────────
   @Delete(':id')
-  @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles(...MediaRoles)
+  @UseGuards(RolesGuard)
+  @Roles(client.UserRole.MEDIA_MANAGER, client.UserRole.ADMIN, client.UserRole.SUPER_ADMIN)
   async remove(@Param('id') id: string, @CurrentUser() user: client.User) {
     try {
       await this.mediaService.delete(id, user.id, user.role);

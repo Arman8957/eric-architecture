@@ -40,17 +40,17 @@ export class AuthService {
       parseInt(this.config.get('EMAIL_VERIFY_EXPIRY', '24')) * 60 * 60 * 1000;
   }
 
-  private async generateTokens(userId: string) {
+  private async generateTokens(userId: string, role: UserRole) {
     const [access, refresh] = await Promise.all([
       this.jwt.signAsync(
-        { sub: userId },
+        { sub: userId, role: role },
         {
           secret: this.config.get('JWT_ACCESS_SECRET'),
           expiresIn: this.config.get('JWT_ACCESS_EXPIRES'),
         },
       ),
       this.jwt.signAsync(
-        { sub: userId },
+        { sub: userId, role: role },
         {
           secret: this.config.get('JWT_REFRESH_SECRET'),
           expiresIn: this.config.get('JWT_REFRESH_EXPIRES'),
@@ -302,7 +302,7 @@ export class AuthService {
   }
 
   async issueTokens(user: User): Promise<AuthResponseDto> {
-    const { access, refresh } = await this.generateTokens(user.id);
+    const { access, refresh } = await this.generateTokens(user.id, user.role);
     const hashed = await this.hashRefreshToken(refresh);
 
     await this.prisma.user.update({
@@ -317,7 +317,7 @@ export class AuthService {
         id: user.id,
         email: user.email,
         name: user.name,
-        role: user.role || null, // ← Same type, no error
+        role: user.role,
         avatar: user.avatar || null,
         isEmailVerified: user.emailVerified,
       },
@@ -389,9 +389,5 @@ export class AuthService {
     return { message: 'Logged out successfully' };
   }
 
-
-
-  ////// all get api's 
-
- 
+  ////// all get api's
 }
