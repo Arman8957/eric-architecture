@@ -67,8 +67,22 @@ enum RequestStatus {
   CANCELLED
 }
 
+enum MediaContentType {
+  WORLD_PROJECT
+  PORTFOLIO
+  ARTICLE
+  NEWS
+}
+
+enum MediaStatus {
+  DRAFT
+  PENDING_REVIEW
+  PUBLISHED
+  ARCHIVED
+}
+
 // ──────────────────────────────────────────────────────────────
-// Core Models (unchanged + small improvements)
+// Core Models 
 // ──────────────────────────────────────────────────────────────
 model User {
   id                String           @id @default(uuid())
@@ -92,12 +106,174 @@ model User {
   likes             Like[]
   employeeProfile   EmployeeProfile?
   projectRequests   ProjectRequest[]
+  mediaContents     MediaContent[]
+  mediaAssets       MediaAsset[]
 
   @@index([email])
   @@index([googleId])
   @@index([role])
   @@map("users")
 }
+
+
+// ──────────────────────────────────────────────────────────────
+// NEW: Media Content Model (World Projects, Portfolio, Articles)
+// ──────────────────────────────────────────────────────────────
+model MediaContent {
+  id              String            @id @default(uuid())
+  contentType     MediaContentType
+  status          MediaStatus       @default(DRAFT)
+  
+  // Basic Info
+  title           String
+  slug            String            @unique
+  excerpt         String?           @db.VarChar(500)
+  content         String            @db.Text
+  
+  // Media Specific Fields
+  location        String?           // For World Projects
+  country         String?
+  city            String?
+  coordinates     Json?             // {lat, lng}
+  
+  projectYear     Int?              // Completion year
+  projectArea     Float?            // Square footage/meters
+  projectClient   String?
+  architect       String?
+  photographer    String?
+  
+  // Portfolio specific
+  category        ProjectCategory?
+  projectTags     String[]          // e.g., ["luxury", "eco-friendly"]
+  
+  // Article specific
+  author          String?           // Author name (different from creator)
+  publishDate     DateTime?
+  readTime        Int?              // in minutes
+  
+  // SEO
+  metaTitle       String?
+  metaDescription String?
+  metaKeywords    String[]
+  
+  // Featured content
+  isFeatured      Boolean           @default(false)
+  featuredOrder   Int?
+  
+  // Cover/Thumbnail
+  coverImage      String?
+  thumbnailImage  String?
+  
+  // Relations
+  createdById     String
+  createdBy       User              @relation(fields: [createdById], references: [id])
+  
+  assets          MediaAsset[]
+  tags            MediaContentTag[]
+  
+  // Analytics
+  viewCount       Int               @default(0)
+  likeCount       Int               @default(0)
+  shareCount      Int               @default(0)
+  
+  // Timestamps
+  publishedAt     DateTime?
+  archivedAt      DateTime?
+  createdAt       DateTime          @default(now())
+  updatedAt       DateTime          @updatedAt
+  
+  @@index([slug])
+  @@index([contentType])
+  @@index([status])
+  @@index([createdById])
+  @@index([isFeatured])
+  @@index([publishedAt])
+  @@index([country])
+  @@index([city])
+  @@map("media_contents")
+}
+
+// ──────────────────────────────────────────────────────────────
+// NEW: Media Asset Model (for media content)
+// ──────────────────────────────────────────────────────────────
+model MediaAsset {
+  id              String        @id @default(uuid())
+  
+  mediaContentId  String
+  mediaContent    MediaContent  @relation(fields: [mediaContentId], references: [id], onDelete: Cascade)
+  
+  uploadedById    String
+  uploadedBy      User          @relation(fields: [uploadedById], references: [id])
+  
+  type            AssetType
+  title           String?
+  caption         String?
+  altText         String?
+  order           Int           @default(0)
+  
+  // File info
+  originalUrl     String
+  cdnUrl          String
+  fileSize        Int
+  mimeType        String
+  
+  // Image specific
+  width           Int?
+  height          Int?
+  format          String?
+  blurHash        String?
+  sizes           Json?         // {thumbnail, medium, large}
+  
+  // Video specific
+  streamingUrl    String?
+  duration        Int?
+  resolution      String?
+  posterUrl       String?       // Video thumbnail
+  
+  // 3D Model
+  modelUrl        String?
+  usdzUrl         String?
+  thumbnailUrl    String?
+  
+  // Processing
+  isProcessed     Boolean       @default(false)
+  processStatus   String?
+  
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
+  
+  @@index([mediaContentId])
+  @@index([uploadedById])
+  @@index([type])
+  @@index([order])
+  @@map("media_assets")
+}
+
+// ──────────────────────────────────────────────────────────────
+// NEW: Media Content Tags
+// ──────────────────────────────────────────────────────────────
+model MediaTag {
+  id        String            @id @default(uuid())
+  name      String            @unique
+  slug      String            @unique
+  contents  MediaContentTag[]
+  createdAt DateTime          @default(now())
+  
+  @@index([slug])
+  @@map("media_tags")
+}
+
+model MediaContentTag {
+  mediaContentId String
+  tagId          String
+  
+  mediaContent   MediaContent @relation(fields: [mediaContentId], references: [id], onDelete: Cascade)
+  tag            MediaTag     @relation(fields: [tagId], references: [id], onDelete: Cascade)
+  
+  @@id([mediaContentId, tagId])
+  @@map("media_content_tags")
+}
+
 
 model ProjectRequest {
   id                          String           @id @default(uuid())
@@ -143,7 +319,7 @@ model ProjectRequest {
   user      User?          @relation(fields: [userId], references: [id])
   assets    ProjectAsset[] // Uploaded documents/photos
   // Timestamps
-  deletedAt                     DateTime?
+  deletedAt DateTime?
   createdAt DateTime       @default(now())
   updatedAt DateTime       @updatedAt
 
@@ -193,7 +369,7 @@ model Project {
   metaKeywords    String[]
 
   // Media (now via ProjectAsset)
-  coverImage String? 
+  coverImage String?
   assets     ProjectAsset[]
 
   // Performance & Relations

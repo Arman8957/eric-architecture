@@ -5,6 +5,6 @@ import { Request } from 'express';
 export const CurrentUser = createParamDecorator(
   (data: unknown, ctx: ExecutionContext) => {
     const request = ctx.switchToHttp().getRequest<Request>();
-    return request.user; // ← this is where your auth guard sets req.user
+    return request.user; 
   },
 );

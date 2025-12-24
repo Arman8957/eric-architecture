@@ -37,9 +37,6 @@ import { RegisterSuperAdminDto } from './dto/register-super-admin.dto';
 import { CurrentUser } from 'src/common/decorators/current-user.decorator';
 import { ProjectRequestService } from '../users/user-service/project-request.service';
 
-
-
-
 interface AuthResponse {
   success: boolean;
   message: string;
@@ -53,7 +50,7 @@ export class AuthController {
   constructor(
     private authService: AuthService,
     private config: ConfigService,
-     private usersService: ProjectRequestService,
+    private usersService: ProjectRequestService,
   ) {
     this.frontendUrl = this.config.get('FRONTEND_URL', 'http://localhost:3000');
   }
@@ -74,17 +71,17 @@ export class AuthController {
     });
   }
 
- @Post('register-super-admin')
-@Public()
-@HttpCode(HttpStatus.CREATED)
-async registerSuperAdmin(
-  @Body() dto: RegisterSuperAdminDto,
-  @Req() req: Request,
-) {
-  const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:3000';
+  @Post('register-super-admin')
+  @Public()
+  @HttpCode(HttpStatus.CREATED)
+  async registerSuperAdmin(
+    @Body() dto: RegisterSuperAdminDto,
+    @Req() req: Request,
+  ) {
+    const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:3000';
 
-  return this.authService.registerSuperAdmin(dto, frontendUrl);
-}
+    return this.authService.registerSuperAdmin(dto, frontendUrl);
+  }
 
   // @Post('register-super-admin')
   // @Public() // Allows first-time registration without login
@@ -243,7 +240,5 @@ async registerSuperAdmin(
     });
   }
 
-  //// all get controllers 
-
-  
+  //// all get controllers
 }

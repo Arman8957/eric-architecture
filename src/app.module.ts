@@ -15,6 +15,7 @@ import { FileOptimizerService } from './utils/optimizer/file-optimizer.service';
 import { CloudinaryStrategy } from './upload/strategies/cloudinary.strategy';
 import { MailerModule } from './utils/email/email.module';
 import { ProjectRequestModule } from './modules/users/user.module';
+import { MediaModule } from './modules/media/media.module';
 
 @Module({
   imports: [
@@ -52,6 +53,7 @@ import { ProjectRequestModule } from './modules/users/user.module';
     PrismaModule,
     MailerModule,
     ProjectRequestModule,
+    MediaModule,
   ],
   providers: [
     PrismaService,

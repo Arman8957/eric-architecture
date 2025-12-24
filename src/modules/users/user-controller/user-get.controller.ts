@@ -15,7 +15,6 @@ import * as client from '@prisma/client'; // ← import directly
 import { UsersGetService } from '../user-service/user-get.service';
 import { SafeUser } from '../types/user.type';
 
-
 interface ApiResponse<T> {
   success: boolean;
   message: string;
@@ -55,19 +54,22 @@ export class UsersGetController {
 
     return {
       success: true,
-      message: result.data.length > 0 ? 'Users retrieved successfully' : 'No users found',
+      message:
+        result.data.length > 0
+          ? 'Users retrieved successfully'
+          : 'No users found',
       data: result.data,
       meta: result.meta,
     };
   }
 
-@Get('me')
+  @Get('me')
   @UseGuards(JwtAuthGuard)
   async getMe(@CurrentUser() user: client.User) {
     return {
       success: true,
-      message: "Current user profile retrieved successfully",
-      data: await this.usersService.getSafeUser(user.id)
+      message: 'Current user profile retrieved successfully',
+      data: await this.usersService.getSafeUser(user.id),
     };
   }
   @Get(':id')
@@ -92,77 +94,98 @@ export class UsersGetController {
   // Quick role-based access endpoints
   // ───────────────────────────────────────────────
 
-@Get('admins')
-@UseGuards(JwtAuthGuard, RolesGuard)
-@Roles(client.UserRole.SUPER_ADMIN, client.UserRole.ADMIN)
-async getAdmins(): Promise<ApiResponse<SafeUser[]>> {
-  const admins = await this.usersService.findByRole(client.UserRole.ADMIN);
-  return {
-    success: true,
-    message: admins.length > 0 ? 'Admins retrieved successfully' : 'No admins found',
-    data: admins,
-  };
-}
+  @Get('admins')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(client.UserRole.SUPER_ADMIN, client.UserRole.ADMIN)
+  async getAdmins(): Promise<ApiResponse<SafeUser[]>> {
+    const admins = await this.usersService.findByRole(client.UserRole.ADMIN);
+    return {
+      success: true,
+      message:
+        admins.length > 0 ? 'Admins retrieved successfully' : 'No admins found',
+      data: admins,
+    };
+  }
 
-@Get('project-managers')
-@UseGuards(JwtAuthGuard, RolesGuard)
-@Roles(
-  client.UserRole.SUPER_ADMIN,
-  client.UserRole.ADMIN,
-  client.UserRole.HIGHER_MANAGER,
-  client.UserRole.PROJECT_MANAGER,
-)
-async getProjectManagers(): Promise<ApiResponse<SafeUser[]>> {
-  const managers = await this.usersService.findByRole(client.UserRole.PROJECT_MANAGER);
-  return {
-    success: true,
-    message: managers.length > 0 ? 'Project managers retrieved successfully' : 'No project managers found',
-    data: managers,
-  };
-}
+  @Get('project-managers')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(
+    client.UserRole.SUPER_ADMIN,
+    client.UserRole.ADMIN,
+    client.UserRole.HIGHER_MANAGER,
+    client.UserRole.PROJECT_MANAGER,
+  )
+  async getProjectManagers(): Promise<ApiResponse<SafeUser[]>> {
+    const managers = await this.usersService.findByRole(
+      client.UserRole.PROJECT_MANAGER,
+    );
+    return {
+      success: true,
+      message:
+        managers.length > 0
+          ? 'Project managers retrieved successfully'
+          : 'No project managers found',
+      data: managers,
+    };
+  }
 
-@Get('employees')
-@UseGuards(JwtAuthGuard, RolesGuard)
-@Roles(
-  client.UserRole.SUPER_ADMIN,
-  client.UserRole.ADMIN,
-  client.UserRole.HIGHER_MANAGER,
-  client.UserRole.PROJECT_MANAGER,
-)
-async getEmployees(): Promise<ApiResponse<SafeUser[]>> {
-  const employees = await this.usersService.findByRole(client.UserRole.EMPLOYEE);
-  return {
-    success: true,
-    message: employees.length > 0 ? 'Employees retrieved successfully' : 'No employees found',
-    data: employees,
-  };
-}
+  @Get('employees')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(
+    client.UserRole.SUPER_ADMIN,
+    client.UserRole.ADMIN,
+    client.UserRole.HIGHER_MANAGER,
+    client.UserRole.PROJECT_MANAGER,
+  )
+  async getEmployees(): Promise<ApiResponse<SafeUser[]>> {
+    const employees = await this.usersService.findByRole(
+      client.UserRole.EMPLOYEE,
+    );
+    return {
+      success: true,
+      message:
+        employees.length > 0
+          ? 'Employees retrieved successfully'
+          : 'No employees found',
+      data: employees,
+    };
+  }
 
-@Get('drafters')
-@UseGuards(JwtAuthGuard, RolesGuard)
-@Roles(
-  client.UserRole.SUPER_ADMIN,
-  client.UserRole.ADMIN,
-  client.UserRole.PROJECT_MANAGER,
-)
-async getDrafters(): Promise<ApiResponse<SafeUser[]>> {
-  const drafters = await this.usersService.findByRole(client.UserRole.DRAFTER);
-  return {
-    success: true,
-    message: drafters.length > 0 ? 'Drafters retrieved successfully' : 'No drafters found',
-    data: drafters,
-  };
-}
+  @Get('drafters')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(
+    client.UserRole.SUPER_ADMIN,
+    client.UserRole.ADMIN,
+    client.UserRole.PROJECT_MANAGER,
+  )
+  async getDrafters(): Promise<ApiResponse<SafeUser[]>> {
+    const drafters = await this.usersService.findByRole(
+      client.UserRole.DRAFTER,
+    );
+    return {
+      success: true,
+      message:
+        drafters.length > 0
+          ? 'Drafters retrieved successfully'
+          : 'No drafters found',
+      data: drafters,
+    };
+  }
 
-@Get('media-managers')
-@UseGuards(JwtAuthGuard, RolesGuard)
-@Roles(client.UserRole.SUPER_ADMIN, client.UserRole.ADMIN)
-async getMediaManagers(): Promise<ApiResponse<SafeUser[]>> {
-  const mediaManagers = await this.usersService.findByRole(client.UserRole.MEDIA_MANAGER);
-  return {
-    success: true,
-    message: mediaManagers.length > 0 ? 'Media managers retrieved successfully' : 'No media managers found',
-    data: mediaManagers,
-  };
-}
+  @Get('media-managers')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(client.UserRole.SUPER_ADMIN, client.UserRole.ADMIN)
+  async getMediaManagers(): Promise<ApiResponse<SafeUser[]>> {
+    const mediaManagers = await this.usersService.findByRole(
+      client.UserRole.MEDIA_MANAGER,
+    );
+    return {
+      success: true,
+      message:
+        mediaManagers.length > 0
+          ? 'Media managers retrieved successfully'
+          : 'No media managers found',
+      data: mediaManagers,
+    };
+  }
 }
