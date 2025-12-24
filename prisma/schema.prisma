@@ -79,6 +79,7 @@ enum MediaStatus {
   PENDING_REVIEW
   PUBLISHED
   ARCHIVED
+  REJECTED
 }
 
 // ──────────────────────────────────────────────────────────────
