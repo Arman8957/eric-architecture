@@ -66,29 +66,48 @@ export class MediaController {
   @Roles(...MediaRoles)
   @UseInterceptors(
     FilesInterceptor('files', 10, {
-      limits: { fileSize: 25 * 1024 * 1024 }, // 25MB per file
+      limits: { fileSize: 25 * 1024 * 1024 },
     }),
   )
   async uploadAssets(
     @Param('id') id: string,
-    @UploadedFiles(
-      new ParseFilePipeBuilder()
-        .addFileTypeValidator({
-          fileType: /(image\/|video\/|application\/pdf)/,
-        })
-        .build({
-          errorHttpStatusCode: HttpStatus.UNPROCESSABLE_ENTITY,
-          fileIsRequired: true,
-        }),
-    )
-    files: Express.Multer.File[],
+    @UploadedFiles() files: Express.Multer.File[],
     @CurrentUser() user: client.User,
   ) {
-    if (files.length === 0) {
+    if (!files || files.length === 0) {
       throw new HttpException(
         { status: 'error', message: 'At least one file is required' },
         HttpStatus.BAD_REQUEST,
       );
+    }
+
+    // Manual validation
+    const allowedMimeTypes = [
+      'image/jpeg',
+      'image/jpg',
+      'image/png',
+      'image/gif',
+      'image/webp',
+      'image/bmp',
+      'image/svg+xml',
+      'video/mp4',
+      'video/webm',
+      'video/ogg',
+      'video/avi',
+      'video/quicktime',
+      'application/pdf',
+    ];
+
+    for (const file of files) {
+      if (!allowedMimeTypes.includes(file.mimetype)) {
+        throw new HttpException(
+          {
+            status: 'error',
+            message: `File type ${file.mimetype} is not allowed. Only images, videos, and PDFs are accepted.`,
+          },
+          HttpStatus.UNPROCESSABLE_ENTITY,
+        );
+      }
     }
 
     try {
