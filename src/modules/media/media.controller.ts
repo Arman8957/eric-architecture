@@ -175,7 +175,7 @@ export class MediaController {
       const result = await this.mediaService.findAll(
         {
           type: query.type,
-          status: query.status,
+          // status: query.status,
           featured:
             query.featured === 'true'
               ? true
@@ -334,7 +334,7 @@ export class MediaController {
 
   //==============extras
 
-  @Get() 
+  @Get()
   async getPublishedMedia(
     @Query() query: MediaQueryDto,
     @CurrentUser() currentUser?: client.User,
