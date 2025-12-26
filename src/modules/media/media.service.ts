@@ -490,6 +490,124 @@ async findAll(
     };
   }
 
+  //=========================extras
+
+  async findAllPublic(
+  query: {
+    type?: MediaContentType;
+    featured?: boolean;
+    country?: string;
+    category?: ProjectCategory;
+    page?: number;
+    limit?: number;
+  },
+  userId?: string,
+) {
+  const page = Math.max(1, query.page ?? 1);
+  const limit = Math.min(Math.max(1, query.limit ?? 12), 50);
+  const skip = (page - 1) * limit;
+
+  const where: any = {
+    status: MediaStatus.PUBLISHED,  // ← fixed for public
+  };
+
+  if (query.type) where.contentType = query.type;
+  if (query.featured !== undefined) where.isFeatured = query.featured;
+  if (query.country) where.country = { contains: query.country, mode: 'insensitive' };
+  if (query.category) where.category = query.category;
+
+  return this.executeFindMany(where, skip, limit, userId);
+}
+
+// Admin/moderator version - any status
+async findAllAnyStatus(
+  query: {
+    type?: MediaContentType;
+    status?: MediaStatus;
+    featured?: boolean;
+    country?: string;
+    category?: ProjectCategory;
+    page?: number;
+    limit?: number;
+  },
+  userId: string, // required for like info
+) {
+  const page = Math.max(1, query.page ?? 1);
+  const limit = Math.min(Math.max(1, query.limit ?? 20), 100);
+  const skip = (page - 1) * limit;
+
+  const where: any = {};
+
+  // Status is now fully respected - can be any value or multiple
+  if (query.status) {
+    where.status = query.status;
+  }
+  // You can also support multiple statuses if you want:
+  // if (query.status) where.status = { in: Array.isArray(query.status) ? query.status : [query.status] };
+
+  if (query.type) where.contentType = query.type;
+  if (query.featured !== undefined) where.isFeatured = query.featured;
+  if (query.country) where.country = { contains: query.country, mode: 'insensitive' };
+  if (query.category) where.category = query.category;
+
+  return this.executeFindMany(where, skip, limit, userId);
+}
+
+// Common logic extraction
+private async executeFindMany(where: any, skip: number, limit: number, userId?: string) {
+  const [items, total] = await Promise.all([
+    this.prisma.mediaContent.findMany({
+      where,
+      include: {
+        assets: {
+          orderBy: { order: 'asc' },
+          take: 6,
+          select: { id: true, type: true, cdnUrl: true, width: true, height: true },
+        },
+        tags: {
+          include: { tag: { select: { name: true, slug: true } } },
+        },
+      },
+      skip,
+      take: limit,
+      orderBy: [
+        { publishedAt: 'desc' },
+        { createdAt: 'desc' },
+      ],
+    }),
+    this.prisma.mediaContent.count({ where }),
+  ]);
+
+  let userLikes = new Set<string>();
+  if (userId) {
+    const likes = await this.prisma.mediaLike.findMany({
+      where: { userId },
+      select: { mediaContentId: true },
+    });
+    userLikes = new Set(likes.map(l => l.mediaContentId));
+  }
+
+  const data = items.map(item => ({
+    ...item,
+    likeCount: item.likeCount ?? 0,
+    commentCount: item.commentCount ?? 0,
+    userHasLiked: userId ? userLikes.has(item.id) : false,
+  }));
+
+  return {
+    data,
+    pagination: {
+      total,
+      page: Math.floor(skip / limit) + 1,
+      limit,
+      pages: Math.ceil(total / limit),
+    },
+  };
+}
+//====================extra
+
+
+
   // ───────────────────── Comments ─────────────────────
 
   async createMediaComment(

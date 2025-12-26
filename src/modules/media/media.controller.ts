@@ -32,8 +32,9 @@ import { CurrentUser } from 'src/common/decorators/current-user.decorator';
 import * as client from '@prisma/client';
 import { MediaRoles } from 'src/common/constant/roles.constant';
 import { JwtAuthGuard } from 'src/common/guards/auth.guard';
+import { UserRole } from '@prisma/client';
 
-@UseGuards(JwtAuthGuard, RolesGuard)
+// @UseGuards(JwtAuthGuard, RolesGuard)
 @Controller('media')
 export class MediaController {
   constructor(private readonly mediaService: MediaService) {}
@@ -146,38 +147,43 @@ export class MediaController {
   //   }
   // }
 
-@Get()
-async findAll(
-  @Query() query: MediaQueryDto,
-  @CurrentUser() currentUser?: { id: string } // ← add this if not already
-) {
-  try {
-    const result = await this.mediaService.findAll(
-      {
-        type: query.type,
-        status: query.status,
-        featured: query.featured === 'true' ? true : query.featured === 'false' ? false : undefined,
-        country: query.country,
-        category: query.category,
-        page: query.page,
-        limit: query.limit,
-      },
-      currentUser
-    );
+  @Get()
+  async findAll(
+    @Query() query: MediaQueryDto,
+    @CurrentUser() currentUser?: { id: string }, // ← add this if not already
+  ) {
+    try {
+      const result = await this.mediaService.findAll(
+        {
+          type: query.type,
+          status: query.status,
+          featured:
+            query.featured === 'true'
+              ? true
+              : query.featured === 'false'
+                ? false
+                : undefined,
+          country: query.country,
+          category: query.category,
+          page: query.page,
+          limit: query.limit,
+        },
+        currentUser,
+      );
 
-    return {
-      status: 'success',
-      message: `Found ${result.data.length} media items`,
-      data: result.data,
-      pagination: result.pagination,
-    };
-  } catch (error) {
-    throw new HttpException(
-      { status: 'error', message: 'Failed to fetch media items' },
-      HttpStatus.INTERNAL_SERVER_ERROR,
-    );
+      return {
+        status: 'success',
+        message: `Found ${result.data.length} media items`,
+        data: result.data,
+        pagination: result.pagination,
+      };
+    } catch (error) {
+      throw new HttpException(
+        { status: 'error', message: 'Failed to fetch media items' },
+        HttpStatus.INTERNAL_SERVER_ERROR,
+      );
+    }
   }
-}
 
   @Get('featured')
   async getFeatured() {
@@ -306,6 +312,68 @@ async findAll(
   ) {
     return this.mediaService.getMediaLikesInfo(id, user?.id);
   }
+
+  //==============extras
+
+  @Get() 
+  async getPublishedMedia(
+    @Query() query: MediaQueryDto,
+    @CurrentUser() currentUser?: client.User,
+  ) {
+    const result = await this.mediaService.findAllPublic(
+      {
+        type: query.type,
+        featured: query.featured === 'true' ? true : false,
+        country: query.country,
+        category: query.category,
+        page: query.page ?? 1,
+        limit: query.limit ?? 12,
+      },
+      currentUser?.id,
+    );
+
+    return {
+      status: 'success',
+      message: `Found ${result.data.length} published media items`,
+      data: result.data,
+      pagination: result.pagination,
+    };
+  }
+
+  @Get('admin/all-statuses')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(UserRole.SUPER_ADMIN, UserRole.ADMIN, UserRole.MEDIA_MANAGER)
+  async findAllAnyStatus(
+    @Query() query: MediaQueryDto,
+    @CurrentUser() user: client.User,
+  ) {
+    const result = await this.mediaService.findAllAnyStatus(
+      {
+        type: query.type,
+        status: query.status, // now fully respected
+        featured:
+          query.featured === 'true'
+            ? true
+            : query.featured === 'false'
+              ? false
+              : undefined,
+        country: query.country,
+        category: query.category,
+        page: query.page ?? 1,
+        limit: query.limit ?? 20, // usually bigger page size for admin
+      },
+      user.id,
+    );
+
+    return {
+      status: 'success',
+      message: `Found ${result.data.length} media items (any status)`,
+      data: result.data,
+      pagination: result.pagination,
+    };
+  }
+
+  //==========extras===================
 
   // ────────────── Comments ──────────────
 
