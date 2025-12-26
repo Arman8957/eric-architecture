@@ -86,20 +86,20 @@ enum MediaStatus {
 // Core Models 
 // ──────────────────────────────────────────────────────────────
 model User {
-  id                String           @id @default(uuid())
-  email             String           @unique
+  id                String             @id @default(uuid())
+  email             String             @unique
   name              String?
-  googleId          String?          @unique
+  googleId          String?            @unique
   avatar            String?
-  role              UserRole         @default(USER)
-  isActive          Boolean          @default(true)
+  role              UserRole           @default(USER)
+  isActive          Boolean            @default(true)
   lastLoginAt       DateTime?
-  createdAt         DateTime         @default(now())
-  updatedAt         DateTime         @updatedAt
+  createdAt         DateTime           @default(now())
+  updatedAt         DateTime           @updatedAt
   password          String? // hashed, optional for OAuth users
   refreshToken      String?
-  emailVerified     Boolean          @default(false)
-  emailVerifyToken  String?          @unique // for email verification
+  emailVerified     Boolean            @default(false)
+  emailVerifyToken  String?            @unique // for email verification
   emailVerifyExpiry DateTime? // token expiry
   projects          Project[]
   assets            ProjectAsset[] // new: unified assets
@@ -109,6 +109,10 @@ model User {
   projectRequests   ProjectRequest[]
   mediaContents     MediaContent[]
   mediaAssets       MediaAsset[]
+  mediaLikes        MediaLike[]
+  mediaComments     MediaComment[]
+  mediaCommentLikes MediaCommentLike[]
+
 
   @@index([email])
   @@index([googleId])
@@ -116,73 +120,76 @@ model User {
   @@map("users")
 }
 
-
 // ──────────────────────────────────────────────────────────────
 // NEW: Media Content Model (World Projects, Portfolio, Articles)
 // ──────────────────────────────────────────────────────────────
 model MediaContent {
-  id              String            @id @default(uuid())
-  contentType     MediaContentType
-  status          MediaStatus       @default(DRAFT)
-  
+  id          String           @id @default(uuid())
+  contentType MediaContentType
+  status      MediaStatus      @default(DRAFT)
+
   // Basic Info
-  title           String
-  slug            String            @unique
-  excerpt         String?           @db.VarChar(500)
-  content         String            @db.Text
-  
+  title   String
+  slug    String  @unique
+  excerpt String? @db.VarChar(500)
+  content String  @db.Text
+
   // Media Specific Fields
-  location        String?           // For World Projects
-  country         String?
-  city            String?
-  coordinates     Json?             // {lat, lng}
-  
-  projectYear     Int?              // Completion year
-  projectArea     Float?            // Square footage/meters
-  projectClient   String?
-  architect       String?
-  photographer    String?
-  
+  location    String? // For World Projects
+  country     String?
+  city        String?
+  coordinates Json? // {lat, lng}
+
+  projectYear   Int? // Completion year
+  projectArea   Float? // Square footage/meters
+  projectClient String?
+  architect     String?
+  photographer  String?
+
   // Portfolio specific
-  category        ProjectCategory?
-  projectTags     String[]          // e.g., ["luxury", "eco-friendly"]
-  
+  category    ProjectCategory?
+  projectTags String[] // e.g., ["luxury", "eco-friendly"]
+
   // Article specific
-  author          String?           // Author name (different from creator)
-  publishDate     DateTime?
-  readTime        Int?              // in minutes
-  
+  author      String? // Author name (different from creator)
+  publishDate DateTime?
+  readTime    Int? // in minutes
+
   // SEO
   metaTitle       String?
   metaDescription String?
   metaKeywords    String[]
-  
+
   // Featured content
-  isFeatured      Boolean           @default(false)
-  featuredOrder   Int?
-  
+  isFeatured    Boolean @default(false)
+  featuredOrder Int?
+
   // Cover/Thumbnail
-  coverImage      String?
-  thumbnailImage  String?
-  
+  coverImage     String?
+  thumbnailImage String?
+
   // Relations
-  createdById     String
-  createdBy       User              @relation(fields: [createdById], references: [id])
-  
-  assets          MediaAsset[]
-  tags            MediaContentTag[]
-  
+  createdById String
+  createdBy   User   @relation(fields: [createdById], references: [id])
+
+  assets MediaAsset[]
+  tags   MediaContentTag[]
+
+  likes    MediaLike[]
+  comments MediaComment[]
+
   // Analytics
-  viewCount       Int               @default(0)
-  likeCount       Int               @default(0)
-  shareCount      Int               @default(0)
-  
+  viewCount    Int @default(0)
+  likeCount    Int @default(0)
+  commentCount Int @default(0)
+  shareCount   Int @default(0)
+
   // Timestamps
-  publishedAt     DateTime?
-  archivedAt      DateTime?
-  createdAt       DateTime          @default(now())
-  updatedAt       DateTime          @updatedAt
-  
+  publishedAt DateTime?
+  archivedAt  DateTime?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
   @@index([slug])
   @@index([contentType])
   @@index([status])
@@ -198,51 +205,51 @@ model MediaContent {
 // NEW: Media Asset Model (for media content)
 // ──────────────────────────────────────────────────────────────
 model MediaAsset {
-  id              String        @id @default(uuid())
-  
-  mediaContentId  String
-  mediaContent    MediaContent  @relation(fields: [mediaContentId], references: [id], onDelete: Cascade)
-  
-  uploadedById    String
-  uploadedBy      User          @relation(fields: [uploadedById], references: [id])
-  
-  type            AssetType
-  title           String?
-  caption         String?
-  altText         String?
-  order           Int           @default(0)
-  
+  id String @id @default(uuid())
+
+  mediaContentId String
+  mediaContent   MediaContent @relation(fields: [mediaContentId], references: [id], onDelete: Cascade)
+
+  uploadedById String
+  uploadedBy   User   @relation(fields: [uploadedById], references: [id])
+
+  type    AssetType
+  title   String?
+  caption String?
+  altText String?
+  order   Int       @default(0)
+
   // File info
-  originalUrl     String
-  cdnUrl          String
-  fileSize        Int
-  mimeType        String
-  
+  originalUrl String
+  cdnUrl      String
+  fileSize    Int
+  mimeType    String
+
   // Image specific
-  width           Int?
-  height          Int?
-  format          String?
-  blurHash        String?
-  sizes           Json?         // {thumbnail, medium, large}
-  
+  width    Int?
+  height   Int?
+  format   String?
+  blurHash String?
+  sizes    Json? // {thumbnail, medium, large}
+
   // Video specific
-  streamingUrl    String?
-  duration        Int?
-  resolution      String?
-  posterUrl       String?       // Video thumbnail
-  
+  streamingUrl String?
+  duration     Int?
+  resolution   String?
+  posterUrl    String? // Video thumbnail
+
   // 3D Model
-  modelUrl        String?
-  usdzUrl         String?
-  thumbnailUrl    String?
-  
+  modelUrl     String?
+  usdzUrl      String?
+  thumbnailUrl String?
+
   // Processing
-  isProcessed     Boolean       @default(false)
-  processStatus   String?
-  
-  createdAt       DateTime      @default(now())
-  updatedAt       DateTime      @updatedAt
-  
+  isProcessed   Boolean @default(false)
+  processStatus String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
   @@index([mediaContentId])
   @@index([uploadedById])
   @@index([type])
@@ -259,7 +266,7 @@ model MediaTag {
   slug      String            @unique
   contents  MediaContentTag[]
   createdAt DateTime          @default(now())
-  
+
   @@index([slug])
   @@map("media_tags")
 }
@@ -267,14 +274,72 @@ model MediaTag {
 model MediaContentTag {
   mediaContentId String
   tagId          String
-  
-  mediaContent   MediaContent @relation(fields: [mediaContentId], references: [id], onDelete: Cascade)
-  tag            MediaTag     @relation(fields: [tagId], references: [id], onDelete: Cascade)
-  
+
+  mediaContent MediaContent @relation(fields: [mediaContentId], references: [id], onDelete: Cascade)
+  tag          MediaTag     @relation(fields: [tagId], references: [id], onDelete: Cascade)
+
   @@id([mediaContentId, tagId])
   @@map("media_content_tags")
 }
 
+model MediaLike {
+  id             String   @id @default(uuid())
+  userId         String
+  mediaContentId String
+  createdAt      DateTime @default(now())
+
+  user         User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  mediaContent MediaContent @relation(fields: [mediaContentId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, mediaContentId]) // one like per user per media
+  @@index([mediaContentId])
+  @@index([userId])
+  @@map("media_likes")
+}
+
+// ──────────────────────────────────────────────────────────────
+// Comments for MediaContent 
+// ──────────────────────────────────────────────────────────────
+model MediaComment {
+  id             String  @id @default(uuid())
+  content        String  @db.Text
+  userId         String
+  mediaContentId String
+  parentId       String? // for replies
+
+  mediaContent MediaContent   @relation(fields: [mediaContentId], references: [id], onDelete: Cascade)
+  user         User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+  parent       MediaComment?  @relation("MediaCommentReplies", fields: [parentId], references: [id], onDelete: Cascade)
+  replies      MediaComment[] @relation("MediaCommentReplies")
+
+  isApproved        Boolean            @default(true) // for moderation (articles/news)
+  likeCount         Int                @default(0) // optional - denormalized
+  createdAt         DateTime           @default(now())
+  updatedAt         DateTime           @updatedAt
+  // mediaCommentLikes MediaCommentLike[]
+  likes             MediaCommentLike[]
+  
+  @@index([mediaContentId])
+  @@index([userId])
+  @@index([parentId])
+  @@index([createdAt(sort: Desc)])
+  @@map("media_comments")
+}
+
+// Optional: Likes on Comments (very useful for articles & news)
+model MediaCommentLike {
+  id        String   @id @default(uuid())
+  userId    String
+  commentId String
+  createdAt DateTime @default(now())
+
+  user    User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  comment MediaComment @relation(fields: [commentId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, commentId])
+  @@index([commentId])
+  @@map("media_comment_likes")
+}
 
 model ProjectRequest {
   id                          String           @id @default(uuid())

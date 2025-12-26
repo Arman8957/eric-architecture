@@ -14,22 +14,27 @@ import {
   HttpException,
   NotFoundException,
   BadRequestException,
+  ParseUUIDPipe,
 } from '@nestjs/common';
 import { FilesInterceptor } from '@nestjs/platform-express';
 import { ParseFilePipeBuilder } from '@nestjs/common';
-import { Prisma } from '@prisma/client';
+
 import { MediaService } from './media.service';
 import { Roles } from 'src/common/decorators/roles.decorator';
 import { RolesGuard } from 'src/common/guards/roles.guard';
-import { CreateMediaContentDto } from './dto/create-media-content.dto';
+import {
+  CreateMediaCommentDto,
+  CreateMediaContentDto,
+} from './dto/create-media-content.dto';
 import { UpdateMediaContentDto } from './dto/update-media-content.dto';
 import { MediaQueryDto } from './dto/media-query.dto';
 import { CurrentUser } from 'src/common/decorators/current-user.decorator';
 import * as client from '@prisma/client';
 import { MediaRoles } from 'src/common/constant/roles.constant';
 import { JwtAuthGuard } from 'src/common/guards/auth.guard';
+import { UserRole } from '@prisma/client';
 
-@UseGuards(JwtAuthGuard, RolesGuard)
+// @UseGuards(JwtAuthGuard, RolesGuard)
 @Controller('media')
 export class MediaController {
   constructor(private readonly mediaService: MediaService) {}
@@ -134,18 +139,56 @@ export class MediaController {
     }
   }
 
+  // @Get()
+  // async findAll(@Query() query: MediaQueryDto) {
+  //   try {
+  //     const result = await this.mediaService.findAll({
+  //       type: query.type,
+  //       status: query.status,
+  //       featured: query.featured === 'true',
+  //       country: query.country,
+  //       category: query.category,
+  //       page: query.page ?? 1,
+  //       limit: query.limit ?? 12,
+  //     });
+
+  //     return {
+  //       status: 'success',
+  //       message: `Found ${result.data.length} media items`,
+  //       data: result.data,
+  //       pagination: result.pagination,
+  //     };
+  //   } catch (error) {
+  //     throw new HttpException(
+  //       { status: 'error', message: 'Failed to fetch media items' },
+  //       HttpStatus.INTERNAL_SERVER_ERROR,
+  //     );
+  //   }
+  // }
+
   @Get()
-  async findAll(@Query() query: MediaQueryDto) {
+  async findAll(
+    @Query() query: MediaQueryDto,
+    @CurrentUser() currentUser?: { id: string }, // ← add this if not already
+  ) {
     try {
-      const result = await this.mediaService.findAll({
-        type: query.type,
-        status: query.status,
-        featured: query.featured === 'true',
-        country: query.country,
-        category: query.category,
-        page: query.page ?? 1,
-        limit: query.limit ?? 12,
-      });
+      const result = await this.mediaService.findAll(
+        {
+          type: query.type,
+          status: query.status,
+          featured:
+            query.featured === 'true'
+              ? true
+              : query.featured === 'false'
+                ? false
+                : undefined,
+          country: query.country,
+          category: query.category,
+          page: query.page,
+          limit: query.limit,
+        },
+        currentUser,
+      );
 
       return {
         status: 'success',
@@ -271,4 +314,152 @@ export class MediaController {
       );
     }
   }
+
+  @Post(':id/like')
+  @UseGuards(JwtAuthGuard)
+  async toggleLike(
+    @Param('id', ParseUUIDPipe) id: string,
+    @CurrentUser() user: client.User,
+  ) {
+    return this.mediaService.toggleMediaLike(id, user.id);
+  }
+
+  @Get(':id/likes')
+  async getLikesInfo(
+    @Param('id', ParseUUIDPipe) id: string,
+    @CurrentUser() user?: client.User,
+  ) {
+    return this.mediaService.getMediaLikesInfo(id, user?.id);
+  }
+
+  //==============extras
+
+  @Get() 
+  async getPublishedMedia(
+    @Query() query: MediaQueryDto,
+    @CurrentUser() currentUser?: client.User,
+  ) {
+    const result = await this.mediaService.findAllPublic(
+      {
+        type: query.type,
+        featured: query.featured === 'true' ? true : false,
+        country: query.country,
+        category: query.category,
+        page: query.page ?? 1,
+        limit: query.limit ?? 12,
+      },
+      currentUser?.id,
+    );
+
+    return {
+      status: 'success',
+      message: `Found ${result.data.length} published media items`,
+      data: result.data,
+      pagination: result.pagination,
+    };
+  }
+
+  @Get('admin/all-statuses')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(UserRole.SUPER_ADMIN, UserRole.ADMIN, UserRole.MEDIA_MANAGER)
+  async findAllAnyStatus(
+    @Query() query: MediaQueryDto,
+    @CurrentUser() user: client.User,
+  ) {
+    const result = await this.mediaService.findAllAnyStatus(
+      {
+        type: query.type,
+        status: query.status, // now fully respected
+        featured:
+          query.featured === 'true'
+            ? true
+            : query.featured === 'false'
+              ? false
+              : undefined,
+        country: query.country,
+        category: query.category,
+        page: query.page ?? 1,
+        limit: query.limit ?? 20, // usually bigger page size for admin
+      },
+      user.id,
+    );
+
+    return {
+      status: 'success',
+      message: `Found ${result.data.length} media items (any status)`,
+      data: result.data,
+      pagination: result.pagination,
+    };
+  }
+
+  //==========extras===================
+
+  // ────────────── Comments ──────────────
+
+  @Post(':id/comments')
+  @UseGuards(JwtAuthGuard)
+  async createComment(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() dto: CreateMediaCommentDto,
+    @CurrentUser() user: client.User,
+  ) {
+    return this.mediaService.createMediaComment(id, user.id, dto);
+  }
+
+  @Post(':id/comments/:parentId/reply')
+  @UseGuards(JwtAuthGuard)
+  async createReply(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Param('parentId', ParseUUIDPipe) parentId: string,
+    @Body() dto: CreateMediaCommentDto,
+    @CurrentUser() user: client.User,
+  ) {
+    return this.mediaService.createMediaComment(id, user.id, {
+      ...dto,
+      parentId,
+    });
+  }
+
+  @Get(':id/comments')
+  async getComments(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Query('page') page = 1,
+    @Query('limit') limit = 20,
+    @Query('sort') sort: 'newest' | 'oldest' = 'newest',
+  ) {
+    return this.mediaService.getMediaComments(id, { page, limit, sort });
+  }
+
+  // Optional: Like comment
+  @Post(':id/comments/:commentId/like')
+  @UseGuards(JwtAuthGuard)
+  async toggleCommentLike(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Param('commentId', ParseUUIDPipe) commentId: string,
+    @CurrentUser() user: client.User,
+  ) {
+    return this.mediaService.toggleCommentLike(commentId, user.id);
+  }
+
+  //   @Delete(':id/comments/:commentId')
+  // @UseGuards(JwtAuthGuard)
+  // async deleteComment(
+  //   @Param('id', ParseUUIDPipe) mediaId: string,
+  //   @Param('commentId', ParseUUIDPipe) commentId: string,
+  //   @CurrentUser() user: User,
+  // ) {
+  //   return this.mediaService.deleteMediaComment(mediaId, commentId, user.id, user.role);
+  // }
+
+  // // Optional: Admin/Moderator force delete (no ownership check)
+  // @Delete(':id/comments/:commentId/admin')
+  // @UseGuards(JwtAuthGuard, RolesGuard)
+  // @Roles(UserRole.SUPER_ADMIN, UserRole.ADMIN, UserRole.MEDIA_MANAGER)
+  // async adminDeleteComment(
+  //   @Param('id', ParseUUIDPipe) mediaId: string,
+  //   @Param('commentId', ParseUUIDPipe) commentId: string,
+  //   @CurrentUser() user: User,
+  // ) {
+  //   return this.mediaService.deleteMediaComment(mediaId, commentId, user.id, user.role, true);
+  // }
 }
