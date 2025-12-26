@@ -8,6 +8,7 @@ import {
   IsBoolean,
   IsNumber,
   IsObject,
+  IsUUID,
 } from 'class-validator';
 import { MediaContentType, MediaStatus, ProjectCategory } from '@prisma/client';
 
@@ -95,4 +96,13 @@ export class CreateMediaContentDto {
   @Min(0)
   @IsOptional()
   featuredOrder?: number;
+}
+
+export class CreateMediaCommentDto {
+  @IsString()
+  content: string;
+
+  @IsUUID()
+  @IsOptional()
+  parentId?: string;
 }

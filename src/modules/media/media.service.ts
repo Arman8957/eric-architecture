@@ -15,7 +15,7 @@ import {
 import slugify from 'slugify';
 import { PrismaService } from 'src/prisma/prisma.service';
 import { CloudinaryStrategy } from 'src/upload/strategies/cloudinary.strategy';
-import { CreateMediaContentDto } from './dto/create-media-content.dto';
+import { CreateMediaCommentDto, CreateMediaContentDto } from './dto/create-media-content.dto';
 import { UpdateMediaContentDto } from './dto/update-media-content.dto';
 
 @Injectable()
@@ -190,61 +190,155 @@ export class MediaService {
   }
 
   // Public queries
-  async findAll(query: {
+  // async findAll(query: {
+  //   type?: MediaContentType;
+  //   status?: MediaStatus;
+  //   featured?: boolean;
+  //   country?: string;
+  //   category?: ProjectCategory;
+  //   page: number;
+  //   limit: number;
+  // }) {
+  //   const { page = 1, limit = 12, ...filters } = query;
+  //   const skip = (page - 1) * limit;
+
+  //   const where: any = {
+  //     status: filters.status || MediaStatus.PUBLISHED,
+  //   };
+
+  //   if (filters.type) where.contentType = filters.type;
+  //   if (filters.featured) where.isFeatured = true;
+  //   if (filters.country)
+  //     where.country = { contains: filters.country, mode: 'insensitive' };
+  //   if (filters.category) where.category = filters.category;
+
+  //   const [items, total] = await Promise.all([
+  //     this.prisma.mediaContent.findMany({
+  //       where,
+  //       include: {
+  //         assets: {
+  //           orderBy: { order: 'asc' },
+  //           take: 6, // preview limit
+  //         },
+  //         tags: {
+  //           include: { tag: { select: { name: true, slug: true } } },
+  //         },
+  //       },
+  //       skip,
+  //       take: limit,
+  //       orderBy: [
+  //         filters.featured ? { featuredOrder: 'asc' } : {},
+  //         { publishedAt: 'desc' },
+  //         { createdAt: 'desc' },
+  //       ],
+  //     }),
+  //     this.prisma.mediaContent.count({ where }),
+  //   ]);
+
+  //   return {
+  //     data: items,
+  //     pagination: {
+  //       total,
+  //       page,
+  //       limit,
+  //       pages: Math.ceil(total / limit),
+  //     },
+  //   };
+  // }
+
+async findAll(
+  query: {
     type?: MediaContentType;
     status?: MediaStatus;
     featured?: boolean;
     country?: string;
     category?: ProjectCategory;
-    page: number;
-    limit: number;
-  }) {
-    const { page = 1, limit = 12, ...filters } = query;
-    const skip = (page - 1) * limit;
+    page?: number;
+    limit?: number;
+  },
+  currentUser?: { id: string } // optional authenticated user
+) {
+  const page = query.page ?? 1;
+  const limit = Math.min(query.limit ?? 12, 50); // prevent abuse
+  const skip = (page - 1) * limit;
 
-    const where: any = {
-      status: filters.status || MediaStatus.PUBLISHED,
-    };
+  const where: any = {};
 
-    if (filters.type) where.contentType = filters.type;
-    if (filters.featured) where.isFeatured = true;
-    if (filters.country)
-      where.country = { contains: filters.country, mode: 'insensitive' };
-    if (filters.category) where.category = filters.category;
+  // Default: only published content
+  where.status = query.status ?? MediaStatus.PUBLISHED;
 
-    const [items, total] = await Promise.all([
-      this.prisma.mediaContent.findMany({
-        where,
-        include: {
-          assets: {
-            orderBy: { order: 'asc' },
-            take: 6, // preview limit
-          },
-          tags: {
-            include: { tag: { select: { name: true, slug: true } } },
+  if (query.type) where.contentType = query.type;
+  if (query.featured) where.isFeatured = true;
+  if (query.country) {
+    where.country = { contains: query.country, mode: 'insensitive' };
+  }
+  if (query.category) where.category = query.category;
+
+  // Fetch items + total count in parallel
+  const [items, total] = await Promise.all([
+    this.prisma.mediaContent.findMany({
+      where,
+      include: {
+        assets: {
+          orderBy: { order: 'asc' },
+          take: 6,
+          select: {
+            id: true,
+            type: true,
+            cdnUrl: true,
+            width: true,
+            height: true,
           },
         },
-        skip,
-        take: limit,
-        orderBy: [
-          filters.featured ? { featuredOrder: 'asc' } : {},
-          { publishedAt: 'desc' },
-          { createdAt: 'desc' },
-        ],
-      }),
-      this.prisma.mediaContent.count({ where }),
-    ]);
-
-    return {
-      data: items,
-      pagination: {
-        total,
-        page,
-        limit,
-        pages: Math.ceil(total / limit),
+        tags: {
+          include: {
+            tag: {
+              select: { name: true, slug: true },
+            },
+          },
+        },
       },
-    };
+      skip,
+      take: limit,
+      orderBy: [
+        query.featured ? { featuredOrder: 'asc' } : {},
+        { publishedAt: 'desc' },
+        { createdAt: 'desc' },
+      ],
+    }),
+
+    this.prisma.mediaContent.count({ where }),
+  ]);
+
+  // Get user's liked media ids (if authenticated)
+  let userLikesSet: Set<string> = new Set();
+  if (currentUser?.id) {
+    const liked = await this.prisma.mediaLike.findMany({
+      where: { userId: currentUser.id },
+      select: { mediaContentId: true },
+    });
+    userLikesSet = new Set(liked.map((l) => l.mediaContentId));
   }
+
+  // Map response with safe defaults
+  const responseData = items.map((item) => ({
+    ...item,
+    likeCount: item.likeCount ?? 0,
+    commentCount: item.commentCount ?? 0,
+    userHasLiked: currentUser ? userLikesSet.has(item.id) : false,
+  }));
+
+  return {
+    status: 'success',
+    data: responseData,
+    pagination: {
+      total,
+      page,
+      limit,
+      pages: Math.ceil(total / limit),
+    },
+  };
+}
 
   async findBySlug(slug: string, incrementView = true) {
     const item = await this.prisma.mediaContent.findUnique({
@@ -292,4 +386,286 @@ export class MediaService {
     if (mimeType.includes('pdf')) return AssetType.DOCUMENT_1D;
     return AssetType.IMAGE_2D; // fallback
   }
+
+  //================comment and like =================
+
+
+   async toggleMediaLike(mediaId: string, userId: string) {
+    return this.prisma.$transaction(async (tx) => {
+      const media = await tx.mediaContent.findUnique({
+        where: { id: mediaId },
+        select: { id: true, status: true },
+      });
+
+      if (!media) throw new NotFoundException('Media not found');
+      if (media.status !== MediaStatus.PUBLISHED) {
+        throw new BadRequestException('Cannot interact with unpublished content');
+      }
+
+      const existingLike = await tx.mediaLike.findUnique({
+        where: {
+          userId_mediaContentId: { userId, mediaContentId: mediaId },
+        },
+      });
+
+      if (existingLike) {
+        // Unlike
+        await tx.mediaLike.delete({ where: { id: existingLike.id } });
+
+        await tx.mediaContent.update({
+          where: { id: mediaId },
+          data: { likeCount: { decrement: 1 } },
+        });
+
+        return { liked: false };
+      }
+
+      // Like
+      await tx.mediaLike.create({
+        data: { userId, mediaContentId: mediaId },
+      });
+
+      await tx.mediaContent.update({
+        where: { id: mediaId },
+        data: { likeCount: { increment: 1 } },
+      });
+
+      return { liked: true };
+    });
+  }
+
+  async getMediaLikesInfo(mediaId: string, userId?: string) {
+    const [likeCount, userLiked] = await Promise.all([
+      this.prisma.mediaContent
+        .findUnique({ where: { id: mediaId }, select: { likeCount: true } })
+        .then((r) => r?.likeCount ?? 0),
+
+      userId
+        ? this.prisma.mediaLike.count({
+            where: { userId, mediaContentId: mediaId },
+          })
+        : 0,
+    ]);
+
+    return {
+      likeCount,
+      userHasLiked: !!userLiked,
+    };
+  }
+
+  // ───────────────────── Comments ─────────────────────
+
+  async createMediaComment(
+    mediaId: string,
+    userId: string,
+    dto: CreateMediaCommentDto,
+  ) {
+    return this.prisma.$transaction(async (tx) => {
+      const media = await tx.mediaContent.findUnique({
+        where: { id: mediaId },
+        select: { id: true, status: true },
+      });
+
+      if (!media) throw new NotFoundException('Media not found');
+      if (media.status !== MediaStatus.PUBLISHED) {
+        throw new BadRequestException('Cannot comment on unpublished content');
+      }
+
+      // Validate parent if exists
+      if (dto.parentId) {
+        const parent = await tx.mediaComment.findUnique({
+          where: { id: dto.parentId },
+          select: { mediaContentId: true },
+        });
+
+        if (!parent || parent.mediaContentId !== mediaId) {
+          throw new BadRequestException('Invalid parent comment');
+        }
+      }
+
+      const comment = await tx.mediaComment.create({
+        data: {
+          content: dto.content.trim(),
+          userId,
+          mediaContentId: mediaId,
+          parentId: dto.parentId,
+        },
+        include: {
+          user: {
+            select: { id: true, name: true, avatar: true },
+          },
+        },
+      });
+
+      await tx.mediaContent.update({
+        where: { id: mediaId },
+        data: { commentCount: { increment: 1 } },
+      });
+
+      return comment;
+    });
+  }
+
+  async getMediaComments(
+    mediaId: string,
+    params: { page: number; limit: number; sort: 'newest' | 'oldest' },
+  ) {
+    const { page = 1, limit = 20, sort = 'newest' } = params;
+
+    const orderBy: { createdAt: 'asc' | 'desc' } = {
+    createdAt: sort === 'oldest' ? 'asc' : 'desc',
+  };
+
+    const [comments, total] = await Promise.all([
+      this.prisma.mediaComment.findMany({
+        where: {
+          mediaContentId: mediaId,
+          parentId: null, // top level only
+        },
+        include: {
+          user: {
+            select: { id: true, name: true, avatar: true },
+          },
+          replies: {
+            include: {
+              user: { select: { id: true, name: true, avatar: true } },
+            },
+            orderBy: { createdAt: 'asc' },
+          },
+        },
+        orderBy,
+        skip: (page - 1) * limit,
+        take: limit,
+      }),
+
+      this.prisma.mediaComment.count({
+        where: { mediaContentId: mediaId, parentId: null },
+      }),
+    ]);
+
+    return {
+      data: comments,
+      pagination: {
+        total,
+        page,
+        limit,
+        pages: Math.ceil(total / limit),
+      },
+    };
+  }
+
+ 
+  async toggleCommentLike(commentId: string, userId: string) {
+    return this.prisma.$transaction(async (tx) => {
+      const existing = await tx.mediaCommentLike.findUnique({
+        where: {
+          userId_commentId: { userId, commentId },
+        },
+      });
+
+      if (existing) {
+        await tx.mediaCommentLike.delete({ where: { id: existing.id } });
+        await tx.mediaComment.update({
+          where: { id: commentId },
+          data: { likeCount: { decrement: 1 } },
+        });
+        return { liked: false };
+      }
+
+      await tx.mediaCommentLike.create({
+        data: { userId, commentId },
+      });
+
+      await tx.mediaComment.update({
+        where: { id: commentId },
+        data: { likeCount: { increment: 1 } },
+      });
+
+      return { liked: true };
+    });
+  }
+
+
+// async deleteMediaComment(
+//   mediaId: string,
+//   commentId: string,
+//   userId: string,
+//   userRole: UserRole,
+//   isAdminForce: boolean = false
+// ) {
+//   return this.prisma.$transaction(async (tx) => {
+//     // 1. Find comment
+//     const comment = await tx.mediaComment.findUnique({
+//       where: { id: commentId },
+//       select: {
+//         id: true,
+//         userId: true,
+//         mediaContentId: true,
+//         parentId: true,
+//       },
+//     });
+
+//     if (!comment) {
+//       throw new NotFoundException('Comment not found');
+//     }
+
+//     if (comment.mediaContentId !== mediaId) {
+//       throw new BadRequestException('Comment does not belong to this media content');
+//     }
+
+//     // 2. Authorization
+//     const isOwner = comment.userId === userId;
+//     const isPrivileged = new Set([
+//       UserRole.SUPER_ADMIN,
+//       UserRole.ADMIN,
+//       UserRole.MEDIA_MANAGER,
+//     ]).has(userRole);
+
+//     if (!isAdminForce && !isOwner && !isPrivileged) {
+//       throw new ForbiddenException('You are not authorized to delete this comment');
+//     }
+
+//     // 3. Find comments to delete (original + direct replies)
+//     const commentsToDelete = await tx.mediaComment.findMany({
+//       where: {
+//         OR: [{ id: commentId }, { parentId: commentId }],
+//       },
+//       select: { id: true },
+//     });
+
+//     const deleteCount = commentsToDelete.length;
+
+//     // 4. Delete associated likes first
+//     await tx.mediaCommentLike.deleteMany({
+//       where: {
+//         commentId: { in: commentsToDelete.map((c) => c.id) },
+//       },
+//     });
+
+//     // 5. Delete comments
+//     await tx.mediaComment.deleteMany({
+//       where: {
+//         OR: [{ id: commentId }, { parentId: commentId }],
+//       },
+//     });
+
+//     // 6. Update counter (safe decrement)
+//     await tx.mediaContent.update({
+//       where: { id: mediaId },
+//       data: {
+//         commentCount: {
+//           decrement: deleteCount,
+//         },
+//       },
+//     });
+
+//     // Note: No need for extra gte check — deleteCount is always >= 1 here
+
+//     return {
+//       success: true,
+//       message: `Comment${deleteCount > 1 ? ' and its replies' : ''} deleted successfully`,
+//       deletedCount: deleteCount,
+//     };
+//   });
+// }
 }
