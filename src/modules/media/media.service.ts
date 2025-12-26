@@ -15,7 +15,10 @@ import {
 import slugify from 'slugify';
 import { PrismaService } from 'src/prisma/prisma.service';
 import { CloudinaryStrategy } from 'src/upload/strategies/cloudinary.strategy';
-import { CreateMediaCommentDto, CreateMediaContentDto } from './dto/create-media-content.dto';
+import {
+  CreateMediaCommentDto,
+  CreateMediaContentDto,
+} from './dto/create-media-content.dto';
 import { UpdateMediaContentDto } from './dto/update-media-content.dto';
 
 @Injectable()
@@ -71,11 +74,13 @@ export class MediaService {
 
     if (!media) throw new NotFoundException('Media not found');
 
-   if (
-      !this.allowedMediaRoles.has(userRole) &&   
+    if (
+      !this.allowedMediaRoles.has(userRole) &&
       media.createdById !== uploadedById
     ) {
-      throw new ForbiddenException('Not authorized to add assets to this content');
+      throw new ForbiddenException(
+        'Not authorized to add assets to this content',
+      );
     }
 
     const folder = `architecture-simple/media/${media.contentType.toLowerCase()}/${media.slug || media.id}`;
@@ -135,10 +140,7 @@ export class MediaService {
 
     if (!media) throw new NotFoundException('Media not found');
 
-    if (
-      !this.allowedMediaRoles.has(userRole) &&
-      media.createdById !== userId
-    ) {
+    if (!this.allowedMediaRoles.has(userRole) && media.createdById !== userId) {
       throw new ForbiddenException('Not authorized to update this content');
     }
 
@@ -162,8 +164,8 @@ export class MediaService {
 
     if (!media) throw new NotFoundException();
 
-  if (
-      !this.allowedMediaRoles.has(userRole) &&    // ← FIXED HERE
+    if (
+      !this.allowedMediaRoles.has(userRole) && // ← FIXED HERE
       media.createdById !== userId
     ) {
       throw new ForbiddenException('Not authorized to delete');
@@ -189,54 +191,91 @@ export class MediaService {
     };
   }
 
-  // Public queries
-  // async findAll(query: {
-  //   type?: MediaContentType;
-  //   status?: MediaStatus;
-  //   featured?: boolean;
-  //   country?: string;
-  //   category?: ProjectCategory;
-  //   page: number;
-  //   limit: number;
-  // }) {
-  //   const { page = 1, limit = 12, ...filters } = query;
+  // async findAll(
+  //   query: {
+  //     type?: MediaContentType;
+  //     status?: MediaStatus;
+  //     featured?: boolean;
+  //     country?: string;
+  //     category?: ProjectCategory;
+  //     page?: number;
+  //     limit?: number;
+  //   },
+  //   currentUser?: { id: string } // optional authenticated user
+  // ) {
+  //   const page = query.page ?? 1;
+  //   const limit = Math.min(query.limit ?? 12, 50); // prevent abuse
   //   const skip = (page - 1) * limit;
 
-  //   const where: any = {
-  //     status: filters.status || MediaStatus.PUBLISHED,
-  //   };
+  //   const where: any = {};
 
-  //   if (filters.type) where.contentType = filters.type;
-  //   if (filters.featured) where.isFeatured = true;
-  //   if (filters.country)
-  //     where.country = { contains: filters.country, mode: 'insensitive' };
-  //   if (filters.category) where.category = filters.category;
+  //   // Default: only published content
+  //   where.status = query.status ?? MediaStatus.PUBLISHED;
 
+  //   if (query.type) where.contentType = query.type;
+  //   if (query.featured) where.isFeatured = true;
+  //   if (query.country) {
+  //     where.country = { contains: query.country, mode: 'insensitive' };
+  //   }
+  //   if (query.category) where.category = query.category;
+
+  //   // Fetch items + total count in parallel
   //   const [items, total] = await Promise.all([
   //     this.prisma.mediaContent.findMany({
   //       where,
   //       include: {
   //         assets: {
   //           orderBy: { order: 'asc' },
-  //           take: 6, // preview limit
+  //           take: 6,
+  //           select: {
+  //             id: true,
+  //             type: true,
+  //             cdnUrl: true,
+  //             width: true,
+  //             height: true,
+  //           },
   //         },
   //         tags: {
-  //           include: { tag: { select: { name: true, slug: true } } },
+  //           include: {
+  //             tag: {
+  //               select: { name: true, slug: true },
+  //             },
+  //           },
   //         },
   //       },
   //       skip,
   //       take: limit,
   //       orderBy: [
-  //         filters.featured ? { featuredOrder: 'asc' } : {},
+  //         query.featured ? { featuredOrder: 'asc' } : {},
   //         { publishedAt: 'desc' },
   //         { createdAt: 'desc' },
   //       ],
   //     }),
+
   //     this.prisma.mediaContent.count({ where }),
   //   ]);
 
+  //   // Get user's liked media ids (if authenticated)
+  //   let userLikesSet: Set<string> = new Set();
+  //   if (currentUser?.id) {
+  //     const liked = await this.prisma.mediaLike.findMany({
+  //       where: { userId: currentUser.id },
+  //       select: { mediaContentId: true },
+  //     });
+  //     userLikesSet = new Set(liked.map((l) => l.mediaContentId));
+  //   }
+
+  //   // Map response with safe defaults
+  //   const responseData = items.map((item) => ({
+  //     ...item,
+  //     likeCount: item.likeCount ?? 0,
+  //     commentCount: item.commentCount ?? 0,
+  //     userHasLiked: currentUser ? userLikesSet.has(item.id) : false,
+  //   }));
+
   //   return {
-  //     data: items,
+  //     status: 'success',
+  //     data: responseData,
   //     pagination: {
   //       total,
   //       page,
@@ -256,25 +295,34 @@ async findAll(
     page?: number;
     limit?: number;
   },
-  currentUser?: { id: string } // optional authenticated user
+  currentUser?: { id: string } // you can later add role if needed
 ) {
-  const page = query.page ?? 1;
-  const limit = Math.min(query.limit ?? 12, 50); // prevent abuse
+  const page = Math.max(1, query.page ?? 1);
+  const limit = Math.min(Math.max(1, query.limit ?? 12), 50);
   const skip = (page - 1) * limit;
 
   const where: any = {};
 
-  // Default: only published content
-  where.status = query.status ?? MediaStatus.PUBLISHED;
+  // ────────────────────────────────
+  // STATUS FILTERING – YOUR NEW REQUIREMENT
+  // ────────────────────────────────
+  if (query.status !== undefined) {
+    // If user explicitly sends ?status=XXX → use exactly that value
+    where.status = query.status;
+  }
 
+
+  // Other filters (unchanged)
   if (query.type) where.contentType = query.type;
-  if (query.featured) where.isFeatured = true;
+  if (query.featured !== undefined) where.isFeatured = query.featured;
   if (query.country) {
     where.country = { contains: query.country, mode: 'insensitive' };
   }
   if (query.category) where.category = query.category;
 
-  // Fetch items + total count in parallel
+  // ────────────────────────────────
+  // Queries in parallel
+  // ────────────────────────────────
   const [items, total] = await Promise.all([
     this.prisma.mediaContent.findMany({
       where,
@@ -282,20 +330,10 @@ async findAll(
         assets: {
           orderBy: { order: 'asc' },
           take: 6,
-          select: {
-            id: true,
-            type: true,
-            cdnUrl: true,
-            width: true,
-            height: true,
-          },
+          select: { id: true, type: true, cdnUrl: true, width: true, height: true },
         },
         tags: {
-          include: {
-            tag: {
-              select: { name: true, slug: true },
-            },
-          },
+          include: { tag: { select: { name: true, slug: true } } },
         },
       },
       skip,
@@ -306,36 +344,34 @@ async findAll(
         { createdAt: 'desc' },
       ],
     }),
-
     this.prisma.mediaContent.count({ where }),
   ]);
 
-  // Get user's liked media ids (if authenticated)
-  let userLikesSet: Set<string> = new Set();
+  // Likes logic (unchanged)
+  const userLikesSet = new Set<string>();
   if (currentUser?.id) {
-    const liked = await this.prisma.mediaLike.findMany({
+    const likes = await this.prisma.mediaLike.findMany({
       where: { userId: currentUser.id },
       select: { mediaContentId: true },
     });
-    userLikesSet = new Set(liked.map((l) => l.mediaContentId));
+    likes.forEach(l => userLikesSet.add(l.mediaContentId));
   }
 
-  // Map response with safe defaults
-  const responseData = items.map((item) => ({
+  const data = items.map(item => ({
     ...item,
     likeCount: item.likeCount ?? 0,
     commentCount: item.commentCount ?? 0,
-    userHasLiked: currentUser ? userLikesSet.has(item.id) : false,
+    userHasLiked: currentUser?.id ? userLikesSet.has(item.id) : false,
   }));
 
   return {
     status: 'success',
-    data: responseData,
+    data,
     pagination: {
       total,
       page,
       limit,
-      pages: Math.ceil(total / limit),
+      pages: total > 0 ? Math.ceil(total / limit) : 0,
     },
   };
 }
@@ -389,8 +425,7 @@ async findAll(
 
   //================comment and like =================
 
-
-   async toggleMediaLike(mediaId: string, userId: string) {
+  async toggleMediaLike(mediaId: string, userId: string) {
     return this.prisma.$transaction(async (tx) => {
       const media = await tx.mediaContent.findUnique({
         where: { id: mediaId },
@@ -399,7 +434,9 @@ async findAll(
 
       if (!media) throw new NotFoundException('Media not found');
       if (media.status !== MediaStatus.PUBLISHED) {
-        throw new BadRequestException('Cannot interact with unpublished content');
+        throw new BadRequestException(
+          'Cannot interact with unpublished content',
+        );
       }
 
       const existingLike = await tx.mediaLike.findUnique({
@@ -513,8 +550,8 @@ async findAll(
     const { page = 1, limit = 20, sort = 'newest' } = params;
 
     const orderBy: { createdAt: 'asc' | 'desc' } = {
-    createdAt: sort === 'oldest' ? 'asc' : 'desc',
-  };
+      createdAt: sort === 'oldest' ? 'asc' : 'desc',
+    };
 
     const [comments, total] = await Promise.all([
       this.prisma.mediaComment.findMany({
@@ -554,7 +591,6 @@ async findAll(
     };
   }
 
- 
   async toggleCommentLike(commentId: string, userId: string) {
     return this.prisma.$transaction(async (tx) => {
       const existing = await tx.mediaCommentLike.findUnique({
@@ -585,87 +621,86 @@ async findAll(
     });
   }
 
+  // async deleteMediaComment(
+  //   mediaId: string,
+  //   commentId: string,
+  //   userId: string,
+  //   userRole: UserRole,
+  //   isAdminForce: boolean = false
+  // ) {
+  //   return this.prisma.$transaction(async (tx) => {
+  //     // 1. Find comment
+  //     const comment = await tx.mediaComment.findUnique({
+  //       where: { id: commentId },
+  //       select: {
+  //         id: true,
+  //         userId: true,
+  //         mediaContentId: true,
+  //         parentId: true,
+  //       },
+  //     });
 
-// async deleteMediaComment(
-//   mediaId: string,
-//   commentId: string,
-//   userId: string,
-//   userRole: UserRole,
-//   isAdminForce: boolean = false
-// ) {
-//   return this.prisma.$transaction(async (tx) => {
-//     // 1. Find comment
-//     const comment = await tx.mediaComment.findUnique({
-//       where: { id: commentId },
-//       select: {
-//         id: true,
-//         userId: true,
-//         mediaContentId: true,
-//         parentId: true,
-//       },
-//     });
+  //     if (!comment) {
+  //       throw new NotFoundException('Comment not found');
+  //     }
 
-//     if (!comment) {
-//       throw new NotFoundException('Comment not found');
-//     }
+  //     if (comment.mediaContentId !== mediaId) {
+  //       throw new BadRequestException('Comment does not belong to this media content');
+  //     }
 
-//     if (comment.mediaContentId !== mediaId) {
-//       throw new BadRequestException('Comment does not belong to this media content');
-//     }
+  //     // 2. Authorization
+  //     const isOwner = comment.userId === userId;
+  //     const isPrivileged = new Set([
+  //       UserRole.SUPER_ADMIN,
+  //       UserRole.ADMIN,
+  //       UserRole.MEDIA_MANAGER,
+  //     ]).has(userRole);
 
-//     // 2. Authorization
-//     const isOwner = comment.userId === userId;
-//     const isPrivileged = new Set([
-//       UserRole.SUPER_ADMIN,
-//       UserRole.ADMIN,
-//       UserRole.MEDIA_MANAGER,
-//     ]).has(userRole);
+  //     if (!isAdminForce && !isOwner && !isPrivileged) {
+  //       throw new ForbiddenException('You are not authorized to delete this comment');
+  //     }
 
-//     if (!isAdminForce && !isOwner && !isPrivileged) {
-//       throw new ForbiddenException('You are not authorized to delete this comment');
-//     }
+  //     // 3. Find comments to delete (original + direct replies)
+  //     const commentsToDelete = await tx.mediaComment.findMany({
+  //       where: {
+  //         OR: [{ id: commentId }, { parentId: commentId }],
+  //       },
+  //       select: { id: true },
+  //     });
 
-//     // 3. Find comments to delete (original + direct replies)
-//     const commentsToDelete = await tx.mediaComment.findMany({
-//       where: {
-//         OR: [{ id: commentId }, { parentId: commentId }],
-//       },
-//       select: { id: true },
-//     });
+  //     const deleteCount = commentsToDelete.length;
 
-//     const deleteCount = commentsToDelete.length;
+  //     // 4. Delete associated likes first
+  //     await tx.mediaCommentLike.deleteMany({
+  //       where: {
+  //         commentId: { in: commentsToDelete.map((c) => c.id) },
+  //       },
+  //     });
 
-//     // 4. Delete associated likes first
-//     await tx.mediaCommentLike.deleteMany({
-//       where: {
-//         commentId: { in: commentsToDelete.map((c) => c.id) },
-//       },
-//     });
+  //     // 5. Delete comments
+  //     await tx.mediaComment.deleteMany({
+  //       where: {
+  //         OR: [{ id: commentId }, { parentId: commentId }],
+  //       },
+  //     });
 
-//     // 5. Delete comments
-//     await tx.mediaComment.deleteMany({
-//       where: {
-//         OR: [{ id: commentId }, { parentId: commentId }],
-//       },
-//     });
+  //     // 6. Update counter (safe decrement)
+  //     await tx.mediaContent.update({
+  //       where: { id: mediaId },
+  //       data: {
+  //         commentCount: {
+  //           decrement: deleteCount,
+  //         },
+  //       },
+  //     });
 
-//     // 6. Update counter (safe decrement)
-//     await tx.mediaContent.update({
-//       where: { id: mediaId },
-//       data: {
-//         commentCount: {
-//           decrement: deleteCount,
-//         },
-//       },
-//     });
+  //     // Note: No need for extra gte check — deleteCount is always >= 1 here
 
-//     // Note: No need for extra gte check — deleteCount is always >= 1 here
-
-//     return {
-//       success: true,
-//       message: `Comment${deleteCount > 1 ? ' and its replies' : ''} deleted successfully`,
-//       deletedCount: deleteCount,
-//     };
-//   });
-// }
+  //     return {
+  //       success: true,
+  //       message: `Comment${deleteCount > 1 ? ' and its replies' : ''} deleted successfully`,
+  //       deletedCount: deleteCount,
+  //     };
+  //   });
+  // }
 }

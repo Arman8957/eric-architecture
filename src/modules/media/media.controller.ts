@@ -22,7 +22,10 @@ import { ParseFilePipeBuilder } from '@nestjs/common';
 import { MediaService } from './media.service';
 import { Roles } from 'src/common/decorators/roles.decorator';
 import { RolesGuard } from 'src/common/guards/roles.guard';
-import { CreateMediaCommentDto, CreateMediaContentDto } from './dto/create-media-content.dto';
+import {
+  CreateMediaCommentDto,
+  CreateMediaContentDto,
+} from './dto/create-media-content.dto';
 import { UpdateMediaContentDto } from './dto/update-media-content.dto';
 import { MediaQueryDto } from './dto/media-query.dto';
 import { CurrentUser } from 'src/common/decorators/current-user.decorator';
@@ -116,32 +119,65 @@ export class MediaController {
     }
   }
 
-  @Get()
-  async findAll(@Query() query: MediaQueryDto) {
-    try {
-      const result = await this.mediaService.findAll({
+  // @Get()
+  // async findAll(@Query() query: MediaQueryDto) {
+  //   try {
+  //     const result = await this.mediaService.findAll({
+  //       type: query.type,
+  //       status: query.status,
+  //       featured: query.featured === 'true',
+  //       country: query.country,
+  //       category: query.category,
+  //       page: query.page ?? 1,
+  //       limit: query.limit ?? 12,
+  //     });
+
+  //     return {
+  //       status: 'success',
+  //       message: `Found ${result.data.length} media items`,
+  //       data: result.data,
+  //       pagination: result.pagination,
+  //     };
+  //   } catch (error) {
+  //     throw new HttpException(
+  //       { status: 'error', message: 'Failed to fetch media items' },
+  //       HttpStatus.INTERNAL_SERVER_ERROR,
+  //     );
+  //   }
+  // }
+
+@Get()
+async findAll(
+  @Query() query: MediaQueryDto,
+  @CurrentUser() currentUser?: { id: string } // ← add this if not already
+) {
+  try {
+    const result = await this.mediaService.findAll(
+      {
         type: query.type,
         status: query.status,
-        featured: query.featured === 'true',
+        featured: query.featured === 'true' ? true : query.featured === 'false' ? false : undefined,
         country: query.country,
         category: query.category,
-        page: query.page ?? 1,
-        limit: query.limit ?? 12,
-      });
+        page: query.page,
+        limit: query.limit,
+      },
+      currentUser
+    );
 
-      return {
-        status: 'success',
-        message: `Found ${result.data.length} media items`,
-        data: result.data,
-        pagination: result.pagination,
-      };
-    } catch (error) {
-      throw new HttpException(
-        { status: 'error', message: 'Failed to fetch media items' },
-        HttpStatus.INTERNAL_SERVER_ERROR,
-      );
-    }
+    return {
+      status: 'success',
+      message: `Found ${result.data.length} media items`,
+      data: result.data,
+      pagination: result.pagination,
+    };
+  } catch (error) {
+    throw new HttpException(
+      { status: 'error', message: 'Failed to fetch media items' },
+      HttpStatus.INTERNAL_SERVER_ERROR,
+    );
   }
+}
 
   @Get('featured')
   async getFeatured() {
@@ -318,5 +354,25 @@ export class MediaController {
     return this.mediaService.toggleCommentLike(commentId, user.id);
   }
 
+  //   @Delete(':id/comments/:commentId')
+  // @UseGuards(JwtAuthGuard)
+  // async deleteComment(
+  //   @Param('id', ParseUUIDPipe) mediaId: string,
+  //   @Param('commentId', ParseUUIDPipe) commentId: string,
+  //   @CurrentUser() user: User,
+  // ) {
+  //   return this.mediaService.deleteMediaComment(mediaId, commentId, user.id, user.role);
+  // }
 
+  // // Optional: Admin/Moderator force delete (no ownership check)
+  // @Delete(':id/comments/:commentId/admin')
+  // @UseGuards(JwtAuthGuard, RolesGuard)
+  // @Roles(UserRole.SUPER_ADMIN, UserRole.ADMIN, UserRole.MEDIA_MANAGER)
+  // async adminDeleteComment(
+  //   @Param('id', ParseUUIDPipe) mediaId: string,
+  //   @Param('commentId', ParseUUIDPipe) commentId: string,
+  //   @CurrentUser() user: User,
+  // ) {
+  //   return this.mediaService.deleteMediaComment(mediaId, commentId, user.id, user.role, true);
+  // }
 }
