@@ -16,6 +16,8 @@ import { CloudinaryStrategy } from './upload/strategies/cloudinary.strategy';
 import { MailerModule } from './utils/email/email.module';
 import { ProjectRequestModule } from './modules/users/user.module';
 import { MediaModule } from './modules/media/media.module';
+import { ProposalModule } from './modules/project-manager/proposal/proposal.module';
+import { ProjectStageModule } from './modules/project-manager/project-stage/project-stage.module';
 
 @Module({
   imports: [
@@ -54,6 +56,9 @@ import { MediaModule } from './modules/media/media.module';
     MailerModule,
     ProjectRequestModule,
     MediaModule,
+    ProposalModule,
+    ProjectRequestModule,
+    ProjectStageModule,
   ],
   providers: [
     PrismaService,

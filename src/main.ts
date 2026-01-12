@@ -85,7 +85,7 @@ async function bootstrap() {
 
   // CORS + Versioning + Validation
   app.enableCors({
-    origin: configService.get('FRONTEND_URL', 'http://localhost:3001'),
+    origin: configService.get('FRONTEND_URL','http://localhost:3001'),
     credentials: true,
   });
 
