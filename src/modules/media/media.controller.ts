@@ -146,45 +146,43 @@ export class MediaController {
   //     );
   //   }
   // }
+@Get()
+async findAll(
+  @Query() query: MediaQueryDto,
+  @CurrentUser() currentUser?: { id: string },
+) {
+  try {
+    const result = await this.mediaService.findAll(
+      {
+        type: query.type,
+        // status: query.status, 
+        featured:
+          query.featured === 'true'
+            ? true
+            : query.featured === 'false'
+              ? false
+              : undefined,
+        country: query.country,
+        category: query.category,
+        page: query.page,
+        limit: query.limit,
+      },
+      currentUser,
+    );
 
-  @Get()
-  async findAll(
-    @Query() query: MediaQueryDto,
-    @CurrentUser() currentUser?: { id: string }, // ← add this if not already
-  ) {
-    try {
-      const result = await this.mediaService.findAll(
-        {
-          type: query.type,
-          status: query.status,
-          featured:
-            query.featured === 'true'
-              ? true
-              : query.featured === 'false'
-                ? false
-                : undefined,
-          country: query.country,
-          category: query.category,
-          page: query.page,
-          limit: query.limit,
-        },
-        currentUser,
-      );
-
-      return {
-        status: 'success',
-        message: `Found ${result.data.length} media items`,
-        data: result.data,
-        pagination: result.pagination,
-      };
-    } catch (error) {
-      throw new HttpException(
-        { status: 'error', message: 'Failed to fetch media items' },
-        HttpStatus.INTERNAL_SERVER_ERROR,
-      );
-    }
+    return {
+      status: 'success',
+      message: `Found ${result.data.length} media items`,
+      data: result.data,
+      pagination: result.pagination,
+    };
+  } catch (error) {
+    throw new HttpException(
+      { status: 'error', message: 'Failed to fetch media items' },
+      HttpStatus.INTERNAL_SERVER_ERROR,
+    );
   }
-
+}
   @Get('featured')
   async getFeatured() {
     try {
@@ -315,30 +313,31 @@ export class MediaController {
 
   //==============extras
 
-  @Get() 
-  async getPublishedMedia(
-    @Query() query: MediaQueryDto,
-    @CurrentUser() currentUser?: client.User,
-  ) {
-    const result = await this.mediaService.findAllPublic(
-      {
-        type: query.type,
-        featured: query.featured === 'true' ? true : false,
-        country: query.country,
-        category: query.category,
-        page: query.page ?? 1,
-        limit: query.limit ?? 12,
-      },
-      currentUser?.id,
-    );
+  // @Get() 
+  // async getPublishedMedia(
+  //   @Query() query: MediaQueryDto,
+  //   @CurrentUser() currentUser?: client.User,
+  // ) {
+  //   const result = await this.mediaService.findAllPublic(
+  //     {
+  //       type: query.type,
+  //       featured: query.featured === 'true' ? true : false,
+  //       country: query.country,
+  //       category: query.category,
+  //       page: query.page ?? 1,
+  //       limit: query.limit ?? 12,
+  //     },
+  //     currentUser?.id,
+  //   );
 
-    return {
-      status: 'success',
-      message: `Found ${result.data.length} published media items`,
-      data: result.data,
-      pagination: result.pagination,
-    };
-  }
+  //   return {
+  //     status: 'success',
+  //     message: `Found ${result.data.length} published media items`,
+  //     data: result.data,
+  //     pagination: result.pagination,
+  //   };
+  // }
+
 
   @Get('admin/all-statuses')
   @UseGuards(JwtAuthGuard, RolesGuard)
@@ -400,6 +399,17 @@ export class MediaController {
       parentId,
     });
   }
+
+// @Get(':id/comments')
+// async getComments(
+//   @Param('id', ParseUUIDPipe) id: string,
+//   @Query('page') page = 1,
+//   @Query('limit') limit = 20,
+//   @Query('sort') sort: 'newest' | 'oldest' = 'newest',
+//   @CurrentUser() currentUser?: { id: string },
+// ) {
+//   return this.mediaService.getMediaComments(id, { page, limit, sort }, currentUser?.id);
+// }
 
   @Get(':id/comments')
   async getComments(

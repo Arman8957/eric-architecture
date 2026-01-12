@@ -9,7 +9,7 @@ export class MailerService {
   private transporter: nodemailer.Transporter;
 
   constructor(private config: ConfigService) {
-    this.transporter = nodemailer.createTransport({  // ✅ Changed from createTransporter
+    this.transporter = nodemailer.createTransport({  
       host: this.config.get('SMTP_HOST'),
       port: this.config.get('SMTP_PORT'),
       secure: false,
@@ -64,14 +64,14 @@ export class MailerService {
       };
 
       await this.transporter.sendMail(mailOptions);
-      this.logger.log(`Verification email sent successfully to: ${email}`);  // ✅ Fixed syntax
+      this.logger.log(`Verification email sent successfully to: ${email}`);  
     } catch (error) {
-      this.logger.error(`Failed to send verification email to ${email}:`, error);  // ✅ Fixed syntax
-      throw new Error(`Failed to send verification email. Please try again later.`);  // ✅ Fixed syntax
+      this.logger.error(`Failed to send verification email to ${email}:`, error);  
+      throw new Error(`Failed to send verification email. Please try again later.`); 
     }
   }
 
   async sendPasswordReset(email: string, token: string, resetUrl: string): Promise<void> {
-    // Implementation for password reset (future use)
+  
   }
 }
