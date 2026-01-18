@@ -228,7 +228,11 @@ export class ProjectRequestService {
       `Request ${id} status changed to ${dto.status} by ${user.email}`,
     );
 
-    return updated;
+    return {
+      success: true,
+      message: `Project request status updated to ${dto.status} successfully`,
+      data: updated,
+    };
   }
 
   private validateStatusTransition(

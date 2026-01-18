@@ -55,89 +55,89 @@ export class ProposalService {
     return this.MANAGER_ROLES.has(user.role);
   }
 
-  async create(dto: CreateProposalDto, user: User) {
-    // Verify user has permission
-    if (!this.canManage(user)) {
-      throw new ForbiddenException('Only managers can create proposals');
-    }
+  // async create(dto: CreateProposalDto, user: User) {
+  //   // Verify user has permission
+  //   if (!this.canManage(user)) {
+  //     throw new ForbiddenException('Only managers can create proposals');
+  //   }
 
-    const projectRequest = await this.prisma.projectRequest.findUnique({
-      where: { id: dto.projectRequestId },
-      include: { user: true },
-    });
+  //   const projectRequest = await this.prisma.projectRequest.findUnique({
+  //     where: { id: dto.projectRequestId },
+  //     include: { user: true },
+  //   });
 
-    if (!projectRequest) {
-      throw new NotFoundException('Project request not found');
-    }
+  //   if (!projectRequest) {
+  //     throw new NotFoundException('Project request not found');
+  //   }
 
-    const clientUserId = projectRequest.userId;
-    if (!clientUserId) {
-      throw new BadRequestException(
-        'Cannot create proposal: no registered client user linked to request',
-      );
-    }
+  //   const clientUserId = projectRequest.userId;
+  //   if (!clientUserId) {
+  //     throw new BadRequestException(
+  //       'Cannot create proposal: no registered client user linked to request',
+  //     );
+  //   }
 
-    // Generate unique proposal number
-    const year = new Date().getFullYear();
-    const count = await this.prisma.proposal.count({
-      where: { proposalNumber: { startsWith: `PROP-${year}-` } },
-    });
-    const proposalNumber = `PROP-${year}-${String(count + 1).padStart(4, '0')}`;
+  //   // Generate unique proposal number
+  //   const year = new Date().getFullYear();
+  //   const count = await this.prisma.proposal.count({
+  //     where: { proposalNumber: { startsWith: `PROP-${year}-` } },
+  //   });
+  //   const proposalNumber = `PROP-${year}-${String(count + 1).padStart(4, '0')}`;
 
-    // Build location string
-    const locationParts = [
-      dto.streetAddress,
-      dto.city,
-      dto.state,
-      dto.country,
-    ].filter(Boolean);
-    const projectLocation = locationParts.join(', ') || '';
+  //   // Build location string
+  //   const locationParts = [
+  //     dto.streetAddress,
+  //     dto.city,
+  //     dto.state,
+  //     dto.country,
+  //   ].filter(Boolean);
+  //   const projectLocation = locationParts.join(', ') || '';
 
-    // Create proposal
-    const data: Prisma.ProposalCreateInput = {
-      projectRequest: { connect: { id: dto.projectRequestId } },
-      proposalNumber,
-      user: { connect: { id: clientUserId } },
-      title: dto.name.trim(),
-      projectName: dto.name.trim(),
-      projectDescription: dto.description?.trim(),
-      additionalContext: dto.additionalContext?.trim(),
-      projectLocation,
-      serviceType: dto.serviceType,
-      projectCategory: dto.projectCategory,
-      squareFootage: dto.squareFootage?.trim(),
-      budgetRange: dto.budgetRange?.trim(),
-      expectedTimeline: dto.expectedTimeline?.trim(),
-      clientName:
-        `${projectRequest.clientFirstName} ${projectRequest.clientLastName || ''}`.trim(),
-      clientEmail: projectRequest.email,
-      clientPhone: projectRequest.phone,
-      clientCompany: projectRequest.companyName,
-      createdBy: { connect: { id: user.id } },
-      status: ProposalStatus.DRAFT,
-    };
+  //   // Create proposal
+  //   const data: Prisma.ProposalCreateInput = {
+  //     projectRequest: { connect: { id: dto.projectRequestId } },
+  //     proposalNumber,
+  //     user: { connect: { id: clientUserId } },
+  //     title: dto.name.trim(),
+  //     projectName: dto.name.trim(),
+  //     projectDescription: dto.description?.trim(),
+  //     additionalContext: dto.additionalContext?.trim(),
+  //     projectLocation,
+  //     serviceType: dto.serviceType,
+  //     projectCategory: dto.projectCategory,
+  //     squareFootage: dto.squareFootage?.trim(),
+  //     budgetRange: dto.budgetRange?.trim(),
+  //     expectedTimeline: dto.expectedTimeline?.trim(),
+  //     clientName:
+  //       `${projectRequest.clientFirstName} ${projectRequest.clientLastName || ''}`.trim(),
+  //     clientEmail: projectRequest.email,
+  //     clientPhone: projectRequest.phone,
+  //     clientCompany: projectRequest.companyName,
+  //     createdBy: { connect: { id: user.id } },
+  //     status: ProposalStatus.DRAFT,
+  //   };
 
-    const proposal = await this.prisma.proposal.create({
-      data,
-      include: {
-        services: true,
-        projectRequest: true,
-        user: {
-          select: {
-            id: true,
-            name: true,
-            email: true,
-          },
-        },
-      },
-    });
+  //   const proposal = await this.prisma.proposal.create({
+  //     data,
+  //     include: {
+  //       services: true,
+  //       projectRequest: true,
+  //       user: {
+  //         select: {
+  //           id: true,
+  //           name: true,
+  //           email: true,
+  //         },
+  //       },
+  //     },
+  //   });
 
-    this.logger.log(
-      `Proposal created: ${proposal.id} (${proposal.proposalNumber}) by ${user.email}`,
-    );
+  //   this.logger.log(
+  //     `Proposal created: ${proposal.id} (${proposal.proposalNumber}) by ${user.email}`,
+  //   );
 
-    return proposal;
-  }
+  //   return proposal;
+  // }
 
   // async findAll(user: User) {
   //   if (!this.canManage(user)) {
@@ -179,6 +179,136 @@ export class ProposalService {
   // Key changes needed in your proposal.service.ts
 
   // 1. Update the sign() method to create ProjectStages correctly
+
+  async create(dto: CreateProposalDto, user: User) {
+    // 1. Permission check
+    if (!this.canManage(user)) {
+      throw new ForbiddenException('Only managers can create proposals');
+    }
+
+    // 2. Fetch the source project request
+    const projectRequest = await this.prisma.projectRequest.findUnique({
+      where: { id: dto.projectRequestId },
+    });
+
+    if (!projectRequest) {
+      throw new NotFoundException('Project request not found');
+    }
+
+    // 3. Optional: connect to existing registered user (if any)
+    const clientUserId = projectRequest.userId ?? undefined;
+
+    // 4. Generate unique proposal number (your original logic)
+    const year = new Date().getFullYear();
+    const count = await this.prisma.proposal.count({
+      where: { proposalNumber: { startsWith: `PROP-${year}-` } },
+    });
+    const proposalNumber = `PROP-${year}-${String(count + 1).padStart(4, '0')}`;
+
+    // 5. Build location string from DTO (your original logic)
+    const locationParts = [
+      dto.streetAddress,
+      dto.city,
+      dto.state,
+      dto.country,
+    ].filter(Boolean);
+    const projectLocation = locationParts.join(', ') || '';
+
+    // 6. Prepare create input
+    const data: Prisma.ProposalCreateInput = {
+      // Always connect to the project request (source of truth)
+      projectRequest: { connect: { id: dto.projectRequestId } },
+
+      // Only connect user if it already exists (optional relation)
+      ...(clientUserId && { user: { connect: { id: clientUserId } } }),
+
+      // Proposal metadata
+      proposalNumber,
+      title: dto.name.trim(),
+      projectName: dto.name.trim(),
+      projectDescription: dto.description?.trim(),
+      additionalContext: dto.additionalContext?.trim(),
+      projectLocation,
+
+      // Project specs
+      serviceType: dto.serviceType,
+      projectCategory: dto.projectCategory,
+      squareFootage: dto.squareFootage?.trim(),
+      budgetRange: dto.budgetRange?.trim(),
+      expectedTimeline: dto.expectedTimeline?.trim(),
+
+      // Client contact info (always filled from ProjectRequest)
+      clientName:
+        `${projectRequest.clientFirstName} ${projectRequest.clientLastName || ''}`.trim(),
+      clientEmail: projectRequest.email,
+      clientPhone: projectRequest.phone ?? undefined,
+      clientCompany: projectRequest.companyName ?? undefined,
+
+      // Financials (from DTO where applicable)
+      taxRate: dto.taxRate ?? undefined,
+
+      // Payment & terms
+      paymentMethod: dto.paymentMethod,
+      paymentTerms: dto.paymentTerms,
+
+      // Additional
+      notes: dto.notes?.trim(),
+      termsAndConditions: dto.termsAndConditions?.trim(),
+      expiresAt: dto.expiresAt ? new Date(dto.expiresAt) : undefined,
+
+      // Audit trail
+      createdBy: { connect: { id: user.id } },
+
+      // Initial status
+      status: ProposalStatus.DRAFT,
+    };
+
+    // 7. Create the proposal with useful relations
+    const proposal = await this.prisma.proposal.create({
+      data,
+      include: {
+        services: true,
+        credits: true,
+        projectRequest: {
+          select: {
+            id: true,
+            projectName: true,
+            status: true,
+            clientFirstName: true,
+            clientLastName: true,
+            email: true,
+            phone: true,
+            companyName: true,
+          },
+        },
+        user: clientUserId
+          ? {
+              select: {
+                id: true,
+                name: true,
+                email: true,
+              },
+            }
+          : undefined,
+        createdBy: {
+          select: {
+            id: true,
+            name: true,
+            email: true,
+            role: true,
+          },
+        },
+      },
+    });
+
+    this.logger.log(
+      `Proposal created: ${proposal.id} (${proposal.proposalNumber}) by ${user.email} ` +
+        `(for request ${dto.projectRequestId}, client: ${proposal.clientName})`,
+    );
+
+    return proposal;
+  }
+
   async sign(id: string, dto: ProposalSignatureDto, user: User) {
     const proposal = await this.prisma.proposal.findUnique({
       where: { id },

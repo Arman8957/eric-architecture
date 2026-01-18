@@ -431,11 +431,11 @@ model Proposal {
   id String @id @default(uuid())
   
   // Links
-  projectRequestId String?
-  projectRequest   ProjectRequest? @relation(fields: [projectRequestId], references: [id])
+  projectRequestId String
+  projectRequest   ProjectRequest @relation(fields: [projectRequestId], references: [id])
   
-  userId           String // The client this proposal is for
-  user             User            @relation(fields: [userId], references: [id])
+  userId           String? // The client this proposal is for
+  user             User?            @relation(fields: [userId], references: [id])
   
   proposalNumber   String          @unique
   title            String
