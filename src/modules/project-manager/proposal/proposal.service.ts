@@ -808,48 +808,94 @@ export class ProposalService {
     });
   }
 
+  // async addService(id: string, dto: AddProposalServiceDto, user: User) {
+  //   if (!this.canManage(user)) {
+  //     throw new ForbiddenException('Access denied');
+  //   }
+
+  //   const proposal = await this.prisma.proposal.findUnique({
+  //     where: { id },
+  //     include: { services: true },
+  //   });
+
+  //   if (!proposal) {
+  //     throw new NotFoundException('Proposal not found');
+  //   }
+
+  //   if (proposal.status !== ProposalStatus.DRAFT) {
+  //     throw new BadRequestException(
+  //       'Cannot add services to non-DRAFT proposal',
+  //     );
+  //   }
+
+  //   const maxOrder = proposal.services.reduce(
+  //     (max, s) => Math.max(max, s.order),
+  //     -1,
+  //   );
+
+  //   const service = await this.prisma.proposalService.create({
+  //     data: {
+  //       proposalId: id,
+  //       name: dto.name.trim(),
+  //       description: dto.description?.trim(),
+  //       amount: dto.cost,
+  //       rate: dto.cost,
+  //       quantity: 1,
+  //       order: maxOrder + 1,
+  //     },
+  //   });
+
+  //   // Recalculate totals
+  //   await this.recalculateTotals(id);
+
+  //   return service;
+  // }
+
   async addService(id: string, dto: AddProposalServiceDto, user: User) {
-    if (!this.canManage(user)) {
-      throw new ForbiddenException('Access denied');
-    }
-
-    const proposal = await this.prisma.proposal.findUnique({
-      where: { id },
-      include: { services: true },
-    });
-
-    if (!proposal) {
-      throw new NotFoundException('Proposal not found');
-    }
-
-    if (proposal.status !== ProposalStatus.DRAFT) {
-      throw new BadRequestException(
-        'Cannot add services to non-DRAFT proposal',
-      );
-    }
-
-    const maxOrder = proposal.services.reduce(
-      (max, s) => Math.max(max, s.order),
-      -1,
-    );
-
-    const service = await this.prisma.proposalService.create({
-      data: {
-        proposalId: id,
-        name: dto.name.trim(),
-        description: dto.description?.trim(),
-        amount: dto.cost,
-        rate: dto.cost,
-        quantity: 1,
-        order: maxOrder + 1,
-      },
-    });
-
-    // Recalculate totals
-    await this.recalculateTotals(id);
-
-    return service;
+  if (!this.canManage(user)) {
+    throw new ForbiddenException('Access denied');
   }
+
+  const proposal = await this.prisma.proposal.findUnique({
+    where: { id },
+    include: { services: true },
+  });
+
+  if (!proposal) {
+    throw new NotFoundException('Proposal not found');
+  }
+
+  if (proposal.status !== ProposalStatus.DRAFT) {
+    throw new BadRequestException('Cannot add services to non-DRAFT proposal');
+  }
+
+  const maxOrder = proposal.services.reduce(
+    (max, s) => Math.max(max, s.order ?? 0),
+    0,
+  );
+
+  const service = await this.prisma.proposalService.create({
+    data: {
+      proposalId: id,
+      name: dto.name.trim(),
+      description: dto.description?.trim() ?? null,
+      amount: dto.cost,
+      rate: dto.cost,
+      quantity: 1,
+      order: maxOrder + 1,
+ 
+    },
+  });
+
+
+  await this.recalculateTotals(id);
+
+  return {
+    success: true,
+    message: `Service "${dto.name}" added successfully to proposal`,
+    data: service,
+  };
+}
 
   private async recalculateTotals(proposalId: string) {
     const proposal = await this.prisma.proposal.findUnique({

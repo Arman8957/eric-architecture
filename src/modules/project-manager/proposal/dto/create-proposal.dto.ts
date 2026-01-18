@@ -87,4 +87,5 @@ export class CreateProposalDto {
   @IsOptional()
   @IsDateString()
   expiresAt?: string;
+  status: any;
 }
