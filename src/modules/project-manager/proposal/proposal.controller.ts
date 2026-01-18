@@ -24,9 +24,12 @@ import * as client from '@prisma/client';
 export class ProposalController {
   constructor(private readonly proposalService: ProposalService) {}
 
-
   @Post()
-  @Roles(client.UserRole.SUPER_ADMIN, client.UserRole.ADMIN, client.UserRole.PROJECT_MANAGER)
+  @Roles(
+    client.UserRole.SUPER_ADMIN,
+    client.UserRole.ADMIN,
+    client.UserRole.PROJECT_MANAGER,
+  )
   create(
     @Body() createProposalDto: CreateProposalDto,
     @CurrentUser() user: client.User,
@@ -34,9 +37,12 @@ export class ProposalController {
     return this.proposalService.create(createProposalDto, user);
   }
 
-
   @Get()
-  @Roles(client.UserRole.SUPER_ADMIN, client.UserRole.ADMIN, client.UserRole.PROJECT_MANAGER)
+  @Roles(
+    client.UserRole.SUPER_ADMIN,
+    client.UserRole.ADMIN,
+    client.UserRole.PROJECT_MANAGER,
+  )
   findAll(@CurrentUser() user: client.User) {
     return this.proposalService.findAll(user);
   }
@@ -46,15 +52,25 @@ export class ProposalController {
     return this.proposalService.getMyProposals(user);
   }
 
-  
+  @Get(':id/full')
+  findOneWithFullData(
+    @Param('id') id: string,
+    @CurrentUser() user: client.User,
+  ) {
+    return this.proposalService.findOneWithFullData(id, user);
+  }
+
   @Get(':id')
   findOne(@Param('id') id: string, @CurrentUser() user: client.User) {
     return this.proposalService.findOne(id, user);
   }
 
-
   @Patch(':id')
-  @Roles(client.UserRole.SUPER_ADMIN, client.UserRole.ADMIN, client.UserRole.PROJECT_MANAGER)
+  @Roles(
+    client.UserRole.SUPER_ADMIN,
+    client.UserRole.ADMIN,
+    client.UserRole.PROJECT_MANAGER,
+  )
   update(
     @Param('id') id: string,
     @Body() updateProposalDto: UpdateProposalDto,
@@ -63,9 +79,12 @@ export class ProposalController {
     return this.proposalService.update(id, updateProposalDto, user);
   }
 
-
   @Post(':id/services')
-  @Roles(client.UserRole.SUPER_ADMIN, client.UserRole.ADMIN, client.UserRole.PROJECT_MANAGER)
+  @Roles(
+    client.UserRole.SUPER_ADMIN,
+    client.UserRole.ADMIN,
+    client.UserRole.PROJECT_MANAGER,
+  )
   addService(
     @Param('id') id: string,
     @Body() addProposalServiceDto: AddProposalServiceDto,
@@ -74,13 +93,15 @@ export class ProposalController {
     return this.proposalService.addService(id, addProposalServiceDto, user);
   }
 
-
   @Post(':id/send')
-  @Roles(client.UserRole.SUPER_ADMIN, client.UserRole.ADMIN, client.UserRole.PROJECT_MANAGER)
+  @Roles(
+    client.UserRole.SUPER_ADMIN,
+    client.UserRole.ADMIN,
+    client.UserRole.PROJECT_MANAGER,
+  )
   send(@Param('id') id: string, @CurrentUser() user: client.User) {
     return this.proposalService.send(id, user);
   }
-
 
   @Patch(':id/sign')
   sign(

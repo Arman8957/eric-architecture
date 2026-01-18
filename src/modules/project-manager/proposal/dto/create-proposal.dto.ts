@@ -1,4 +1,11 @@
-import { IsString, IsEnum, IsOptional, IsDecimal } from 'class-validator';
+import {
+  IsString,
+  IsEnum,
+  IsOptional,
+  IsDecimal,
+  IsDateString,
+  IsNumber,
+} from 'class-validator';
 import { ServiceType, ProjectCategory } from '@prisma/client';
 
 export class CreateProposalDto {
@@ -11,10 +18,12 @@ export class CreateProposalDto {
   @IsString()
   description: string;
 
-  @IsOptional() @IsString()
+  @IsOptional()
+  @IsString()
   additionalContext?: string;
 
-  @IsOptional() @IsString()
+  @IsOptional()
+  @IsString()
   streetAddress?: string;
 
   @IsString()
@@ -34,20 +43,48 @@ export class CreateProposalDto {
 
   @IsOptional()
   @IsEnum(ProjectCategory)
-  projectCategory?: ProjectCategory;   // ← ADD THIS
+  projectCategory?: ProjectCategory; // ← ADD THIS
 
-  @IsOptional() @IsString()
+  @IsOptional()
+  @IsString()
   budgetRange?: string;
 
-  @IsOptional() @IsString()
+  @IsOptional()
+  @IsString()
   expectedTimeline?: string;
 
-  @IsOptional() @IsString()
+  @IsOptional()
+  @IsString()
   squareFootage?: string;
 
-  @IsDecimal()
-  totalCost: number;
+  @IsOptional()
+  @IsNumber(
+    {},
+    { message: 'totalCost must be a valid number (e.g. 10 or 10.00)' },
+  )
+  totalCost?: number;
 
-  @IsOptional() @IsString()
+  @IsOptional()
+  @IsString()
   paymentMethod?: string;
+
+  @IsOptional()
+  @IsNumber()
+  taxRate?: number;
+
+  @IsOptional()
+  @IsString()
+  paymentTerms?: string;
+
+  @IsOptional()
+  @IsString()
+  notes?: string;
+
+  @IsOptional()
+  @IsString()
+  termsAndConditions?: string;
+
+  @IsOptional()
+  @IsDateString()
+  expiresAt?: string;
 }

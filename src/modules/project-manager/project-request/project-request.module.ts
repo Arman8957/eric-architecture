@@ -11,4 +11,4 @@ import { PrismaModule } from 'src/prisma/prisma.module';
   providers: [ProjectRequestService],
   exports: [ProjectRequestService],
 })
-export class ProjectRequestModule {}
+export class ProjectAdminRequestModule {}

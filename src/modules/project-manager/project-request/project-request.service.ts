@@ -1,4 +1,3 @@
-
 import {
   Injectable,
   NotFoundException,
@@ -40,11 +39,9 @@ export class ProjectRequestService {
     private mailer: MailerService,
   ) {}
 
-
   private canManageRequests(user: User): boolean {
-    return this.REQUEST_MANAGERS.has(user.role)
+    return this.REQUEST_MANAGERS.has(user.role);
   }
-
 
   async findAll(query: QueryProjectRequestDto, user: User) {
     if (!this.canManageRequests(user)) {
@@ -61,7 +58,6 @@ export class ProjectRequestService {
     } = query;
 
     const skip = (page - 1) * limit;
-
 
     const where: Prisma.ProjectRequestWhereInput = {
       deletedAt: null,
@@ -162,17 +158,12 @@ export class ProjectRequestService {
       throw new NotFoundException('Request not found');
     }
 
-
-    if (
-      !this.canManageRequests(user) &&
-      request.userId !== user.id
-    ) {
+    if (!this.canManageRequests(user) && request.userId !== user.id) {
       throw new ForbiddenException('Access denied');
     }
 
     return request;
   }
-
 
   async getRequestsByStatus(user: User) {
     if (!this.canManageRequests(user)) {
@@ -194,11 +185,7 @@ export class ProjectRequestService {
     );
   }
 
-  async updateStatus(
-    id: string,
-    dto: UpdateRequestStatusDto,
-    user: User,
-  ) {
+  async updateStatus(id: string, dto: UpdateRequestStatusDto, user: User) {
     if (!this.canManageRequests(user)) {
       throw new ForbiddenException('Access denied');
     }
@@ -214,7 +201,6 @@ export class ProjectRequestService {
       throw new NotFoundException('Request not found');
     }
 
- 
     this.validateStatusTransition(request.status, dto.status);
 
     const updated = await this.prisma.projectRequest.update({
@@ -234,7 +220,6 @@ export class ProjectRequestService {
       },
     });
 
-
     if (request.user) {
       await this.sendStatusChangeEmail(updated, dto.notes);
     }
@@ -245,7 +230,6 @@ export class ProjectRequestService {
 
     return updated;
   }
-
 
   private validateStatusTransition(
     current: RequestStatus,
@@ -264,8 +248,12 @@ export class ProjectRequestService {
         RequestStatus.COMPLETED,
         RequestStatus.CANCELLED,
       ],
-      [RequestStatus.COMPLETED]: [], 
-      [RequestStatus.CANCELLED]: [], 
+      [RequestStatus.COMPLETED]: [],
+      [RequestStatus.CANCELLED]: [],
+      [RequestStatus.ACTIVE]: [
+        RequestStatus.COMPLETED,
+        RequestStatus.CANCELLED,
+      ],
     };
 
     if (!validTransitions[current]?.includes(next)) {
@@ -274,7 +262,6 @@ export class ProjectRequestService {
       );
     }
   }
-
 
   private async sendStatusChangeEmail(
     request: ProjectRequest & { user: any },
@@ -301,7 +288,6 @@ export class ProjectRequestService {
     }
   }
 
-
   async assignRequest(id: string, targetUserId: string, user: User) {
     if (!this.canManageRequests(user)) {
       throw new ForbiddenException('Access denied');
@@ -323,15 +309,10 @@ export class ProjectRequestService {
       throw new NotFoundException('Target user not found');
     }
 
-    if (
-      !this.ASSIGNABLE_ROLES.has(targetUser.role)
-    ) {
-      throw new BadRequestException(
-        'Target user cannot be assigned requests',
-      );
+    if (!this.ASSIGNABLE_ROLES.has(targetUser.role)) {
+      throw new BadRequestException('Target user cannot be assigned requests');
     }
 
-  
     this.logger.log(
       `Request ${id} assigned to ${targetUser.email} by ${user.email}`,
     );
@@ -361,7 +342,6 @@ export class ProjectRequestService {
 
     return { message: 'Request deleted successfully' };
   }
-
 
   async getMyRequests(user: User, query: QueryProjectRequestDto) {
     const { status, page = 1, limit = 10 } = query;

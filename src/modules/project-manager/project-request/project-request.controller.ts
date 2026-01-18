@@ -22,7 +22,7 @@ import { UpdateRequestStatusDto } from './dto/update-request-status.dto';
 import { AssignRequestDto } from './dto/create-project-request.dto';
 
 
-@Controller('project-requests')
+@Controller('project-requests-admin')
 @UseGuards(JwtAuthGuard, RolesGuard)
 export class ProjectRequestController {
   constructor(

@@ -18,6 +18,7 @@ import { ProjectRequestModule } from './modules/users/user.module';
 import { MediaModule } from './modules/media/media.module';
 import { ProposalModule } from './modules/project-manager/proposal/proposal.module';
 import { ProjectStageModule } from './modules/project-manager/project-stage/project-stage.module';
+import { ProjectAdminRequestModule } from './modules/project-manager/project-request/project-request.module';
 
 @Module({
   imports: [
@@ -57,8 +58,8 @@ import { ProjectStageModule } from './modules/project-manager/project-stage/proj
     ProjectRequestModule,
     MediaModule,
     ProposalModule,
-    ProjectRequestModule,
     ProjectStageModule,
+    ProjectAdminRequestModule,
   ],
   providers: [
     PrismaService,

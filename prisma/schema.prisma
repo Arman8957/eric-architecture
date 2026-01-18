@@ -44,6 +44,9 @@ enum ProposalStatus {
 enum StageStatus {
   NOT_STARTED
   IN_PROGRESS
+  INQUIRY
+  ACTIVE
+  BIDDING
   COMPLETED
   ON_HOLD
 }
@@ -78,6 +81,7 @@ enum ServiceType {
 enum RequestStatus {
   PENDING
   REVIEWED
+  ACTIVE
   SCHEDULED
   COMPLETED
   CANCELLED
@@ -674,7 +678,6 @@ model Project {
   comments      Comment[]
   likes         Like[]
   
-  // ✅ FIX: One-to-one relation with Proposal (define @relation on this side only)
   proposalId String?   @unique
   proposal   Proposal? @relation(fields: [proposalId], references: [id], onDelete: SetNull)
   

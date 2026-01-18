@@ -19,13 +19,15 @@ export class ProjectRequestService {
 
   constructor(private prisma: PrismaService) {}
 
-  // Simple state transition rules
+
   private readonly allowedTransitions: Record<RequestStatus, RequestStatus[]> = {
     [StatusEnum.PENDING]: [StatusEnum.REVIEWED, StatusEnum.CANCELLED],
     [StatusEnum.REVIEWED]: [StatusEnum.SCHEDULED, StatusEnum.CANCELLED],
     [StatusEnum.SCHEDULED]: [StatusEnum.COMPLETED, StatusEnum.CANCELLED],
     [StatusEnum.COMPLETED]: [],
     [StatusEnum.CANCELLED]: [],
+    [StatusEnum.ACTIVE]: []
+
   };
 
   async create(dto: CreateProjectRequestDto, files: Express.Multer.File[], userId?: string) {
