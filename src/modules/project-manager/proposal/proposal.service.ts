@@ -306,7 +306,11 @@ export class ProposalService {
         `(for request ${dto.projectRequestId}, client: ${proposal.clientName})`,
     );
 
-    return proposal;
+    return {
+      success: true,
+      message: `Project request status updated to ${dto.status} successfully`,
+      data: proposal,
+    };
   }
 
   async sign(id: string, dto: ProposalSignatureDto, user: User) {
@@ -391,8 +395,6 @@ export class ProposalService {
           },
         });
 
-        // Create project stages from services
-        // ✅ FIXED: Create stages linked to proposal only (not project)
         let order = 0;
         for (const service of updatedProposal.services) {
           await tx.projectStage.create({
