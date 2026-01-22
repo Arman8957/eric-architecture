@@ -32,6 +32,25 @@ enum ProjectStatus {
   ARCHIVED
 }
 
+enum ProposalStatus {
+  DRAFT
+  SENT
+  VIEWED
+  ACCEPTED
+  REJECTED
+  EXPIRED
+}
+
+enum StageStatus {
+  NOT_STARTED
+  IN_PROGRESS
+  INQUIRY
+  ACTIVE
+  BIDDING
+  COMPLETED
+  ON_HOLD
+}
+
 enum ProjectCategory {
   RESIDENTIAL
   COMMERCIAL
@@ -62,6 +81,7 @@ enum ServiceType {
 enum RequestStatus {
   PENDING
   REVIEWED
+  ACTIVE
   SCHEDULED
   COMPLETED
   CANCELLED
@@ -112,7 +132,10 @@ model User {
   mediaLikes        MediaLike[]
   mediaComments     MediaComment[]
   mediaCommentLikes MediaCommentLike[]
-
+  proposals         Proposal[]         @relation("CreatedProposals")
+  assignedProposals Proposal[]
+  assignedStages    ProjectStage[]
+  notification      Notification[]
 
   @@index([email])
   @@index([googleId])
@@ -312,13 +335,13 @@ model MediaComment {
   parent       MediaComment?  @relation("MediaCommentReplies", fields: [parentId], references: [id], onDelete: Cascade)
   replies      MediaComment[] @relation("MediaCommentReplies")
 
-  isApproved        Boolean            @default(true) // for moderation (articles/news)
-  likeCount         Int                @default(0) // optional - denormalized
-  createdAt         DateTime           @default(now())
-  updatedAt         DateTime           @updatedAt
+  isApproved Boolean            @default(true) // for moderation (articles/news)
+  likeCount  Int                @default(0) // optional - denormalized
+  createdAt  DateTime           @default(now())
+  updatedAt  DateTime           @updatedAt
   // mediaCommentLikes MediaCommentLike[]
-  likes             MediaCommentLike[]
-  
+  likes      MediaCommentLike[]
+
   @@index([mediaContentId])
   @@index([userId])
   @@index([parentId])
@@ -340,6 +363,8 @@ model MediaCommentLike {
   @@index([commentId])
   @@map("media_comment_likes")
 }
+
+//=================================project req==========================
 
 model ProjectRequest {
   id                          String           @id @default(uuid())
@@ -379,6 +404,10 @@ model ProjectRequest {
   appointmentType             String? // e.g., "Initial Consultation"
   additionalNotes             String?
 
+  stages ProjectStage[]
+
+  // Assets
+
   // Status and Relations
   status    RequestStatus  @default(PENDING)
   userId    String? // Optional link to registered user
@@ -388,6 +417,7 @@ model ProjectRequest {
   deletedAt DateTime?
   createdAt DateTime       @default(now())
   updatedAt DateTime       @updatedAt
+  proposals Proposal[]
 
   @@index([email])
   @@index([status])
@@ -396,6 +426,205 @@ model ProjectRequest {
   @@index([createdAt])
   @@map("project_requests")
 }
+
+model Proposal {
+  id String @id @default(uuid())
+  
+  // Links
+  projectRequestId String
+  projectRequest   ProjectRequest @relation(fields: [projectRequestId], references: [id])
+  
+  userId           String? // The client this proposal is for
+  user             User?            @relation(fields: [userId], references: [id])
+  
+  proposalNumber   String          @unique
+  title            String
+  subject          String?
+  
+  // Client Info (can differ from user)
+  clientName    String
+  clientEmail   String
+  clientPhone   String?
+  clientCompany String?
+  
+  // Project Details
+  projectName        String
+  projectLocation    String
+  projectDescription String? @db.Text
+  additionalContext  String? @db.Text
+  
+  // Specifications
+  serviceType      ServiceType
+  projectCategory  ProjectCategory?
+  squareFootage    String?
+  budgetRange      String?
+  expectedTimeline String? // e.g., "3-6 months"
+  
+  // Status
+  status      ProposalStatus @default(DRAFT)
+  sentAt      DateTime?
+  viewedAt    DateTime?
+  respondedAt DateTime?
+  expiresAt   DateTime?
+  
+  // Services
+  services ProposalService[]
+  
+  // Financials
+  subtotal    Decimal  @default(0) @db.Decimal(10, 2)
+  taxRate     Decimal? @db.Decimal(5, 2)
+  taxAmount   Decimal? @db.Decimal(10, 2)
+  totalAmount Decimal  @default(0) @db.Decimal(10, 2)
+  
+  // Credits/Discounts
+  credits ProposalCredit[]
+  
+  // Payment
+  paymentMethod String? // "LUMP_SUM" or "INSTALLMENT"
+  paymentTerms  String? @db.Text
+  
+  // Schedule & Contact
+  estimatedDuration String?
+  contactInfo       String? @db.Text
+  
+  // Signatures
+  ownerSignature String?
+  ownerSignedAt  DateTime?
+  ownerSignedBy  String?
+  
+  architectSignature String?
+  architectSignedAt  DateTime?
+  architectSignedBy  String? // "Eric Rivera, AIA"
+  
+  // Additional
+  notes              String? @db.Text
+  termsAndConditions String? @db.Text
+  
+  // Metadata
+  createdById String
+  createdBy   User   @relation("CreatedProposals", fields: [createdById], references: [id])
+  
+  // If accepted, link to actual project stages
+  projectStages ProjectStage[]
+  
+  // ✅ FIX: Optional link to Project (only scalar field, no @relation attributes)
+  projectId String?   @unique
+  project   Project?  // ← Remove @relation here, it's defined on the other side
+  
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  
+  @@index([userId])
+  @@index([proposalNumber])
+  @@index([status])
+  @@index([projectRequestId])
+  @@map("proposals")
+}
+
+model ProposalService {
+  id         String   @id @default(uuid())
+  proposalId String
+  proposal   Proposal @relation(fields: [proposalId], references: [id], onDelete: Cascade)
+
+  name          String // e.g., "Assemble Information"
+  description   String? @db.Text
+  order         Int     @default(0)
+  timelineWeeks Int? // add if needed
+  active        Boolean @default(true)
+
+  // Pricing
+  rate     Decimal? @db.Decimal(10, 2)
+  quantity Int      @default(1)
+  unit     String? // "weeks", "hours", "sq ft"
+  amount   Decimal  @db.Decimal(10, 2)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([proposalId])
+  @@index([order])
+  @@map("proposal_services")
+}
+
+model ProposalCredit {
+  id         String   @id @default(uuid())
+  proposalId String
+  proposal   Proposal @relation(fields: [proposalId], references: [id], onDelete: Cascade)
+
+  type        String // "DOLLAR_AMOUNT" or "PERCENTAGE"
+  amount      Decimal @db.Decimal(10, 2)
+  description String? @db.Text
+
+  createdAt DateTime @default(now())
+
+  @@index([proposalId])
+  @@map("proposal_credits")
+}
+
+model ProjectStage {
+  id String @id @default(uuid())
+
+  // Links
+  proposalId String?
+  proposal   Proposal? @relation(fields: [proposalId], references: [id])
+
+  // Stage Info
+  name        String // "Schematic Design", "Design Development", etc.
+  description String? @db.Text
+  order       Int     @default(0)
+
+  projectId String?
+  project   Project? @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  // Progress
+  status   StageStatus @default(NOT_STARTED)
+  progress Int         @default(0) // 0-100
+
+  // Tasks
+  totalTasks     Int @default(0)
+  completedTasks Int @default(0)
+
+  // Timeline
+  startDate   DateTime?
+  dueDate     DateTime?
+  completedAt DateTime?
+
+  // Assignment
+  assignedToId String?
+  assignedTo   User?   @relation(fields: [assignedToId], references: [id])
+
+  // Tracking
+  notes String? @db.Text
+
+  // Metadata
+  createdAt        DateTime        @default(now())
+  updatedAt        DateTime        @updatedAt
+  projectRequest   ProjectRequest? @relation(fields: [projectRequestId], references: [id])
+  projectRequestId String?
+
+  @@index([proposalId])
+  @@index([status])
+  @@index([assignedToId])
+  @@map("project_stages")
+}
+
+//===========notification========
+model Notification {
+  id        String   @id @default(uuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  type      String // NEW_REQUEST, STATUS_UPDATED, etc.
+  title     String
+  message   String
+  link      String?
+  isRead    Boolean  @default(false)
+  createdAt DateTime @default(now())
+
+  @@index([userId])
+  @@index([createdAt])
+}
+
+//==================================project req========================
 
 model EmployeeProfile {
   id         String   @id @default(uuid())
@@ -428,16 +657,18 @@ model Project {
   area           Float?
   completionYear Int?
   clientName     String?
-
+  
   // SEO
   metaTitle       String?
   metaDescription String?
   metaKeywords    String[]
-
+  
+  stages ProjectStage[]
+  
   // Media (now via ProjectAsset)
   coverImage String?
   assets     ProjectAsset[]
-
+  
   // Performance & Relations
   viewCount     Int          @default(0)
   featuredOrder Int?
@@ -446,11 +677,14 @@ model Project {
   tags          ProjectTag[]
   comments      Comment[]
   likes         Like[]
-  publishedAt   DateTime?
-
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
-
+  
+  proposalId String?   @unique
+  proposal   Proposal? @relation(fields: [proposalId], references: [id], onDelete: SetNull)
+  
+  publishedAt DateTime?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  
   @@index([slug])
   @@index([status])
   @@index([category])

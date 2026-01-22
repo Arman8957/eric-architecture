@@ -37,7 +37,7 @@ import { UserRole } from '@prisma/client';
 // @UseGuards(JwtAuthGuard, RolesGuard)
 @Controller('media')
 export class MediaController {
-  constructor(private readonly mediaService: MediaService) {}
+  constructor(private readonly mediaService: MediaService) { }
 
   @Post()
   @UseGuards(JwtAuthGuard, RolesGuard)
@@ -165,17 +165,16 @@ export class MediaController {
   //     );
   //   }
   // }
-
   @Get()
   async findAll(
     @Query() query: MediaQueryDto,
-    @CurrentUser() currentUser?: { id: string }, // ← add this if not already
+    @CurrentUser() currentUser?: { id: string },
   ) {
     try {
       const result = await this.mediaService.findAll(
         {
           type: query.type,
-          // status: query.status,
+          // status: query.status, 
           featured:
             query.featured === 'true'
               ? true
@@ -203,7 +202,6 @@ export class MediaController {
       );
     }
   }
-
   @Get('featured')
   async getFeatured() {
     try {
@@ -334,30 +332,31 @@ export class MediaController {
 
   //==============extras
 
-  @Get()
-  async getPublishedMedia(
-    @Query() query: MediaQueryDto,
-    @CurrentUser() currentUser?: client.User,
-  ) {
-    const result = await this.mediaService.findAllPublic(
-      {
-        type: query.type,
-        featured: query.featured === 'true' ? true : false,
-        country: query.country,
-        category: query.category,
-        page: query.page ?? 1,
-        limit: query.limit ?? 12,
-      },
-      currentUser?.id,
-    );
+  // @Get() 
+  // async getPublishedMedia(
+  //   @Query() query: MediaQueryDto,
+  //   @CurrentUser() currentUser?: client.User,
+  // ) {
+  //   const result = await this.mediaService.findAllPublic(
+  //     {
+  //       type: query.type,
+  //       featured: query.featured === 'true' ? true : false,
+  //       country: query.country,
+  //       category: query.category,
+  //       page: query.page ?? 1,
+  //       limit: query.limit ?? 12,
+  //     },
+  //     currentUser?.id,
+  //   );
 
-    return {
-      status: 'success',
-      message: `Found ${result.data.length} published media items`,
-      data: result.data,
-      pagination: result.pagination,
-    };
-  }
+  //   return {
+  //     status: 'success',
+  //     message: `Found ${result.data.length} published media items`,
+  //     data: result.data,
+  //     pagination: result.pagination,
+  //   };
+  // }
+
 
   @Get('admin/all-statuses')
   @UseGuards(JwtAuthGuard, RolesGuard)
@@ -419,6 +418,17 @@ export class MediaController {
       parentId,
     });
   }
+
+  // @Get(':id/comments')
+  // async getComments(
+  //   @Param('id', ParseUUIDPipe) id: string,
+  //   @Query('page') page = 1,
+  //   @Query('limit') limit = 20,
+  //   @Query('sort') sort: 'newest' | 'oldest' = 'newest',
+  //   @CurrentUser() currentUser?: { id: string },
+  // ) {
+  //   return this.mediaService.getMediaComments(id, { page, limit, sort }, currentUser?.id);
+  // }
 
   @Get(':id/comments')
   async getComments(

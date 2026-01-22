@@ -1,8 +1,8 @@
-import { Injectable, NotFoundException } from "@nestjs/common";
-import { Prisma, User, UserRole } from "@prisma/client";
-import { FindAllOptions } from "src/modules/auth/constant";
-import { PrismaService } from "src/prisma/prisma.service";
-import { SafeUser } from "../types/user.type";
+import { Injectable, NotFoundException } from '@nestjs/common';
+import { Prisma, User, UserRole } from '@prisma/client';
+import { FindAllOptions } from 'src/modules/auth/constant';
+import { PrismaService } from 'src/prisma/prisma.service';
+import { SafeUser } from '../types/user.type';
 
 @Injectable()
 export class UsersGetService {
@@ -20,16 +20,8 @@ export class UsersGetService {
     // NEVER include: password, refreshToken, googleId, etc.
   } satisfies Prisma.UserSelect);
 
-  /**
-   * Get list of users with pagination, filtering, search and cursor-based support
-   */
-  async listUsers({
-    page,
-    take,
-    roleFilter,
-    search,
-    cursor,
-  }: FindAllOptions) {
+
+  async listUsers({ page, take, roleFilter, search, cursor }: FindAllOptions) {
     // Sanitize inputs
     const pageNum = Math.max(1, page);
     const limit = Math.min(100, Math.max(1, take)); // Prevent abuse
@@ -61,7 +53,8 @@ export class UsersGetService {
         data: users,
         meta: {
           total,
-          nextCursor: users.length === limit ? users[users.length - 1].id : null,
+          nextCursor:
+            users.length === limit ? users[users.length - 1].id : null,
           hasMore: users.length === limit,
         },
       };
@@ -100,13 +93,13 @@ export class UsersGetService {
 
     return user as User;
   }
-async findByRole(role: UserRole): Promise<SafeUser[]> {
-  return this.prisma.user.findMany({
-    where: { role },
-    select: this.baseSelect,
-    orderBy: { name: 'asc' },
-  }) as Promise<SafeUser[]>;
-}
+  async findByRole(role: UserRole): Promise<SafeUser[]> {
+    return this.prisma.user.findMany({
+      where: { role },
+      select: this.baseSelect,
+      orderBy: { name: 'asc' },
+    }) as Promise<SafeUser[]>;
+  }
 
   async getSafeUser(id: string) {
     return this.findById(id);
