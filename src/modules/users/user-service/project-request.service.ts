@@ -17,32 +17,34 @@ import { UpdateProjectRequestDto } from '../dto/update-project-request.dto';
 export class ProjectRequestService {
   private readonly logger = new Logger(ProjectRequestService.name);
 
-  constructor(private prisma: PrismaService) {}
+  constructor(private prisma: PrismaService) { }
 
-  // Simple state transition rules
+
   private readonly allowedTransitions: Record<RequestStatus, RequestStatus[]> = {
     [StatusEnum.PENDING]: [StatusEnum.REVIEWED, StatusEnum.CANCELLED],
     [StatusEnum.REVIEWED]: [StatusEnum.SCHEDULED, StatusEnum.CANCELLED],
     [StatusEnum.SCHEDULED]: [StatusEnum.COMPLETED, StatusEnum.CANCELLED],
     [StatusEnum.COMPLETED]: [],
     [StatusEnum.CANCELLED]: [],
+    [StatusEnum.ACTIVE]: []
+
   };
 
   async create(dto: CreateProjectRequestDto, files: Express.Multer.File[], userId?: string) {
     try {
       const projectData = dto.projectLocationSameAsClient
         ? {
-            projectCountry: dto.country || 'United States',
-            projectState: dto.state,
-            projectCity: dto.city,
-            projectStreetAddress: dto.streetAddress,
-          }
+          projectCountry: dto.country || 'United States',
+          projectState: dto.state,
+          projectCity: dto.city,
+          projectStreetAddress: dto.streetAddress,
+        }
         : {
-            projectCountry: dto.projectCountry,
-            projectState: dto.projectState,
-            projectCity: dto.projectCity,
-            projectStreetAddress: dto.projectStreetAddress,
-          };
+          projectCountry: dto.projectCountry,
+          projectState: dto.projectState,
+          projectCity: dto.projectCity,
+          projectStreetAddress: dto.projectStreetAddress,
+        };
 
       const request = await this.prisma.projectRequest.create({
         data: {

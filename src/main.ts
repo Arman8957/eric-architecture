@@ -48,6 +48,9 @@ async function bootstrap() {
           imgSrc: ["'self'", 'data:', 'https:', 'blob:'],
           connectSrc: [
             "'self'",
+            'http://localhost:3000',
+            'http://localhost:5173',
+            'http://localhost:5174',
             'https://accounts.google.com',
             'https://res.cloudinary.com',
           ],
@@ -85,7 +88,7 @@ async function bootstrap() {
 
   // CORS + Versioning + Validation
   app.enableCors({
-    origin: configService.get('FRONTEND_URL', 'http://localhost:3001'),
+    origin: configService.get('FRONTEND_URL', ['http://localhost:3001', 'http://localhost:5173', 'http://127.0.0.1:5173',]),
     credentials: true,
   });
 

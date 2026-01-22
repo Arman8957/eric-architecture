@@ -77,12 +77,13 @@ export class AuthService {
       data: { emailVerifyToken: token, emailVerifyExpiry: expiry },
     });
 
-    const verifyUrl = `${frontendUrl}/verify-email`;
+    // const verifyUrl = `${frontendUrl}/verify-email`;
     await this.mailer.sendEmailVerification(
       user.email,
       token,
       user.name ?? 'User',
-      verifyUrl,
+      // verifyUrl,
+      frontendUrl
     );
   }
 
