@@ -9,7 +9,7 @@ import { AppModule } from './app.module';
 import { ConfigService } from '@nestjs/config';
 import { WinstonModule } from 'nest-winston';
 import * as winston from 'winston';
-import { utilities as nestWinstonUtilities } from 'nest-winston'; 
+import { utilities as nestWinstonUtilities } from 'nest-winston';
 import { Request, Response } from 'express';
 
 async function bootstrap() {
@@ -23,16 +23,14 @@ async function bootstrap() {
             winston.format.timestamp(),
             winston.format.ms(),
             nestWinstonUtilities.format.nestLike('PortfolioAPI', {
-          
-              colors: true,          
-              prettyPrint: true,    
-              processId: true,       
-              // appName: true,     
+              colors: true,
+              prettyPrint: true,
+              processId: true,
+              // appName: true,
             }),
           ),
         }),
 
-       
         new winston.transports.File({
           filename: 'logs/error.log',
           level: 'error',
@@ -62,10 +60,21 @@ async function bootstrap() {
       contentSecurityPolicy: {
         directives: {
           defaultSrc: ["'self'"],
-          scriptSrc: ["'self'", "'unsafe-inline'", 'https://accounts.google.com'],
+          scriptSrc: [
+            "'self'",
+            'http://localhost:3000',
+            'http://localhost:5173',
+            'http://localhost:5174',
+            "'unsafe-inline'",
+            'https://accounts.google.com',
+          ],
           styleSrc: ["'self'", "'unsafe-inline'"],
           imgSrc: ["'self'", 'data:', 'https:', 'blob:'],
-          connectSrc: ["'self'", 'https://accounts.google.com', 'https://res.cloudinary.com'],
+          connectSrc: [
+            "'self'",
+            'https://accounts.google.com',
+            'https://res.cloudinary.com',
+          ],
           fontSrc: ["'self'", 'https://fonts.gstatic.com'],
           objectSrc: ["'none'"],
           frameAncestors: ["'none'"],
@@ -100,7 +109,11 @@ async function bootstrap() {
 
   // CORS + Versioning + Validation
   app.enableCors({
-    origin: configService.get('FRONTEND_URL', 'http://localhost:3001'),
+    origin: configService.get('FRONTEND_URL', [
+      'http://localhost:3001',
+      'http://localhost:5173',
+      'http://127.0.0.1:5173',
+    ]),
     credentials: true,
   });
 
@@ -156,7 +169,10 @@ async function bootstrap() {
     try {
       await app.listen(port, '0.0.0.0');
       Logger.log(`🚀 Server running on port ${port}`, 'Bootstrap');
-      Logger.log(`📁 Environment: ${process.env.NODE_ENV || 'development'}`, 'Bootstrap');
+      Logger.log(
+        `📁 Environment: ${process.env.NODE_ENV || 'development'}`,
+        'Bootstrap',
+      );
       Logger.log(`🌐 URL: http://localhost:${port}`, 'Bootstrap');
 
       if (process.env.NODE_ENV !== 'production') {
@@ -165,7 +181,10 @@ async function bootstrap() {
       break;
     } catch (error: any) {
       if (error.code === 'EADDRINUSE') {
-        Logger.warn(`Port ${port} is occupied, trying ${port + 1}...`, 'Bootstrap');
+        Logger.warn(
+          `Port ${port} is occupied, trying ${port + 1}...`,
+          'Bootstrap',
+        );
         port++;
         attempt++;
       } else {
@@ -175,7 +194,9 @@ async function bootstrap() {
   }
 
   if (attempt === maxRetries) {
-    throw new Error(`Could not find available port after ${maxRetries} attempts`);
+    throw new Error(
+      `Could not find available port after ${maxRetries} attempts`,
+    );
   }
 }
 
@@ -183,8 +204,6 @@ bootstrap().catch((err) => {
   Logger.error('Failed to start server:', err);
   process.exit(1);
 });
-
-
 
 // import { NestFactory } from '@nestjs/core';
 // import { ValidationPipe, VersioningType, Logger } from '@nestjs/common';

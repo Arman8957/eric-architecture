@@ -112,9 +112,6 @@ ${appName}
     });
   }
 
-  /**
-   * Sends email notification when a project stage is completed
-   */
   async sendStageCompletionEmail(
     to: string,
     clientName: string,
