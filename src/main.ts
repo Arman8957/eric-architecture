@@ -62,9 +62,6 @@ async function bootstrap() {
           defaultSrc: ["'self'"],
           scriptSrc: [
             "'self'",
-            'http://localhost:3000',
-            'http://localhost:5173',
-            'http://localhost:5174',
             "'unsafe-inline'",
             'https://accounts.google.com',
           ],
@@ -72,6 +69,9 @@ async function bootstrap() {
           imgSrc: ["'self'", 'data:', 'https:', 'blob:'],
           connectSrc: [
             "'self'",
+            'http://localhost:3000',
+            'http://localhost:5173',
+            'http://localhost:5174',
             'https://accounts.google.com',
             'https://res.cloudinary.com',
           ],
