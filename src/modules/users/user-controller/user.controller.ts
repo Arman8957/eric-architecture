@@ -13,10 +13,8 @@ import {
   UseInterceptors,
   UploadedFile,
   UploadedFiles,
-  ParseUUIDPipe,
 } from '@nestjs/common';
 import { FileInterceptor, FilesInterceptor } from '@nestjs/platform-express';
-
 import * as client from '@prisma/client';
 import { ProjectRequestService } from '../user-service/project-request.service';
 import { CreateProjectRequestDto } from '../dto/project-request.dto';
@@ -25,9 +23,6 @@ import { JwtAuthGuard } from 'src/common/guards/auth.guard';
 import { QueryProjectRequestDto } from '../dto/query-project-request.dto';
 import { UpdateProjectRequestDto } from '../dto/update-project-request.dto';
 import { Public } from 'src/common/decorators/public.decorator';
-import { Roles } from 'src/common/decorators/roles.decorator';
-import { RolesGuard } from 'src/common/guards/roles.guard';
-import { UsersGetService } from '../user-service/user-get.service';
 
 interface AuthenticatedUser {
   id: string;
@@ -39,37 +34,72 @@ interface AuthenticatedUser {
 export class ProjectRequestController {
   constructor(
     private readonly projectRequestService: ProjectRequestService,
-    private readonly usersGetService: UsersGetService,
   ) {}
 
-  /**
-   * Create new project request - Public endpoint
-   */
-  // @Post()
-  // @Public() // if you have public decorator, otherwise remove guard
-  // @HttpCode(HttpStatus.CREATED)
-  // async create(
-  //   @Body() createDto: CreateProjectRequestDto,
-  //   @CurrentUser() user?: AuthenticatedUser,
-  // ) {
-  //   return this.projectRequestService.create(createDto, user?.id);
-  // }
 
   @Post()
-  @Public()
-  @UseInterceptors(FilesInterceptor('files', 10)) // allow up to 10 files
+  @UseGuards(JwtAuthGuard)
+  @UseInterceptors(FilesInterceptor('files', 10))
   @HttpCode(HttpStatus.CREATED)
   async create(
     @Body() dto: CreateProjectRequestDto,
     @UploadedFiles() files: Express.Multer.File[] = [],
-    @CurrentUser() user?: AuthenticatedUser,
+    @CurrentUser() user: AuthenticatedUser,
   ) {
-    return this.projectRequestService.create(dto, files, user?.id);
+    return this.projectRequestService.create(dto, files, user.id);
   }
 
-  /**
-   * Upload file/document to existing request
-   */
+
+  @Get('stats')
+  @UseGuards(JwtAuthGuard)
+  async getStats(@CurrentUser() user: AuthenticatedUser) {
+    return this.projectRequestService.getStats(user.role);
+  }
+
+
+  @Get('my-requests')
+  @UseGuards(JwtAuthGuard)
+  async findMyRequests(
+    @Query() query: QueryProjectRequestDto,
+    @CurrentUser() user: AuthenticatedUser,
+  ) {
+    return this.projectRequestService.findMyRequests(user.id, query);
+  }
+
+
+  @Get('my-stats')
+  @UseGuards(JwtAuthGuard)
+  async getMyStats(@CurrentUser() user: AuthenticatedUser) {
+    return this.projectRequestService.getMyStats(user.id);
+  }
+
+
+  @Get()
+  @UseGuards(JwtAuthGuard)
+  async findAll(
+    @Query() query: QueryProjectRequestDto,
+    @CurrentUser() user: AuthenticatedUser,
+  ) {
+    // If user is regular USER role, redirect to their own requests
+    if (user.role === client.UserRole.USER) {
+      return this.projectRequestService.findMyRequests(user.id, query);
+    }
+    
+    // Staff can see all requests
+    return this.projectRequestService.findAll(query, user.role);
+  }
+
+
+  @Get(':id')
+  @UseGuards(JwtAuthGuard)
+  async findOne(
+    @Param('id') id: string,
+    @CurrentUser() user: AuthenticatedUser,
+  ) {
+    return this.projectRequestService.findOne(id, user.id, user.role);
+  }
+
+
   @Post(':id/upload')
   @UseGuards(JwtAuthGuard)
   @UseInterceptors(FileInterceptor('file'))
@@ -81,45 +111,7 @@ export class ProjectRequestController {
     return this.projectRequestService.uploadFile(id, file, user.id, user.role);
   }
 
-  /**
-   * Get all project requests (Staff/Admin only)
-   */
-  @Get()
-  @UseGuards(JwtAuthGuard)
-  async findAll(
-    @Query() query: QueryProjectRequestDto,
-    @CurrentUser() user: AuthenticatedUser,
-  ) {
-    return this.projectRequestService.findAll(query, user.role);
-  }
 
-  /**
-   * Get my own project requests
-   */
-  @Get('my-requests')
-  @UseGuards(JwtAuthGuard)
-  async findMyRequests(
-    @Query() query: QueryProjectRequestDto,
-    @CurrentUser() user: AuthenticatedUser,
-  ) {
-    return this.projectRequestService.findMyRequests(user.id, query);
-  }
-
-  /**
-   * Get single project request
-   */
-  @Get(':id')
-  @UseGuards(JwtAuthGuard)
-  async findOne(
-    @Param('id') id: string,
-    @CurrentUser() user: AuthenticatedUser,
-  ) {
-    return this.projectRequestService.findOne(id, user.id, user.role);
-  }
-
-  /**
-   * Update project request
-   */
   @Patch(':id')
   @UseGuards(JwtAuthGuard)
   async update(
@@ -130,9 +122,7 @@ export class ProjectRequestController {
     return this.projectRequestService.update(id, updateDto, user.id, user.role);
   }
 
-  /**
-   * Soft delete project request
-   */
+
   @Delete(':id')
   @UseGuards(JwtAuthGuard)
   @HttpCode(HttpStatus.OK)
@@ -143,14 +133,46 @@ export class ProjectRequestController {
     return this.projectRequestService.softDelete(id, user.id, user.role);
   }
 
-  /**
-   * Get basic statistics (Admin/Staff only)
-   */
-  @Get('stats')
+
+@Get('user-my-requests')
   @UseGuards(JwtAuthGuard)
-  async getStats(@CurrentUser() user: AuthenticatedUser) {
-    return this.projectRequestService.getStats(user.role);
+  async findAllForUser(
+    @Query() query: QueryProjectRequestDto,
+    @CurrentUser() user: AuthenticatedUser,
+  ) {
+    return this.projectRequestService.findAllForUser(user.id, query);
   }
+
+  // ─── Get single my request ───────────────────────────────────────────
+  @Get(':id/user')
+  @UseGuards(JwtAuthGuard)
+  async findOneForUser(
+    @Param('id') id: string,
+    @CurrentUser() user: AuthenticatedUser,
+  ) {
+    return this.projectRequestService.findOneForUser(id, user.id);
+  }
+
+  // ─── Update my request ───────────────────────────────────────────────
+  @Patch(':id/user')
+  @UseGuards(JwtAuthGuard)
+  async updateForUser(
+    @Param('id') id: string,
+    @Body() dto: UpdateProjectRequestDto,
+    @CurrentUser() user: AuthenticatedUser,
+  ) {
+    return this.projectRequestService.updateForUser(id, dto, user.id);
+  }
+
+  // ─── My stats ────────────────────────────────────────────────────────
+  @Get('user-my-stats')
+  @UseGuards(JwtAuthGuard)
+  async getMyStatsUser(
+    @CurrentUser() user: AuthenticatedUser,
+  ) {
+    return this.projectRequestService.getStatsForUser(user.id);
+  }
+}
 
   //////////////////////////////all get api's
 
@@ -259,4 +281,4 @@ export class ProjectRequestController {
   // async getMediaManagers() {
   //   return this.usersGetService.findByRole(client.UserRole.MEDIA_MANAGER);
   // }
-}
+
