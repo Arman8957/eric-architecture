@@ -7,6 +7,7 @@ import {
   Patch,
   Param,
   UseGuards,
+  Delete,
 } from '@nestjs/common';
 import { ProposalService } from './proposal.service';
 import { CreateProposalDto } from './dto/create-proposal.dto';
@@ -18,7 +19,7 @@ import { RolesGuard } from 'src/common/guards/roles.guard';
 import { Roles } from 'src/common/decorators/roles.decorator';
 import { CurrentUser } from 'src/common/decorators/current-user.decorator';
 import * as client from '@prisma/client';
-import { UpdateProposalStatusDto } from './dto/update-proposal-status.dto';
+import { UpdateProposalServiceDto, UpdateProposalStatusDto } from './dto/update-proposal-status.dto';
 
 @Controller('proposals')
 @UseGuards(JwtAuthGuard, RolesGuard)
@@ -127,4 +128,36 @@ export class ProposalController {
       dto.notes,
     );
   }
+
+  //===========for the service add ========
+
+  @Patch(':id/services/:serviceId')
+@Roles(
+  client.UserRole.SUPER_ADMIN,
+  client.UserRole.ADMIN,
+  client.UserRole.PROJECT_MANAGER,
+)
+updateService(
+  @Param('id') id: string,
+  @Param('serviceId') serviceId: string,
+  @Body() updateServiceDto: UpdateProposalServiceDto,
+  @CurrentUser() user: client.User,
+) {
+  return this.proposalService.updateService(id, serviceId, updateServiceDto, user);
+}
+
+// Delete service
+@Delete(':id/services/:serviceId')
+@Roles(
+  client.UserRole.SUPER_ADMIN,
+  client.UserRole.ADMIN,
+  client.UserRole.PROJECT_MANAGER,
+)
+deleteService(
+  @Param('id') id: string,
+  @Param('serviceId') serviceId: string,
+  @CurrentUser() user: client.User,
+) {
+  return this.proposalService.deleteService(id, serviceId, user);
+}
 }

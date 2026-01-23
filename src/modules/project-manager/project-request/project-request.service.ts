@@ -249,15 +249,16 @@ export class ProjectRequestService {
         RequestStatus.CANCELLED,
       ],
       [RequestStatus.SCHEDULED]: [
+        RequestStatus.ACTIVE,
+        RequestStatus.COMPLETED,
+        RequestStatus.CANCELLED,
+      ],
+      [RequestStatus.ACTIVE]: [
         RequestStatus.COMPLETED,
         RequestStatus.CANCELLED,
       ],
       [RequestStatus.COMPLETED]: [],
       [RequestStatus.CANCELLED]: [],
-      [RequestStatus.ACTIVE]: [
-        RequestStatus.COMPLETED,
-        RequestStatus.CANCELLED,
-      ],
     };
 
     if (!validTransitions[current]?.includes(next)) {

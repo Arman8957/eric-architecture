@@ -23,6 +23,7 @@ import { UpdateProposalDto } from './dto/update-proposal.dto';
 import { AddProposalServiceDto } from './dto/add-proposal-service.dto';
 import { ProposalSignatureDto } from './dto/proposal-signature.dto';
 import { success } from 'zod';
+import { UpdateProposalServiceDto } from './dto/update-proposal-status.dto';
 
 @Injectable()
 export class ProposalService {
@@ -1073,7 +1074,7 @@ export class ProposalService {
 
   //   return service;
   // }
-
+//===================for the service add=============
   async addService(id: string, dto: AddProposalServiceDto, user: User) {
     if (!this.canManage(user)) {
       throw new ForbiddenException('Access denied');
@@ -1119,6 +1120,176 @@ export class ProposalService {
       data: service,
     };
   }
+
+  async updateService(
+  proposalId: string,
+  serviceId: string,
+  dto: UpdateProposalServiceDto,
+  user: User,
+) {
+  if (!this.canManage(user)) {
+    throw new ForbiddenException('Access denied');
+  }
+
+  const proposal = await this.prisma.proposal.findUnique({
+    where: { id: proposalId },
+  });
+
+  if (!proposal) {
+    throw new NotFoundException('Proposal not found');
+  }
+
+  if (proposal.status !== ProposalStatus.DRAFT) {
+    throw new BadRequestException(
+      'Cannot update services in non-DRAFT proposal',
+    );
+  }
+
+  const service = await this.prisma.proposalService.findFirst({
+    where: {
+      id: serviceId,
+      proposalId: proposalId,
+    },
+  });
+
+  if (!service) {
+    throw new NotFoundException('Service not found in this proposal');
+  }
+
+  // Update the service
+  const updated = await this.prisma.proposalService.update({
+    where: { id: serviceId },
+    data: {
+      name: dto.name?.trim() || service.name,
+      description: dto.description?.trim() ?? service.description,
+      amount: dto.cost ?? service.amount,
+      rate: dto.cost ?? service.rate,
+      quantity: dto.quantity ?? service.quantity,
+      order: dto.order ?? service.order,
+    },
+  });
+
+  // Recalculate totals
+  await this.recalculateTotals(proposalId);
+
+  // Get updated proposal
+  const updatedProposal = await this.prisma.proposal.findUnique({
+    where: { id: proposalId },
+    select: {
+      id: true,
+      subtotal: true,
+      taxAmount: true,
+      totalAmount: true,
+    },
+  });
+
+  this.logger.log(
+    `Service ${serviceId} updated in proposal ${proposalId} by ${user.email}`,
+  );
+
+  return {
+    success: true,
+    message: `Service "${updated.name}" updated successfully`,
+    data: {
+      service: updated,
+      proposal: updatedProposal,
+    },
+  };
+}
+
+async deleteService(
+  proposalId: string,
+  serviceId: string,
+  user: User,
+) {
+  if (!this.canManage(user)) {
+    throw new ForbiddenException('Access denied');
+  }
+
+  const proposal = await this.prisma.proposal.findUnique({
+    where: { id: proposalId },
+    include: { services: true },
+  });
+
+  if (!proposal) {
+    throw new NotFoundException('Proposal not found');
+  }
+
+  if (proposal.status !== ProposalStatus.DRAFT) {
+    throw new BadRequestException('Cannot delete services from non-DRAFT proposal');
+  }
+
+  const service = await this.prisma.proposalService.findFirst({
+    where: {
+      id: serviceId,
+      proposalId: proposalId,
+    },
+  });
+
+  if (!service) {
+    throw new NotFoundException('Service not found in this proposal');
+  }
+
+  // Delete the service
+  await this.prisma.proposalService.delete({
+    where: { id: serviceId },
+  });
+
+  // Reorder remaining services
+  const remainingServices = proposal.services
+    .filter((s) => s.id !== serviceId)
+    .sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
+
+  for (let i = 0; i < remainingServices.length; i++) {
+    await this.prisma.proposalService.update({
+      where: { id: remainingServices[i].id },
+      data: { order: i + 1 },
+    });
+  }
+
+  // Recalculate totals
+  await this.recalculateTotals(proposalId);
+
+  // Fetch updated proposal
+  const updatedProposal = await this.prisma.proposal.findUnique({
+    where: { id: proposalId },
+    include: {
+      services: { orderBy: { order: 'asc' } },
+    },
+  });
+
+  // Safety check (should never happen, but TypeScript requires it)
+  if (!updatedProposal) {
+    throw new NotFoundException(
+      'Proposal disappeared after service deletion – please try again'
+    );
+  }
+
+  this.logger.log(
+    `Service ${serviceId} deleted from proposal ${proposalId} by ${user.email}`
+  );
+
+  return {
+    success: true,
+    message: `Service "${service.name}" deleted successfully`,
+    data: {
+      deletedService: {
+        id: service.id,
+        name: service.name,
+      },
+      proposal: {
+        id: updatedProposal.id,
+        subtotal: updatedProposal.subtotal,
+        taxAmount: updatedProposal.taxAmount,
+        totalAmount: updatedProposal.totalAmount,
+        servicesCount: updatedProposal.services.length,
+        services: updatedProposal.services,
+      },
+    },
+  };
+}
+
+  //=====================for the service ==============
 
   private async recalculateTotals(proposalId: string) {
     const proposal = await this.prisma.proposal.findUnique({
