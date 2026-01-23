@@ -22,6 +22,7 @@ import { CreateProposalDto } from './dto/create-proposal.dto';
 import { UpdateProposalDto } from './dto/update-proposal.dto';
 import { AddProposalServiceDto } from './dto/add-proposal-service.dto';
 import { ProposalSignatureDto } from './dto/proposal-signature.dto';
+import { success } from 'zod';
 
 @Injectable()
 export class ProposalService {
@@ -509,100 +510,104 @@ export class ProposalService {
     });
   }
 
-  // 2. Add method to get proposal with full user data
-  async findOneWithFullData(id: string, user: User) {
-    const proposal = await this.prisma.proposal.findUnique({
-      where: { id },
-      include: {
-        services: {
-          orderBy: { order: 'asc' },
+
+async findOneWithFullData(id: string, user: User) {
+  const proposal = await this.prisma.proposal.findUnique({
+    where: { id },
+    include: {
+      services: {
+        orderBy: { order: 'asc' },
+      },
+      credits: {
+        orderBy: { createdAt: 'asc' },
+      },
+      projectRequest: {
+        select: {
+          id: true,
+          projectName: true,
+          status: true,
+          clientFirstName: true,
+          clientLastName: true,
+          email: true,
+          phone: true,
+          companyName: true,
+          country: true,
+          state: true,
+          city: true,
+          streetAddress: true,
         },
-        credits: {
-          orderBy: { createdAt: 'asc' },
+      },
+      user: {
+        select: {
+          id: true,
+          name: true,
+          email: true,
+          avatar: true,
+          role: true,
         },
-        projectRequest: {
-          select: {
-            id: true,
-            projectName: true,
-            status: true,
-            clientFirstName: true,
-            clientLastName: true,
-            email: true,
-            phone: true,
-            companyName: true,
-            country: true,
-            state: true,
-            city: true,
-            streetAddress: true,
-          },
+      },
+      createdBy: {
+        select: {
+          id: true,
+          name: true,
+          email: true,
+          role: true,
         },
-        user: {
-          select: {
-            id: true,
-            name: true,
-            email: true,
-            avatar: true,
-            role: true,
-          },
-        },
-        createdBy: {
-          select: {
-            id: true,
-            name: true,
-            email: true,
-            role: true,
-          },
-        },
-        projectStages: {
-          orderBy: { order: 'asc' },
-          include: {
-            assignedTo: {
-              select: {
-                id: true,
-                name: true,
-                email: true,
-                avatar: true,
-                role: true,
-              },
+      },
+      projectStages: {
+        orderBy: { order: 'asc' },
+        include: {
+          assignedTo: {
+            select: {
+              id: true,
+              name: true,
+              email: true,
+              avatar: true,
+              role: true,
             },
           },
         },
       },
-    });
+    },
+  });
 
-    if (!proposal) {
-      throw new NotFoundException('Proposal not found');
-    }
-
-    // Check permissions
-    const isManager = this.canManage(user);
-    const isOwner = proposal.userId === user.id;
-
-    if (!isManager && !isOwner) {
-      throw new ForbiddenException('Not authorized to view this proposal');
-    }
-
-    // Auto-mark as viewed if client views for first time
-    if (
-      isOwner &&
-      proposal.status === ProposalStatus.SENT &&
-      !proposal.viewedAt
-    ) {
-      await this.prisma.proposal.update({
-        where: { id },
-        data: {
-          status: ProposalStatus.VIEWED,
-          viewedAt: new Date(),
-        },
-      });
-      proposal.status = ProposalStatus.VIEWED;
-      proposal.viewedAt = new Date();
-    }
-
-    return proposal;
+  if (!proposal) {
+    throw new NotFoundException('Proposal not found');
   }
 
-  // 3. Update findAll to include more user data
+  // Check permissions - FIXED
+  const isManager = this.canManage(user);
+  const isOwner = proposal.userId === user.id || proposal.clientEmail === user.email;
+
+  if (!isManager && !isOwner) {
+    throw new ForbiddenException('Not authorized to view this proposal');
+  }
+
+  // Auto-mark as viewed if client views for first time
+  if (
+    isOwner &&
+    proposal.status === ProposalStatus.SENT &&
+    !proposal.viewedAt
+  ) {
+    await this.prisma.proposal.update({
+      where: { id },
+      data: {
+        status: ProposalStatus.VIEWED,
+        viewedAt: new Date(),
+      },
+    });
+    proposal.status = ProposalStatus.VIEWED;
+    proposal.viewedAt = new Date();
+  }
+
+  return {
+    success: true,
+    message: 'Successfully retrieved proposal details',
+    data: proposal,
+  };
+}
+
+
   async findAll(user: User) {
     if (!this.canManage(user)) {
       throw new ForbiddenException('Access denied');
@@ -660,10 +665,15 @@ export class ProposalService {
     });
   }
 
-  // 4. Update getMyProposals to include full data
+
   async getMyProposals(user: User) {
-    return this.prisma.proposal.findMany({
-      where: { userId: user.id },
+    const proposals = await this.prisma.proposal.findMany({
+      where: {
+        OR: [
+          { userId: user.id }, 
+          { clientEmail: user.email },
+        ],
+      },
       include: {
         services: {
           orderBy: { order: 'asc' },
@@ -701,8 +711,109 @@ export class ProposalService {
       },
       orderBy: { createdAt: 'desc' },
     });
+
+    return {
+      success: true,
+      message: 'Successfully retrieved your proposals',
+      data: proposals,
+    };
   }
 
+  async linkProposalsToUser(email: string, userId: string) {
+    const updated = await this.prisma.proposal.updateMany({
+      where: {
+        clientEmail: email,
+        userId: null, // Only update proposals without a user link
+      },
+      data: {
+        userId: userId,
+      },
+    });
+
+    this.logger.log(
+      `Linked ${updated.count} proposals to user ${userId} (${email})`,
+    );
+
+    return updated.count;
+  }
+
+  // async findOne(id: string, user: User) {
+  //   const proposal = await this.prisma.proposal.findUnique({
+  //     where: { id },
+  //     include: {
+  //       services: {
+  //         orderBy: { order: 'asc' },
+  //       },
+  //       credits: true,
+  //       projectRequest: {
+  //         select: {
+  //           id: true,
+  //           projectName: true,
+  //           status: true,
+  //         },
+  //       },
+  //       user: {
+  //         select: {
+  //           id: true,
+  //           name: true,
+  //           email: true,
+  //           avatar: true,
+  //         },
+  //       },
+  //       createdBy: {
+  //         select: {
+  //           id: true,
+  //           name: true,
+  //           email: true,
+  //         },
+  //       },
+  //       projectStages: {
+  //         orderBy: { order: 'asc' },
+  //         include: {
+  //           assignedTo: {
+  //             select: {
+  //               id: true,
+  //               name: true,
+  //               email: true,
+  //             },
+  //           },
+  //         },
+  //       },
+  //     },
+  //   });
+
+  //   if (!proposal) {
+  //     throw new NotFoundException('Proposal not found');
+  //   }
+
+  //   // Check permissions
+  //   const isManager = this.canManage(user);
+  //   const isOwner = proposal.userId === user.id;
+
+  //   if (!isManager && !isOwner) {
+  //     throw new ForbiddenException('Not authorized to view this proposal');
+  //   }
+
+  //   if (
+  //     isOwner &&
+  //     proposal.status === ProposalStatus.SENT &&
+  //     !proposal.viewedAt
+  //   ) {
+  //     await this.prisma.proposal.update({
+  //       where: { id },
+  //       data: {
+  //         status: ProposalStatus.VIEWED,
+  //         viewedAt: new Date(),
+  //       },
+  //     });
+  //   }
+
+  //   return {
+  //     success: true,
+  //     message: 'Successfully get you single data',
+  //     data: proposal,
+  //   };
+  // }
   async findOne(id: string, user: User) {
     const proposal = await this.prisma.proposal.findUnique({
       where: { id },
@@ -752,14 +863,16 @@ export class ProposalService {
       throw new NotFoundException('Proposal not found');
     }
 
-    // Check permissions
+    // Check permissions - FIXED to include email check
     const isManager = this.canManage(user);
-    const isOwner = proposal.userId === user.id;
+    const isOwner =
+      proposal.userId === user.id || proposal.clientEmail === user.email;
 
     if (!isManager && !isOwner) {
       throw new ForbiddenException('Not authorized to view this proposal');
     }
 
+    // Auto-mark as viewed if client views for first time
     if (
       isOwner &&
       proposal.status === ProposalStatus.SENT &&
@@ -774,7 +887,11 @@ export class ProposalService {
       });
     }
 
-    return proposal;
+    return {
+      success: true,
+      message: 'Successfully retrieved proposal',
+      data: proposal,
+    };
   }
 
   async update(id: string, dto: UpdateProposalDto, user: User) {
@@ -852,50 +969,50 @@ export class ProposalService {
   // }
 
   async addService(id: string, dto: AddProposalServiceDto, user: User) {
-  if (!this.canManage(user)) {
-    throw new ForbiddenException('Access denied');
+    if (!this.canManage(user)) {
+      throw new ForbiddenException('Access denied');
+    }
+
+    const proposal = await this.prisma.proposal.findUnique({
+      where: { id },
+      include: { services: true },
+    });
+
+    if (!proposal) {
+      throw new NotFoundException('Proposal not found');
+    }
+
+    if (proposal.status !== ProposalStatus.DRAFT) {
+      throw new BadRequestException(
+        'Cannot add services to non-DRAFT proposal',
+      );
+    }
+
+    const maxOrder = proposal.services.reduce(
+      (max, s) => Math.max(max, s.order ?? 0),
+      0,
+    );
+
+    const service = await this.prisma.proposalService.create({
+      data: {
+        proposalId: id,
+        name: dto.name.trim(),
+        description: dto.description?.trim() ?? null,
+        amount: dto.cost,
+        rate: dto.cost,
+        quantity: 1,
+        order: maxOrder + 1,
+      },
+    });
+
+    await this.recalculateTotals(id);
+
+    return {
+      success: true,
+      message: `Service "${dto.name}" added successfully to proposal`,
+      data: service,
+    };
   }
-
-  const proposal = await this.prisma.proposal.findUnique({
-    where: { id },
-    include: { services: true },
-  });
-
-  if (!proposal) {
-    throw new NotFoundException('Proposal not found');
-  }
-
-  if (proposal.status !== ProposalStatus.DRAFT) {
-    throw new BadRequestException('Cannot add services to non-DRAFT proposal');
-  }
-
-  const maxOrder = proposal.services.reduce(
-    (max, s) => Math.max(max, s.order ?? 0),
-    0,
-  );
-
-  const service = await this.prisma.proposalService.create({
-    data: {
-      proposalId: id,
-      name: dto.name.trim(),
-      description: dto.description?.trim() ?? null,
-      amount: dto.cost,
-      rate: dto.cost,
-      quantity: 1,
-      order: maxOrder + 1,
- 
-    },
-  });
-
-
-  await this.recalculateTotals(id);
-
-  return {
-    success: true,
-    message: `Service "${dto.name}" added successfully to proposal`,
-    data: service,
-  };
-}
 
   private async recalculateTotals(proposalId: string) {
     const proposal = await this.prisma.proposal.findUnique({
