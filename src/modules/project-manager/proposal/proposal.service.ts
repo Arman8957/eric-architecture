@@ -56,6 +56,127 @@ export class ProposalService {
     return this.MANAGER_ROLES.has(user.role);
   }
 
+  async create(dto: CreateProposalDto, user: User) {
+    if (!this.canManage(user)) {
+      throw new ForbiddenException('Only managers can create proposals');
+    }
+
+    const projectRequest = await this.prisma.projectRequest.findUnique({
+      where: { id: dto.projectRequestId },
+    });
+
+    if (!projectRequest) {
+      throw new NotFoundException('Project request not found');
+    }
+
+    const clientUserId = projectRequest.userId;
+
+    // Optional: log warning or throw if no user is linked
+    if (!clientUserId) {
+      this.logger.warn(
+        `Creating proposal without user link for request ${dto.projectRequestId} ` +
+          `(client email: ${projectRequest.email})`,
+      );
+      // If you want to force a linked user → uncomment:
+      // throw new BadRequestException('Cannot create proposal: no registered client user linked to this request');
+    }
+
+    const year = new Date().getFullYear();
+    const count = await this.prisma.proposal.count({
+      where: { proposalNumber: { startsWith: `PROP-${year}-` } },
+    });
+    const proposalNumber = `PROP-${year}-${String(count + 1).padStart(4, '0')}`;
+
+    const locationParts = [
+      dto.streetAddress,
+      dto.city,
+      dto.state,
+      dto.country,
+    ].filter(Boolean);
+    const projectLocation = locationParts.join(', ') || '';
+
+    const data: Prisma.ProposalCreateInput = {
+      projectRequest: { connect: { id: dto.projectRequestId } },
+
+      // ─── FIXED: This is the correct & reliable way ───
+      user: clientUserId ? { connect: { id: clientUserId } } : undefined,
+
+      proposalNumber,
+      title: dto.name.trim(),
+      projectName: dto.name.trim(),
+      projectDescription: dto.description?.trim(),
+      additionalContext: dto.additionalContext?.trim(),
+      projectLocation,
+      serviceType: dto.serviceType,
+      projectCategory: dto.projectCategory,
+      squareFootage: dto.squareFootage?.trim(),
+      budgetRange: dto.budgetRange?.trim(),
+      expectedTimeline: dto.expectedTimeline?.trim(),
+      clientName:
+        `${projectRequest.clientFirstName} ${projectRequest.clientLastName || ''}`.trim(),
+      clientEmail: projectRequest.email,
+      clientPhone: projectRequest.phone ?? undefined,
+      clientCompany: projectRequest.companyName ?? undefined,
+      taxRate: dto.taxRate ?? undefined,
+      paymentMethod: dto.paymentMethod,
+      paymentTerms: dto.paymentTerms,
+      notes: dto.notes?.trim(),
+      termsAndConditions: dto.termsAndConditions?.trim(),
+      expiresAt: dto.expiresAt ? new Date(dto.expiresAt) : undefined,
+      createdBy: { connect: { id: user.id } },
+      status: ProposalStatus.DRAFT,
+    };
+
+    const proposal = await this.prisma.proposal.create({
+      data,
+      include: {
+        services: true,
+        credits: true,
+        projectRequest: {
+          select: {
+            id: true,
+            projectName: true,
+            status: true,
+            clientFirstName: true,
+            clientLastName: true,
+            email: true,
+            phone: true,
+            companyName: true,
+          },
+        },
+
+        user: clientUserId
+          ? {
+              select: {
+                id: true,
+                name: true,
+                email: true,
+              },
+            }
+          : undefined,
+        createdBy: {
+          select: {
+            id: true,
+            name: true,
+            email: true,
+            role: true,
+          },
+        },
+      },
+    });
+
+    this.logger.log(
+      `Proposal created: ${proposal.id} (${proposal.proposalNumber}) by ${user.email} ` +
+        `(for request ${dto.projectRequestId}, client: ${proposal.clientName}, userId: ${proposal.userId || 'none'})`,
+    );
+
+    return {
+      success: true,
+      message: 'Proposal created successfully',
+      data: proposal,
+    };
+  }
+
   // async create(dto: CreateProposalDto, user: User) {
   //   // Verify user has permission
   //   if (!this.canManage(user)) {
@@ -181,138 +302,128 @@ export class ProposalService {
 
   // 1. Update the sign() method to create ProjectStages correctly
 
-  async create(dto: CreateProposalDto, user: User) {
-    // 1. Permission check
-    if (!this.canManage(user)) {
-      throw new ForbiddenException('Only managers can create proposals');
-    }
+  // async create(dto: CreateProposalDto, user: User) {
+  //   if (!this.canManage(user)) {
+  //     throw new ForbiddenException('Only managers can create proposals');
+  //   }
 
-    // 2. Fetch the source project request
-    const projectRequest = await this.prisma.projectRequest.findUnique({
-      where: { id: dto.projectRequestId },
-    });
+  //   const projectRequest = await this.prisma.projectRequest.findUnique({
+  //     where: { id: dto.projectRequestId },
+  //   });
 
-    if (!projectRequest) {
-      throw new NotFoundException('Project request not found');
-    }
+  //   if (!projectRequest) {
+  //     throw new NotFoundException('Project request not found');
+  //   }
 
-    // 3. Optional: connect to existing registered user (if any)
-    const clientUserId = projectRequest.userId ?? undefined;
+  //   const clientUserId = projectRequest.userId ?? undefined;
+  //   const year = new Date().getFullYear();
+  //   const count = await this.prisma.proposal.count({
+  //     where: { proposalNumber: { startsWith: `PROP-${year}-` } },
+  //   });
+  //   const proposalNumber = `PROP-${year}-${String(count + 1).padStart(4, '0')}`;
+  //   const locationParts = [
+  //     dto.streetAddress,
+  //     dto.city,
+  //     dto.state,
+  //     dto.country,
+  //   ].filter(Boolean);
+  //   const projectLocation = locationParts.join(', ') || '';
 
-    // 4. Generate unique proposal number (your original logic)
-    const year = new Date().getFullYear();
-    const count = await this.prisma.proposal.count({
-      where: { proposalNumber: { startsWith: `PROP-${year}-` } },
-    });
-    const proposalNumber = `PROP-${year}-${String(count + 1).padStart(4, '0')}`;
+  //   const data: Prisma.ProposalCreateInput = {
+  //     projectRequest: { connect: { id: dto.projectRequestId } },
 
-    // 5. Build location string from DTO (your original logic)
-    const locationParts = [
-      dto.streetAddress,
-      dto.city,
-      dto.state,
-      dto.country,
-    ].filter(Boolean);
-    const projectLocation = locationParts.join(', ') || '';
+  //     ...(clientUserId && { user: { connect: { id: clientUserId } } }),
 
-    // 6. Prepare create input
-    const data: Prisma.ProposalCreateInput = {
-      // Always connect to the project request (source of truth)
-      projectRequest: { connect: { id: dto.projectRequestId } },
+  //     // Proposal metadata
+  //     proposalNumber,
+  //     title: dto.name.trim(),
+  //     projectName: dto.name.trim(),
+  //     projectDescription: dto.description?.trim(),
+  //     additionalContext: dto.additionalContext?.trim(),
+  //     projectLocation,
 
-      // Only connect user if it already exists (optional relation)
-      ...(clientUserId && { user: { connect: { id: clientUserId } } }),
+  //     // Project specs
+  //     serviceType: dto.serviceType,
+  //     projectCategory: dto.projectCategory,
+  //     squareFootage: dto.squareFootage?.trim(),
+  //     budgetRange: dto.budgetRange?.trim(),
+  //     expectedTimeline: dto.expectedTimeline?.trim(),
 
-      // Proposal metadata
-      proposalNumber,
-      title: dto.name.trim(),
-      projectName: dto.name.trim(),
-      projectDescription: dto.description?.trim(),
-      additionalContext: dto.additionalContext?.trim(),
-      projectLocation,
+  //     // Client contact info (always filled from ProjectRequest)
+  //     clientName:
+  //       `${projectRequest.clientFirstName} ${projectRequest.clientLastName || ''}`.trim(),
+  //     clientEmail: projectRequest.email,
+  //     clientPhone: projectRequest.phone ?? undefined,
+  //     clientCompany: projectRequest.companyName ?? undefined,
 
-      // Project specs
-      serviceType: dto.serviceType,
-      projectCategory: dto.projectCategory,
-      squareFootage: dto.squareFootage?.trim(),
-      budgetRange: dto.budgetRange?.trim(),
-      expectedTimeline: dto.expectedTimeline?.trim(),
+  //     // Financials (from DTO where applicable)
+  //     taxRate: dto.taxRate ?? undefined,
 
-      // Client contact info (always filled from ProjectRequest)
-      clientName:
-        `${projectRequest.clientFirstName} ${projectRequest.clientLastName || ''}`.trim(),
-      clientEmail: projectRequest.email,
-      clientPhone: projectRequest.phone ?? undefined,
-      clientCompany: projectRequest.companyName ?? undefined,
+  //     // Payment & terms
+  //     paymentMethod: dto.paymentMethod,
+  //     paymentTerms: dto.paymentTerms,
 
-      // Financials (from DTO where applicable)
-      taxRate: dto.taxRate ?? undefined,
+  //     // Additional
+  //     notes: dto.notes?.trim(),
+  //     termsAndConditions: dto.termsAndConditions?.trim(),
+  //     expiresAt: dto.expiresAt ? new Date(dto.expiresAt) : undefined,
 
-      // Payment & terms
-      paymentMethod: dto.paymentMethod,
-      paymentTerms: dto.paymentTerms,
+  //     // Audit trail
+  //     createdBy: { connect: { id: user.id } },
 
-      // Additional
-      notes: dto.notes?.trim(),
-      termsAndConditions: dto.termsAndConditions?.trim(),
-      expiresAt: dto.expiresAt ? new Date(dto.expiresAt) : undefined,
+  //     // Initial status
+  //     // status: ProposalStatus.DRAFT,
+  //   };
 
-      // Audit trail
-      createdBy: { connect: { id: user.id } },
+  //   // 7. Create the proposal with useful relations
+  //   const proposal = await this.prisma.proposal.create({
+  //     data,
+  //     include: {
+  //       services: true,
+  //       credits: true,
+  //       projectRequest: {
+  //         select: {
+  //           id: true,
+  //           projectName: true,
+  //           status: true,
+  //           clientFirstName: true,
+  //           clientLastName: true,
+  //           email: true,
+  //           phone: true,
+  //           companyName: true,
+  //         },
+  //       },
+  //       user: clientUserId
+  //         ? {
+  //             select: {
+  //               id: true,
+  //               name: true,
+  //               email: true,
+  //             },
+  //           }
+  //         : undefined,
+  //       createdBy: {
+  //         select: {
+  //           id: true,
+  //           name: true,
+  //           email: true,
+  //           role: true,
+  //         },
+  //       },
+  //     },
+  //   });
 
-      // Initial status
-      // status: ProposalStatus.DRAFT,
-    };
+  //   this.logger.log(
+  //     `Proposal created: ${proposal.id} (${proposal.proposalNumber}) by ${user.email} ` +
+  //       `(for request ${dto.projectRequestId}, client: ${proposal.clientName})`,
+  //   );
 
-    // 7. Create the proposal with useful relations
-    const proposal = await this.prisma.proposal.create({
-      data,
-      include: {
-        services: true,
-        credits: true,
-        projectRequest: {
-          select: {
-            id: true,
-            projectName: true,
-            status: true,
-            clientFirstName: true,
-            clientLastName: true,
-            email: true,
-            phone: true,
-            companyName: true,
-          },
-        },
-        user: clientUserId
-          ? {
-              select: {
-                id: true,
-                name: true,
-                email: true,
-              },
-            }
-          : undefined,
-        createdBy: {
-          select: {
-            id: true,
-            name: true,
-            email: true,
-            role: true,
-          },
-        },
-      },
-    });
-
-    this.logger.log(
-      `Proposal created: ${proposal.id} (${proposal.proposalNumber}) by ${user.email} ` +
-        `(for request ${dto.projectRequestId}, client: ${proposal.clientName})`,
-    );
-
-    return {
-      success: true,
-      message: `Project request status updated to successfully`,
-      data: proposal,
-    };
-  }
+  //   return {
+  //     success: true,
+  //     message: `Project request status updated to successfully`,
+  //     data: proposal,
+  //   };
+  // }
 
   async sign(id: string, dto: ProposalSignatureDto, user: User) {
     const proposal = await this.prisma.proposal.findUnique({
@@ -510,103 +621,102 @@ export class ProposalService {
     });
   }
 
-
-async findOneWithFullData(id: string, user: User) {
-  const proposal = await this.prisma.proposal.findUnique({
-    where: { id },
-    include: {
-      services: {
-        orderBy: { order: 'asc' },
-      },
-      credits: {
-        orderBy: { createdAt: 'asc' },
-      },
-      projectRequest: {
-        select: {
-          id: true,
-          projectName: true,
-          status: true,
-          clientFirstName: true,
-          clientLastName: true,
-          email: true,
-          phone: true,
-          companyName: true,
-          country: true,
-          state: true,
-          city: true,
-          streetAddress: true,
+  async findOneWithFullData(id: string, user: User) {
+    const proposal = await this.prisma.proposal.findUnique({
+      where: { id },
+      include: {
+        services: {
+          orderBy: { order: 'asc' },
         },
-      },
-      user: {
-        select: {
-          id: true,
-          name: true,
-          email: true,
-          avatar: true,
-          role: true,
+        credits: {
+          orderBy: { createdAt: 'asc' },
         },
-      },
-      createdBy: {
-        select: {
-          id: true,
-          name: true,
-          email: true,
-          role: true,
+        projectRequest: {
+          select: {
+            id: true,
+            projectName: true,
+            status: true,
+            clientFirstName: true,
+            clientLastName: true,
+            email: true,
+            phone: true,
+            companyName: true,
+            country: true,
+            state: true,
+            city: true,
+            streetAddress: true,
+          },
         },
-      },
-      projectStages: {
-        orderBy: { order: 'asc' },
-        include: {
-          assignedTo: {
-            select: {
-              id: true,
-              name: true,
-              email: true,
-              avatar: true,
-              role: true,
+        user: {
+          select: {
+            id: true,
+            name: true,
+            email: true,
+            avatar: true,
+            role: true,
+          },
+        },
+        createdBy: {
+          select: {
+            id: true,
+            name: true,
+            email: true,
+            role: true,
+          },
+        },
+        projectStages: {
+          orderBy: { order: 'asc' },
+          include: {
+            assignedTo: {
+              select: {
+                id: true,
+                name: true,
+                email: true,
+                avatar: true,
+                role: true,
+              },
             },
           },
         },
       },
-    },
-  });
-
-  if (!proposal) {
-    throw new NotFoundException('Proposal not found');
-  }
-
-  // Check permissions - FIXED
-  const isManager = this.canManage(user);
-  const isOwner = proposal.userId === user.id || proposal.clientEmail === user.email;
-
-  if (!isManager && !isOwner) {
-    throw new ForbiddenException('Not authorized to view this proposal');
-  }
-
-  // Auto-mark as viewed if client views for first time
-  if (
-    isOwner &&
-    proposal.status === ProposalStatus.SENT &&
-    !proposal.viewedAt
-  ) {
-    await this.prisma.proposal.update({
-      where: { id },
-      data: {
-        status: ProposalStatus.VIEWED,
-        viewedAt: new Date(),
-      },
     });
-    proposal.status = ProposalStatus.VIEWED;
-    proposal.viewedAt = new Date();
+
+    if (!proposal) {
+      throw new NotFoundException('Proposal not found');
+    }
+
+    // Check permissions - FIXED
+    const isManager = this.canManage(user);
+    const isOwner =
+      proposal.userId === user.id || proposal.clientEmail === user.email;
+
+    if (!isManager && !isOwner) {
+      throw new ForbiddenException('Not authorized to view this proposal');
+    }
+
+    // Auto-mark as viewed if client views for first time
+    if (
+      isOwner &&
+      proposal.status === ProposalStatus.SENT &&
+      !proposal.viewedAt
+    ) {
+      await this.prisma.proposal.update({
+        where: { id },
+        data: {
+          status: ProposalStatus.VIEWED,
+          viewedAt: new Date(),
+        },
+      });
+      proposal.status = ProposalStatus.VIEWED;
+      proposal.viewedAt = new Date();
+    }
+
+    return {
+      success: true,
+      message: 'Successfully retrieved proposal details',
+      data: proposal,
+    };
   }
-
-  return {
-    success: true,
-    message: 'Successfully retrieved proposal details',
-    data: proposal,
-  };
-}
-
 
   async findAll(user: User) {
     if (!this.canManage(user)) {
@@ -665,14 +775,10 @@ async findOneWithFullData(id: string, user: User) {
     });
   }
 
-
   async getMyProposals(user: User) {
     const proposals = await this.prisma.proposal.findMany({
       where: {
-        OR: [
-          { userId: user.id }, 
-          { clientEmail: user.email },
-        ],
+        OR: [{ userId: user.id }, { clientEmail: user.email }],
       },
       include: {
         services: {
@@ -1141,6 +1247,247 @@ async findOneWithFullData(id: string, user: User) {
 
     return { message: 'Proposal sent to client successfully' };
   }
+
+
+async updateProposalStatus(
+  proposalId: string,
+  user: User,
+  newStatus: ProposalStatus,
+  notes?: string,
+) {
+  const proposal = await this.prisma.proposal.findUnique({
+    where: { id: proposalId },
+    include: {
+      projectRequest: true,
+      services: true,
+    },
+  });
+
+  if (!proposal) {
+    throw new NotFoundException('Proposal not found');
+  }
+
+  // Permission checks
+  const isManager = this.canManage(user);
+  const isOwner =
+    proposal.userId === user.id || proposal.clientEmail === user.email;
+
+  if (!isManager && !isOwner) {
+    throw new ForbiddenException(
+      'You are not authorized to update this proposal status',
+    );
+  }
+
+ 
+  if (!isManager) {
+    const allowedClientStatuses: ProposalStatus[] = [ // FIX: Type the array explicitly
+      ProposalStatus.ACCEPTED,
+      ProposalStatus.REJECTED,
+    ];
+    if (!allowedClientStatuses.includes(newStatus)) {
+      throw new BadRequestException(
+        `Clients can only set status to: ${allowedClientStatuses.join(', ')}`,
+      );
+    }
+  }
+
+  // Validate allowed status transitions
+  const allowedTransitions: Record<ProposalStatus, ProposalStatus[]> = {
+    [ProposalStatus.DRAFT]: [ProposalStatus.SENT],
+    [ProposalStatus.SENT]: [
+      ProposalStatus.VIEWED,
+      ProposalStatus.ACCEPTED,
+      ProposalStatus.REJECTED,
+    ],
+    [ProposalStatus.VIEWED]: [
+      ProposalStatus.ACCEPTED,
+      ProposalStatus.REJECTED,
+    ],
+    [ProposalStatus.ACCEPTED]: [],
+    [ProposalStatus.REJECTED]: [],
+    EXPIRED: []
+  };
+
+  const currentTransitions = allowedTransitions[proposal.status] || [];
+  if (!currentTransitions.includes(newStatus)) {
+    throw new BadRequestException(
+      `Cannot change status from ${proposal.status} to ${newStatus}`,
+    );
+  }
+
+  // Update the proposal
+  const updated = await this.prisma.proposal.update({
+    where: { id: proposalId },
+    data: {
+      status: newStatus,
+      notes: notes
+        ? `${proposal.notes ? proposal.notes + '\n\n' : ''}[${new Date().toISOString()}] Status changed to ${newStatus}: ${notes}`
+        : proposal.notes,
+      // Set respondedAt when client accepts/rejects
+      ...(newStatus === ProposalStatus.ACCEPTED ||
+      newStatus === ProposalStatus.REJECTED
+        ? { respondedAt: new Date() }
+        : {}),
+      // Set viewedAt when status changes to VIEWED
+      ...(newStatus === ProposalStatus.VIEWED && !proposal.viewedAt
+        ? { viewedAt: new Date() }
+        : {}),
+      // Set sentAt when status changes to SENT
+      ...(newStatus === ProposalStatus.SENT && !proposal.sentAt
+        ? { sentAt: new Date() }
+        : {}),
+    },
+    include: {
+      projectRequest: true,
+      services: { orderBy: { order: 'asc' } },
+      user: {
+        select: {
+          id: true,
+          name: true,
+          email: true,
+          avatar: true,
+        },
+      },
+      createdBy: {
+        select: {
+          id: true,
+          name: true,
+          email: true,
+        },
+      },
+      projectStages: {
+        orderBy: { order: 'asc' },
+      },
+    },
+  });
+
+  this.logger.log(
+    `Proposal ${proposal.proposalNumber} status updated from ${proposal.status} to ${newStatus} by ${user.email}`,
+  );
+
+  // Send notification emails based on status change
+  await this.sendStatusChangeNotification(updated, proposal.status, newStatus);
+
+  return {
+    success: true,
+    message: `Proposal status updated to ${newStatus} successfully`,
+    data: updated,
+  };
+}
+
+// Add this helper method for sending notifications
+private async sendStatusChangeNotification(
+  proposal: any,
+  oldStatus: ProposalStatus,
+  newStatus: ProposalStatus,
+) {
+  try {
+    const frontendUrl = this.config.get('FRONTEND_URL', 'http://localhost:3000');
+
+    // Notify client when proposal is sent
+    if (newStatus === ProposalStatus.SENT) {
+      await this.mailer.sendMail({
+        to: proposal.clientEmail,
+        subject: `Proposal Ready: ${proposal.projectName}`,
+        html: `
+          <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+            <h2 style="color: #2563eb;">New Proposal Available</h2>
+            <p>Dear ${proposal.clientName},</p>
+            <p>Your proposal for "<strong>${proposal.projectName}</strong>" is ready for review.</p>
+            
+            <div style="background: #f3f4f6; padding: 20px; border-radius: 8px; margin: 20px 0;">
+              <p><strong>Proposal Number:</strong> ${proposal.proposalNumber}</p>
+              <p><strong>Services:</strong> ${proposal.services.length}</p>
+              ${Number(proposal.totalAmount) > 0 ? `<p><strong>Total:</strong> $${Number(proposal.totalAmount).toFixed(2)}</p>` : ''}
+            </div>
+            
+            <div style="text-align: center; margin: 30px 0;">
+              <a href="${frontendUrl}/proposals/${proposal.id}" 
+                 style="background: #2563eb; color: white; padding: 12px 24px; 
+                        text-decoration: none; border-radius: 6px; display: inline-block;">
+                Review Proposal
+              </a>
+            </div>
+          </div>
+        `,
+      });
+    }
+
+    // Notify admin when client accepts/rejects
+    if (newStatus === ProposalStatus.ACCEPTED || newStatus === ProposalStatus.REJECTED) {
+      const statusColor = newStatus === ProposalStatus.ACCEPTED ? '#10b981' : '#ef4444';
+      const statusText = newStatus === ProposalStatus.ACCEPTED ? 'Accepted' : 'Rejected';
+
+      // Notify team
+      const team = await this.prisma.user.findMany({
+        where: {
+          role: { in: this.MANAGER_ROLES_ARRAY },
+          isActive: true,
+        },
+        select: { email: true, name: true },
+      });
+
+      for (const member of team) {
+        await this.mailer.sendMail({
+          to: member.email,
+          subject: `Proposal ${statusText}: ${proposal.projectName}`,
+          html: `
+            <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+              <h2 style="color: ${statusColor};">Proposal ${statusText}</h2>
+              <p>Hello ${member.name || 'Team Member'},</p>
+              <p>A proposal has been ${statusText.toLowerCase()} by the client.</p>
+              
+              <div style="background: #f3f4f6; padding: 20px; border-radius: 8px; margin: 20px 0;">
+                <p><strong>Project:</strong> ${proposal.projectName}</p>
+                <p><strong>Client:</strong> ${proposal.clientName}</p>
+                <p><strong>Proposal:</strong> ${proposal.proposalNumber}</p>
+                <p><strong>Status:</strong> ${statusText}</p>
+              </div>
+              
+              <div style="text-align: center; margin: 30px 0;">
+                <a href="${frontendUrl}/admin/proposals/${proposal.id}" 
+                   style="background: #2563eb; color: white; padding: 12px 24px; 
+                          text-decoration: none; border-radius: 6px; display: inline-block;">
+                  View Proposal
+                </a>
+              </div>
+            </div>
+          `,
+        });
+      }
+
+      // Confirm to client
+      await this.mailer.sendMail({
+        to: proposal.clientEmail,
+        subject: `Proposal ${statusText}: ${proposal.projectName}`,
+        html: `
+          <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+            <h2 style="color: ${statusColor};">Proposal ${statusText}</h2>
+            <p>Dear ${proposal.clientName},</p>
+            <p>Thank you for ${statusText === 'Accepted' ? 'accepting' : 'reviewing'} our proposal for "${proposal.projectName}".</p>
+            
+            ${
+              newStatus === ProposalStatus.ACCEPTED
+                ? `<p>We're excited to start working with you! Our team will be in touch shortly with next steps.</p>`
+                : `<p>We appreciate you taking the time to review our proposal. If you have any feedback or would like to discuss alternatives, please don't hesitate to contact us.</p>`
+            }
+            
+            <div style="text-align: center; margin: 30px 0;">
+              <a href="${frontendUrl}/dashboard/proposals/${proposal.id}" 
+                 style="background: #2563eb; color: white; padding: 12px 24px; 
+                        text-decoration: none; border-radius: 6px; display: inline-block;">
+                View Your Dashboard
+              </a>
+            </div>
+          </div>
+        `,
+      });
+    }
+  } catch (error) {
+    this.logger.error(`Failed to send status change notification: ${error.message}`);
+    // Don't throw - email failure shouldn't block the status update
+  }
+}
 
   // async sign(id: string, dto: ProposalSignatureDto, user: User) {
   //   const proposal = await this.prisma.proposal.findUnique({

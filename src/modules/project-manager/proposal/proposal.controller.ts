@@ -18,6 +18,7 @@ import { RolesGuard } from 'src/common/guards/roles.guard';
 import { Roles } from 'src/common/decorators/roles.decorator';
 import { CurrentUser } from 'src/common/decorators/current-user.decorator';
 import * as client from '@prisma/client';
+import { UpdateProposalStatusDto } from './dto/update-proposal-status.dto';
 
 @Controller('proposals')
 @UseGuards(JwtAuthGuard, RolesGuard)
@@ -110,5 +111,20 @@ export class ProposalController {
     @CurrentUser() user: client.User,
   ) {
     return this.proposalService.sign(id, proposalSignatureDto, user);
+  }
+
+  @Patch(':id/status')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  async updateProposalStatus(
+    @Param('id') id: string,
+    @Body() dto: UpdateProposalStatusDto,
+    @CurrentUser() user: client.User,
+  ) {
+    return this.proposalService.updateProposalStatus(
+      id,
+      user,
+      dto.status,
+      dto.notes,
+    );
   }
 }
