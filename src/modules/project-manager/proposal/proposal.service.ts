@@ -260,7 +260,7 @@ export class ProposalService {
       createdBy: { connect: { id: user.id } },
 
       // Initial status
-      status: ProposalStatus.DRAFT,
+      // status: ProposalStatus.DRAFT,
     };
 
     // 7. Create the proposal with useful relations
@@ -308,7 +308,7 @@ export class ProposalService {
 
     return {
       success: true,
-      message: `Project request status updated to ${dto.status} successfully`,
+      message: `Project request status updated to successfully`,
       data: proposal,
     };
   }
