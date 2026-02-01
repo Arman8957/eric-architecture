@@ -26,7 +26,7 @@ import { CreateMeetingLinkDto } from './dto/create-meeting-link.dto';
 @Controller('project-requests-admin')
 @UseGuards(JwtAuthGuard, RolesGuard)
 export class ProjectRequestController {
-  // meetingLinkService: any;
+  // meetingLink: any;
   constructor(private readonly projectRequestService: ProjectRequestService) {}
 
   @Get()
