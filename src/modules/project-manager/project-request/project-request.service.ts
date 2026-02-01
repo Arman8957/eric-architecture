@@ -12,10 +12,11 @@ import {
   User,
   Prisma,
   ProjectRequest,
+  ServiceType,
 } from '@prisma/client';
 import { PrismaService } from 'src/prisma/prisma.service';
 import { MailerService } from 'src/utils/email/email.service';
-import { QueryProjectRequestDto } from './dto/query-project-request.dto';
+import { GetMyMeetingsDto, QueryProjectRequestDto } from './dto/query-project-request.dto';
 import { UpdateRequestStatusDto } from './dto/update-request-status.dto';
 import { CreateMeetingLinkDto } from './dto/create-meeting-link.dto';
 
@@ -492,24 +493,137 @@ async sendMeetingLink(dto: CreateMeetingLinkDto, staff: User) {
     };
   }
 
-  async getMyMeetings(userId: string) {
-    const meetings = await this.prisma.meetingLink.findMany({
-      where: { sentToUserId: userId },
-      orderBy: { scheduledAt: 'desc' },
-      include: {
-        projectRequest: {
-          select: { id: true, projectName: true, status: true, serviceType: true },
-        },
-        sentByUser: { select: { id: true, name: true, role: true } },
-      },
-    });
+  // async getMyMeetings(userId: string) {
+  // //   const meetings = await this.prisma.meetingLink.findMany({
+  // //     where: { sentToUserId: userId },
+  // //     orderBy: { scheduledAt: 'desc' },
+  // //     include: {
+  // //       projectRequest: {
+  // //         select: { id: true, projectName: true, status: true, serviceType: true },
+  // //       },
+  // //       sentByUser: { select: { id: true, name: true, role: true } },
+  // //     },
+  // //   });
 
-    return {
-      success: true,
-      total: meetings.length,
-      data: meetings,
+  // //   return {
+  // //     success: true,
+  // //     total: meetings.length,
+  // //     data: meetings,
+  // //   };
+  // // }
+
+  async getMyMeetings(
+  userId: string,
+  query: GetMyMeetingsDto,
+): Promise<{
+  success: true;
+  data: Array<{
+    id: string;
+    meetingUrl: string;
+    title: string;
+    scheduledAt: Date;
+    notes?: string | null;
+    emailSent: boolean;
+    createdAt: Date;
+    projectRequest: {
+      id: string;
+      projectName: string;
+      status: RequestStatus;
+      serviceType: ServiceType;
     };
+    sentBy: {
+      id: string;
+      name: string | null;
+      role: UserRole;
+    };
+  }>;
+  meta: {
+    total: number;
+    page: number;
+    limit: number;
+    totalPages: number;
+    hasNext: boolean;
+    hasPrevious: boolean;
+  };
+}> {
+  const { page = 1, limit = 20, type = 'all' } = query;
+
+  if (!userId) {
+    throw new BadRequestException('User ID is required');
   }
+
+  // Build dynamic where clause
+  const where: Prisma.MeetingLinkWhereInput = {
+    sentToUserId: userId,
+  };
+
+  // Optional: filter by upcoming / past
+  if (type === 'upcoming') {
+    where.scheduledAt = { gte: new Date() };
+  } else if (type === 'past') {
+    where.scheduledAt = { lt: new Date() };
+  }
+
+  // Count total for pagination metadata
+  const total = await this.prisma.meetingLink.count({ where });
+
+  const skip = (page - 1) * limit;
+
+  const meetings = await this.prisma.meetingLink.findMany({
+    where,
+    skip,
+    take: limit,
+    orderBy: [
+      // Most important: upcoming first, then newest
+      { scheduledAt: 'desc' },
+      { createdAt: 'desc' },
+    ],
+    select: {
+      id: true,
+      meetingUrl: true,
+      title: true,
+      scheduledAt: true,
+      notes: true,
+      emailSent: true,
+      createdAt: true,
+      projectRequest: {
+        select: {
+          id: true,
+          projectName: true,
+          status: true,
+          serviceType: true,
+        },
+      },
+      sentByUser: {
+        select: {
+          id: true,
+          name: true,
+          role: true,
+        },
+      },
+    },
+  });
+
+  const totalPages = Math.ceil(total / limit);
+
+  return {
+    success: true,
+    data: meetings.map((m) => ({
+      ...m,
+      // Rename for frontend friendliness
+      sentBy: m.sentByUser,
+      // remove the nested sentByUser
+    })),
+    meta: {
+      total,
+      page,
+      limit,
+      totalPages,
+      hasNext: page < totalPages,
+      hasPrevious: page > 1,
+    },
+  };
+}
 
   async getMyMeetingById(meetingId: string, userId: string) {
     const meeting = await this.prisma.meetingLink.findFirst({
