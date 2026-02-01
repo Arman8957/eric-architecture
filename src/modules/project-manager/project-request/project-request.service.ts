@@ -17,6 +17,7 @@ import { PrismaService } from 'src/prisma/prisma.service';
 import { MailerService } from 'src/utils/email/email.service';
 import { QueryProjectRequestDto } from './dto/query-project-request.dto';
 import { UpdateRequestStatusDto } from './dto/update-request-status.dto';
+import { CreateMeetingLinkDto } from './dto/create-meeting-link.dto';
 
 @Injectable()
 export class ProjectRequestService {
@@ -399,6 +400,145 @@ export class ProjectRequestService {
         limit,
         totalPages: Math.ceil(total / limit),
       },
+    };
+  }
+
+
+async sendMeetingLink(dto: CreateMeetingLinkDto, staff: User) {
+    // 1. Only staff can send
+    if (!this.canManageRequests(staff)) {
+      throw new ForbiddenException('Access denied');
+    }
+
+    // 2. Find the project request + its linked user
+    const projectRequest = await this.prisma.projectRequest.findFirst({
+      where: { id: dto.projectRequestId, deletedAt: null },
+      include: {
+        user: { select: { id: true, name: true, email: true } },
+      },
+    });
+
+    if (!projectRequest) {
+      throw new NotFoundException('Project request not found');
+    }
+
+    // 3. Must have a linked user to send email to
+    if (!projectRequest.userId || !projectRequest.user) {
+      throw new BadRequestException(
+        'This project request has no linked user. Cannot send meeting link.',
+      );
+    }
+
+    // 4. Create meeting link record
+    const meetingLink = await this.prisma.meetingLink.create({
+      data: {
+        projectRequestId: dto.projectRequestId,
+        sentToUserId: projectRequest.userId,
+        sentByUserId: staff.id,
+        meetingUrl: dto.meetingUrl,
+        title: dto.title,
+        scheduledAt: new Date(dto.scheduledAt),
+        notes: dto.notes || null,
+        emailSent: false,
+      },
+      include: {
+        sentByUser: { select: { id: true, name: true, email: true, role: true } },
+        sentToUser: { select: { id: true, name: true, email: true } },
+        projectRequest: { select: { id: true, projectName: true, status: true } },
+      },
+    });
+
+    // 5. Send email to the user
+    let emailSent = false;
+    try {
+      await this.mailer.sendMeetingInvitation(
+        projectRequest.user.email,
+        projectRequest.user.name || 'Client',
+        {
+          meetingTitle: dto.title,
+          meetingUrl: dto.meetingUrl,
+          scheduledAt: new Date(dto.scheduledAt),
+          projectName: projectRequest.projectName,
+          senderName: staff.name || 'Project Team',
+          senderRole: staff.role,
+          notes: dto.notes,
+        },
+      );
+      emailSent = true;
+
+      // 6. Update emailSent flag
+      await this.prisma.meetingLink.update({
+        where: { id: meetingLink.id },
+        data: { emailSent: true, emailSentAt: new Date() },
+      });
+    } catch (error) {
+      this.logger.error(
+        `Failed to send meeting email for ${meetingLink.id}`,
+        error,
+      );
+    }
+
+    this.logger.log(
+      `Meeting link sent for project ${dto.projectRequestId} by ${staff.email} to ${projectRequest.user.email}`,
+    );
+
+    return {
+      success: true,
+      message: emailSent
+        ? 'Meeting link sent successfully and email delivered'
+        : 'Meeting link created but email delivery failed',
+      emailSent,
+      data: meetingLink,
+    };
+  }
+
+  async getMyMeetings(userId: string) {
+    const meetings = await this.prisma.meetingLink.findMany({
+      where: { sentToUserId: userId },
+      orderBy: { scheduledAt: 'desc' },
+      include: {
+        projectRequest: {
+          select: { id: true, projectName: true, status: true, serviceType: true },
+        },
+        sentByUser: { select: { id: true, name: true, role: true } },
+      },
+    });
+
+    return {
+      success: true,
+      total: meetings.length,
+      data: meetings,
+    };
+  }
+
+  async getMyMeetingById(meetingId: string, userId: string) {
+    const meeting = await this.prisma.meetingLink.findFirst({
+      where: {
+        id: meetingId,
+        sentToUserId: userId, // user can only see their own
+      },
+      include: {
+        projectRequest: {
+          select: {
+            id: true,
+            projectName: true,
+            status: true,
+            serviceType: true,
+            projectCity: true,
+            projectState: true,
+          },
+        },
+        sentByUser: { select: { id: true, name: true, role: true } },
+      },
+    });
+
+    if (!meeting) {
+      throw new NotFoundException('Meeting not found');
+    }
+
+    return {
+      success: true,
+      data: meeting,
     };
   }
 }

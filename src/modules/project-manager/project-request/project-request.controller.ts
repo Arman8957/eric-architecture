@@ -1,4 +1,3 @@
-
 import {
   Controller,
   Get,
@@ -9,6 +8,8 @@ import {
   Delete,
   Query,
   UseGuards,
+  HttpCode,
+  HttpStatus,
 } from '@nestjs/common';
 import { ProjectRequestService } from './project-request.service';
 
@@ -20,18 +21,20 @@ import { QueryProjectRequestDto } from './dto/query-project-request.dto';
 import { CurrentUser } from 'src/common/decorators/current-user.decorator';
 import { UpdateRequestStatusDto } from './dto/update-request-status.dto';
 import { AssignRequestDto } from './dto/create-project-request.dto';
-
+import { CreateMeetingLinkDto } from './dto/create-meeting-link.dto';
 
 @Controller('project-requests-admin')
 @UseGuards(JwtAuthGuard, RolesGuard)
 export class ProjectRequestController {
-  constructor(
-    private readonly projectRequestService: ProjectRequestService,
-  ) {}
+  // meetingLinkService: any;
+  constructor(private readonly projectRequestService: ProjectRequestService) {}
 
-  
   @Get()
-  @Roles(client.UserRole.SUPER_ADMIN, client.UserRole.ADMIN, client.UserRole.PROJECT_MANAGER)
+  @Roles(
+    client.UserRole.SUPER_ADMIN,
+    client.UserRole.ADMIN,
+    client.UserRole.PROJECT_MANAGER,
+  )
   findAll(
     @Query() query: QueryProjectRequestDto,
     @CurrentUser() user: client.User,
@@ -40,7 +43,11 @@ export class ProjectRequestController {
   }
 
   @Get('stats')
-  @Roles(client.UserRole.SUPER_ADMIN, client.UserRole.ADMIN, client.UserRole.PROJECT_MANAGER)
+  @Roles(
+    client.UserRole.SUPER_ADMIN,
+    client.UserRole.ADMIN,
+    client.UserRole.PROJECT_MANAGER,
+  )
   getStats(@CurrentUser() user: client.User) {
     return this.projectRequestService.getRequestsByStatus(user);
   }
@@ -59,7 +66,11 @@ export class ProjectRequestController {
   }
 
   @Patch(':id/status')
-  @Roles(client.UserRole.SUPER_ADMIN, client.UserRole.ADMIN, client.UserRole.PROJECT_MANAGER)
+  @Roles(
+    client.UserRole.SUPER_ADMIN,
+    client.UserRole.ADMIN,
+    client.UserRole.PROJECT_MANAGER,
+  )
   updateStatus(
     @Param('id') id: string,
     @Body() dto: UpdateRequestStatusDto,
@@ -68,25 +79,57 @@ export class ProjectRequestController {
     return this.projectRequestService.updateStatus(id, dto, user);
   }
 
-
   @Post(':id/assign')
-  @Roles(client.UserRole.SUPER_ADMIN, client.UserRole.ADMIN, client.UserRole.PROJECT_MANAGER)
+  @Roles(
+    client.UserRole.SUPER_ADMIN,
+    client.UserRole.ADMIN,
+    client.UserRole.PROJECT_MANAGER,
+  )
   assignRequest(
     @Param('id') id: string,
     @Body() dto: AssignRequestDto,
     @CurrentUser() user: client.User,
   ) {
-    return this.projectRequestService.assignRequest(
-      id,
-      dto.userId,
-      user,
-    );
+    return this.projectRequestService.assignRequest(id, dto.userId, user);
   }
-
 
   @Delete(':id')
   @Roles(client.UserRole.SUPER_ADMIN, client.UserRole.ADMIN)
   remove(@Param('id') id: string, @CurrentUser() user: client.User) {
     return this.projectRequestService.deleteRequest(id, user);
+  }
+
+  //====================meeting ======
+
+  @Post('send')
+  @UseGuards(RolesGuard)
+  @Roles(
+    client.UserRole.SUPER_ADMIN,
+    client.UserRole.ADMIN,
+    client.UserRole.PROJECT_MANAGER,
+  )
+  @HttpCode(HttpStatus.CREATED)
+  async sendMeetingLink(
+    @Body() dto: CreateMeetingLinkDto,
+    @CurrentUser() user: client.User,
+  ) {
+    return this.projectRequestService.sendMeetingLink(dto, user);
+  }
+
+  // ========================================
+  // USER ROUTES
+  // ========================================
+
+  @Get('my-meetings')
+  async getMyMeetings(@CurrentUser() user: client.User) {
+    return this.projectRequestService.getMyMeetings(user.id);
+  }
+
+  @Get('my-meetings/:id')
+  async getMyMeetingById(
+    @Param('id') id: string,
+    @CurrentUser() user: client.User,
+  ) {
+    return this.projectRequestService.getMyMeetingById(id, user.id);
   }
 }
