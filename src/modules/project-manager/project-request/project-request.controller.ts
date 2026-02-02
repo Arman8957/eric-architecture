@@ -17,7 +17,10 @@ import * as client from '@prisma/client';
 import { JwtAuthGuard } from 'src/common/guards/auth.guard';
 import { RolesGuard } from 'src/common/guards/roles.guard';
 import { Roles } from 'src/common/decorators/roles.decorator';
-import { GetMyMeetingsDto, QueryProjectRequestDto } from './dto/query-project-request.dto';
+import {
+  GetMyMeetingsDto,
+  QueryProjectRequestDto,
+} from './dto/query-project-request.dto';
 import { CurrentUser } from 'src/common/decorators/current-user.decorator';
 import { UpdateRequestStatusDto } from './dto/update-request-status.dto';
 import { AssignRequestDto } from './dto/create-project-request.dto';
@@ -60,10 +63,10 @@ export class ProjectRequestController {
     return this.projectRequestService.getMyRequests(user, query);
   }
 
-  @Get(':id')
-  findOne(@Param('id') id: string, @CurrentUser() user: client.User) {
-    return this.projectRequestService.findOne(id, user);
-  }
+  // @Get(':id')
+  // findOne(@Param('id') id: string, @CurrentUser() user: client.User) {
+  //   return this.projectRequestService.findOne(id, user);
+  // }
 
   @Patch(':id/status')
   @Roles(
@@ -120,13 +123,13 @@ export class ProjectRequestController {
   // USER ROUTES
   // ========================================
 
-@Get('my-meetings')
-async getMyMeetings(
-  @CurrentUser() user: client.User,
-  @Query() query: GetMyMeetingsDto,
-) {
-  return this.projectRequestService.getMyMeetings(user.id, query);
-}
+  @Get('my-meetings')
+  async getMyMeetings(
+    @CurrentUser() user: client.User,
+    @Query() query: GetMyMeetingsDto,
+  ) {
+    return this.projectRequestService.getMyMeetings(user.id, query);
+  }
 
   @Get('my-meetings/:id')
   async getMyMeetingById(
@@ -134,5 +137,10 @@ async getMyMeetings(
     @CurrentUser() user: client.User,
   ) {
     return this.projectRequestService.getMyMeetingById(id, user.id);
+  }
+  
+  @Get(':id')
+  findOne(@Param('id') id: string, @CurrentUser() user: client.User) {
+    return this.projectRequestService.findOne(id, user);
   }
 }
