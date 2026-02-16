@@ -8,6 +8,7 @@ import {
   Param,
   UseGuards,
   Delete,
+  Query,
 } from '@nestjs/common';
 import { ProposalService } from './proposal.service';
 import { CreateProposalDto } from './dto/create-proposal.dto';
@@ -23,6 +24,7 @@ import {
   UpdateProposalServiceDto,
   UpdateProposalStatusDto,
 } from './dto/update-proposal-status.dto';
+import { AddServiceWithApprovalDto, ApproveServiceDto } from './dto/service-approval.dto';
 
 @Controller('proposals')
 @UseGuards(JwtAuthGuard, RolesGuard)
@@ -42,14 +44,17 @@ export class ProposalController {
     return this.proposalService.create(createProposalDto, user);
   }
 
-  @Get()
+@Get()
   @Roles(
     client.UserRole.SUPER_ADMIN,
     client.UserRole.ADMIN,
     client.UserRole.PROJECT_MANAGER,
   )
-  findAll(@CurrentUser() user: client.User) {
-    return this.proposalService.findAll(user);
+  findAll(
+    @CurrentUser() user: client.User,
+    @Query('includeApprovalStatus') includeApprovalStatus?: string,
+  ) {
+    return this.proposalService.findAll(user, includeApprovalStatus === 'true');
   }
 
   @Get('my-proposals')
@@ -167,5 +172,49 @@ export class ProposalController {
     @CurrentUser() user: client.User,
   ) {
     return this.proposalService.deleteService(id, serviceId, user);
+  }
+
+
+    @Post(':id/services/with-approval')
+  @Roles(
+    client.UserRole.SUPER_ADMIN,
+    client.UserRole.ADMIN,
+    client.UserRole.PROJECT_MANAGER,
+  )
+  addServiceWithApproval(
+    @Param('id') id: string,
+    @Body() dto: AddServiceWithApprovalDto,
+    @CurrentUser() user: client.User,
+  ) {
+    return this.proposalService.addServiceWithApproval(id, dto, user);
+  }
+
+  /**
+   * Client approves or rejects a service
+   */
+  @Post(':proposalId/services/:serviceId/approval')
+  approveOrRejectService(
+    @Param('proposalId') proposalId: string,
+    @Param('serviceId') serviceId: string,
+    @Body() dto: ApproveServiceDto,
+    @CurrentUser() user: client.User,
+  ) {
+    return this.proposalService.handleServiceApproval(
+      proposalId,
+      serviceId,
+      dto,
+      user,
+    );
+  }
+
+  /**
+   * Get pending service approvals for a proposal
+   */
+  @Get(':id/pending-approvals')
+  getPendingApprovals(
+    @Param('id') id: string,
+    @CurrentUser() user: client.User,
+  ) {
+    return this.proposalService.getPendingApprovals(id, user);
   }
 }

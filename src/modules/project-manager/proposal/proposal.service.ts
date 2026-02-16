@@ -15,6 +15,7 @@ import {
   UserRole,
   Prisma,
   ProjectCategory,
+  ServiceApprovalStatus,
 } from '@prisma/client';
 import { PrismaService } from 'src/prisma/prisma.service';
 import { MailerService } from 'src/utils/email/email.service';
@@ -24,6 +25,10 @@ import { AddProposalServiceDto } from './dto/add-proposal-service.dto';
 import { ProposalSignatureDto } from './dto/proposal-signature.dto';
 import { success } from 'zod';
 import { UpdateProposalServiceDto } from './dto/update-proposal-status.dto';
+import {
+  AddServiceWithApprovalDto,
+  ApproveServiceDto,
+} from './dto/service-approval.dto';
 
 @Injectable()
 export class ProposalService {
@@ -719,62 +724,265 @@ export class ProposalService {
     };
   }
 
-  async findAll(user: User) {
-    if (!this.canManage(user)) {
-      throw new ForbiddenException('Access denied');
-    }
+  // async findAll(user: User) {
+  //   if (!this.canManage(user)) {
+  //     throw new ForbiddenException('Access denied');
+  //   }
 
-    return this.prisma.proposal.findMany({
-      include: {
-        services: {
-          orderBy: { order: 'asc' },
-          select: {
-            id: true,
-            name: true,
-            description: true,
-            amount: true,
-            order: true,
-          },
-        },
-        projectRequest: {
-          select: {
-            id: true,
-            projectName: true,
-            status: true,
-            clientFirstName: true,
-            clientLastName: true,
-          },
-        },
-        user: {
-          select: {
-            id: true,
-            name: true,
-            email: true,
-            avatar: true,
-          },
-        },
-        createdBy: {
-          select: {
-            id: true,
-            name: true,
-            email: true,
-          },
-        },
-        projectStages: {
-          select: {
-            id: true,
-            name: true,
-            status: true,
-            progress: true,
-            totalTasks: true,
-            completedTasks: true,
-          },
-          orderBy: { order: 'asc' },
+  //   return this.prisma.proposal.findMany({
+  //     include: {
+  //       services: {
+  //         orderBy: { order: 'asc' },
+  //         select: {
+  //           id: true,
+  //           name: true,
+  //           description: true,
+  //           amount: true,
+  //           order: true,
+  //         },
+  //       },
+  //       projectRequest: {
+  //         select: {
+  //           id: true,
+  //           projectName: true,
+  //           status: true,
+  //           clientFirstName: true,
+  //           clientLastName: true,
+  //         },
+  //       },
+  //       user: {
+  //         select: {
+  //           id: true,
+  //           name: true,
+  //           email: true,
+  //           avatar: true,
+  //         },
+  //       },
+  //       createdBy: {
+  //         select: {
+  //           id: true,
+  //           name: true,
+  //           email: true,
+  //         },
+  //       },
+  //       projectStages: {
+  //         select: {
+  //           id: true,
+  //           name: true,
+  //           status: true,
+  //           progress: true,
+  //           totalTasks: true,
+  //           completedTasks: true,
+  //         },
+  //         orderBy: { order: 'asc' },
+  //       },
+  //     },
+  //     orderBy: { createdAt: 'desc' },
+  //   });
+  // }
+
+  async findAll(user: User, includeApprovalStatus: boolean = true) {
+  if (!this.canManage(user)) {
+    throw new ForbiddenException('Access denied');
+  }
+
+  const proposals = await this.prisma.proposal.findMany({
+    include: {
+      services: {
+        orderBy: { order: 'asc' },
+        select: {
+          id: true,
+          name: true,
+          description: true,
+          amount: true,
+          order: true,
+          approvalStatus: true,
+          requiresApproval: true,
+          rejectionReason: true,
+          approvedAt: true,
+          rejectedAt: true,
         },
       },
-      orderBy: { createdAt: 'desc' },
+      projectRequest: {
+        select: {
+          id: true,
+          projectName: true,
+          status: true,
+          clientFirstName: true,
+          clientLastName: true,
+        },
+      },
+      user: {
+        select: {
+          id: true,
+          name: true,
+          email: true,
+          avatar: true,
+        },
+      },
+      createdBy: {
+        select: {
+          id: true,
+          name: true,
+          email: true,
+        },
+      },
+      projectStages: {
+        select: {
+          id: true,
+          name: true,
+          status: true,
+          progress: true,
+          totalTasks: true,
+          completedTasks: true,
+        },
+        orderBy: { order: 'asc' },
+      },
+    },
+    orderBy: { createdAt: 'desc' },
+  });
+
+  // Add approval statistics
+  const proposalsWithStats = proposals.map((proposal) => {
+    const pendingApprovals = proposal.services.filter(
+      (s) => s.approvalStatus === 'PENDING_APPROVAL',
+    ).length;
+
+    const approvedServices = proposal.services.filter(
+      (s) => s.approvalStatus === 'APPROVED',
+    ).length;
+
+    const rejectedServices = proposal.services.filter(
+      (s) => s.approvalStatus === 'REJECTED',
+    ).length;
+
+    return {
+      ...proposal,
+      approvalStats: {
+        pendingApprovals,
+        approvedServices,
+        rejectedServices,
+        totalServices: proposal.services.length,
+      },
+    };
+  });
+
+  return {
+    success: true,
+    message: 'Successfully retrieved all proposals',
+    data: proposalsWithStats,
+  };
+}
+
+// Replace your findOne method
+async findOne(id: string, user: User) {
+  const proposal = await this.prisma.proposal.findUnique({
+    where: { id },
+    include: {
+      services: {
+        orderBy: { order: 'asc' },
+      },
+      credits: true,
+      projectRequest: {
+        select: {
+          id: true,
+          projectName: true,
+          status: true,
+        },
+      },
+      user: {
+        select: {
+          id: true,
+          name: true,
+          email: true,
+          avatar: true,
+        },
+      },
+      createdBy: {
+        select: {
+          id: true,
+          name: true,
+          email: true,
+        },
+      },
+      projectStages: {
+        orderBy: { order: 'asc' },
+        include: {
+          assignedTo: {
+            select: {
+              id: true,
+              name: true,
+              email: true,
+            },
+          },
+        },
+      },
+    },
+  });
+
+  if (!proposal) {
+    throw new NotFoundException('Proposal not found');
+  }
+
+  const isManager = this.canManage(user);
+  const isOwner =
+    proposal.userId === user.id || proposal.clientEmail === user.email;
+
+  if (!isManager && !isOwner) {
+    throw new ForbiddenException('Not authorized to view this proposal');
+  }
+
+  if (
+    isOwner &&
+    proposal.status === ProposalStatus.SENT &&
+    !proposal.viewedAt
+  ) {
+    await this.prisma.proposal.update({
+      where: { id },
+      data: {
+        status: ProposalStatus.VIEWED,
+        viewedAt: new Date(),
+      },
     });
   }
+
+  // Calculate approval statistics
+  const approvalStats = {
+    pendingApprovals: proposal.services.filter(
+      (s) => s.approvalStatus === 'PENDING_APPROVAL',
+    ).length,
+    approvedServices: proposal.services.filter(
+      (s) => s.approvalStatus === 'APPROVED',
+    ).length,
+    rejectedServices: proposal.services.filter(
+      (s) => s.approvalStatus === 'REJECTED',
+    ).length,
+    totalServices: proposal.services.length,
+  };
+
+  // Separate services by status
+  const servicesByStatus = {
+    pending: proposal.services.filter(
+      (s) => s.approvalStatus === 'PENDING_APPROVAL',
+    ),
+    approved: proposal.services.filter(
+      (s) => s.approvalStatus === 'APPROVED',
+    ),
+    rejected: proposal.services.filter(
+      (s) => s.approvalStatus === 'REJECTED',
+    ),
+  };
+
+  return {
+    success: true,
+    message: 'Successfully retrieved proposal',
+    data: {
+      ...proposal,
+      approvalStats,
+      servicesByStatus,
+    },
+  };
+}
 
   async getMyProposals(user: User) {
     const proposals = await this.prisma.proposal.findMany({
@@ -921,85 +1129,85 @@ export class ProposalService {
   //     data: proposal,
   //   };
   // }
-  async findOne(id: string, user: User) {
-    const proposal = await this.prisma.proposal.findUnique({
-      where: { id },
-      include: {
-        services: {
-          orderBy: { order: 'asc' },
-        },
-        credits: true,
-        projectRequest: {
-          select: {
-            id: true,
-            projectName: true,
-            status: true,
-          },
-        },
-        user: {
-          select: {
-            id: true,
-            name: true,
-            email: true,
-            avatar: true,
-          },
-        },
-        createdBy: {
-          select: {
-            id: true,
-            name: true,
-            email: true,
-          },
-        },
-        projectStages: {
-          orderBy: { order: 'asc' },
-          include: {
-            assignedTo: {
-              select: {
-                id: true,
-                name: true,
-                email: true,
-              },
-            },
-          },
-        },
-      },
-    });
+  // async findOne(id: string, user: User) {
+  //   const proposal = await this.prisma.proposal.findUnique({
+  //     where: { id },
+  //     include: {
+  //       services: {
+  //         orderBy: { order: 'asc' },
+  //       },
+  //       credits: true,
+  //       projectRequest: {
+  //         select: {
+  //           id: true,
+  //           projectName: true,
+  //           status: true,
+  //         },
+  //       },
+  //       user: {
+  //         select: {
+  //           id: true,
+  //           name: true,
+  //           email: true,
+  //           avatar: true,
+  //         },
+  //       },
+  //       createdBy: {
+  //         select: {
+  //           id: true,
+  //           name: true,
+  //           email: true,
+  //         },
+  //       },
+  //       projectStages: {
+  //         orderBy: { order: 'asc' },
+  //         include: {
+  //           assignedTo: {
+  //             select: {
+  //               id: true,
+  //               name: true,
+  //               email: true,
+  //             },
+  //           },
+  //         },
+  //       },
+  //     },
+  //   });
 
-    if (!proposal) {
-      throw new NotFoundException('Proposal not found');
-    }
+  //   if (!proposal) {
+  //     throw new NotFoundException('Proposal not found');
+  //   }
 
-    // Check permissions - FIXED to include email check
-    const isManager = this.canManage(user);
-    const isOwner =
-      proposal.userId === user.id || proposal.clientEmail === user.email;
+  //   // Check permissions - FIXED to include email check
+  //   const isManager = this.canManage(user);
+  //   const isOwner =
+  //     proposal.userId === user.id || proposal.clientEmail === user.email;
 
-    if (!isManager && !isOwner) {
-      throw new ForbiddenException('Not authorized to view this proposal');
-    }
+  //   if (!isManager && !isOwner) {
+  //     throw new ForbiddenException('Not authorized to view this proposal');
+  //   }
 
-    // Auto-mark as viewed if client views for first time
-    if (
-      isOwner &&
-      proposal.status === ProposalStatus.SENT &&
-      !proposal.viewedAt
-    ) {
-      await this.prisma.proposal.update({
-        where: { id },
-        data: {
-          status: ProposalStatus.VIEWED,
-          viewedAt: new Date(),
-        },
-      });
-    }
+  //   // Auto-mark as viewed if client views for first time
+  //   if (
+  //     isOwner &&
+  //     proposal.status === ProposalStatus.SENT &&
+  //     !proposal.viewedAt
+  //   ) {
+  //     await this.prisma.proposal.update({
+  //       where: { id },
+  //       data: {
+  //         status: ProposalStatus.VIEWED,
+  //         viewedAt: new Date(),
+  //       },
+  //     });
+  //   }
 
-    return {
-      success: true,
-      message: 'Successfully retrieved proposal',
-      data: proposal,
-    };
-  }
+  //   return {
+  //     success: true,
+  //     message: 'Successfully retrieved proposal',
+  //     data: proposal,
+  //   };
+  // }
 
   async update(id: string, dto: UpdateProposalDto, user: User) {
     if (!this.canManage(user)) {
@@ -1074,7 +1282,7 @@ export class ProposalService {
 
   //   return service;
   // }
-//===================for the service add=============
+  //===================for the service add=============
   async addService(id: string, dto: AddProposalServiceDto, user: User) {
     if (!this.canManage(user)) {
       throw new ForbiddenException('Access denied');
@@ -1122,172 +1330,170 @@ export class ProposalService {
   }
 
   async updateService(
-  proposalId: string,
-  serviceId: string,
-  dto: UpdateProposalServiceDto,
-  user: User,
-) {
-  if (!this.canManage(user)) {
-    throw new ForbiddenException('Access denied');
-  }
+    proposalId: string,
+    serviceId: string,
+    dto: UpdateProposalServiceDto,
+    user: User,
+  ) {
+    if (!this.canManage(user)) {
+      throw new ForbiddenException('Access denied');
+    }
 
-  const proposal = await this.prisma.proposal.findUnique({
-    where: { id: proposalId },
-  });
-
-  if (!proposal) {
-    throw new NotFoundException('Proposal not found');
-  }
-
-  if (proposal.status !== ProposalStatus.DRAFT) {
-    throw new BadRequestException(
-      'Cannot update services in non-DRAFT proposal',
-    );
-  }
-
-  const service = await this.prisma.proposalService.findFirst({
-    where: {
-      id: serviceId,
-      proposalId: proposalId,
-    },
-  });
-
-  if (!service) {
-    throw new NotFoundException('Service not found in this proposal');
-  }
-
-  // Update the service
-  const updated = await this.prisma.proposalService.update({
-    where: { id: serviceId },
-    data: {
-      name: dto.name?.trim() || service.name,
-      description: dto.description?.trim() ?? service.description,
-      amount: dto.cost ?? service.amount,
-      rate: dto.cost ?? service.rate,
-      quantity: dto.quantity ?? service.quantity,
-      order: dto.order ?? service.order,
-    },
-  });
-
-  // Recalculate totals
-  await this.recalculateTotals(proposalId);
-
-  // Get updated proposal
-  const updatedProposal = await this.prisma.proposal.findUnique({
-    where: { id: proposalId },
-    select: {
-      id: true,
-      subtotal: true,
-      taxAmount: true,
-      totalAmount: true,
-    },
-  });
-
-  this.logger.log(
-    `Service ${serviceId} updated in proposal ${proposalId} by ${user.email}`,
-  );
-
-  return {
-    success: true,
-    message: `Service "${updated.name}" updated successfully`,
-    data: {
-      service: updated,
-      proposal: updatedProposal,
-    },
-  };
-}
-
-async deleteService(
-  proposalId: string,
-  serviceId: string,
-  user: User,
-) {
-  if (!this.canManage(user)) {
-    throw new ForbiddenException('Access denied');
-  }
-
-  const proposal = await this.prisma.proposal.findUnique({
-    where: { id: proposalId },
-    include: { services: true },
-  });
-
-  if (!proposal) {
-    throw new NotFoundException('Proposal not found');
-  }
-
-  if (proposal.status !== ProposalStatus.DRAFT) {
-    throw new BadRequestException('Cannot delete services from non-DRAFT proposal');
-  }
-
-  const service = await this.prisma.proposalService.findFirst({
-    where: {
-      id: serviceId,
-      proposalId: proposalId,
-    },
-  });
-
-  if (!service) {
-    throw new NotFoundException('Service not found in this proposal');
-  }
-
-  // Delete the service
-  await this.prisma.proposalService.delete({
-    where: { id: serviceId },
-  });
-
-  // Reorder remaining services
-  const remainingServices = proposal.services
-    .filter((s) => s.id !== serviceId)
-    .sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
-
-  for (let i = 0; i < remainingServices.length; i++) {
-    await this.prisma.proposalService.update({
-      where: { id: remainingServices[i].id },
-      data: { order: i + 1 },
+    const proposal = await this.prisma.proposal.findUnique({
+      where: { id: proposalId },
     });
-  }
 
-  // Recalculate totals
-  await this.recalculateTotals(proposalId);
+    if (!proposal) {
+      throw new NotFoundException('Proposal not found');
+    }
 
-  // Fetch updated proposal
-  const updatedProposal = await this.prisma.proposal.findUnique({
-    where: { id: proposalId },
-    include: {
-      services: { orderBy: { order: 'asc' } },
-    },
-  });
+    if (proposal.status !== ProposalStatus.DRAFT) {
+      throw new BadRequestException(
+        'Cannot update services in non-DRAFT proposal',
+      );
+    }
 
-  // Safety check (should never happen, but TypeScript requires it)
-  if (!updatedProposal) {
-    throw new NotFoundException(
-      'Proposal disappeared after service deletion – please try again'
+    const service = await this.prisma.proposalService.findFirst({
+      where: {
+        id: serviceId,
+        proposalId: proposalId,
+      },
+    });
+
+    if (!service) {
+      throw new NotFoundException('Service not found in this proposal');
+    }
+
+    // Update the service
+    const updated = await this.prisma.proposalService.update({
+      where: { id: serviceId },
+      data: {
+        name: dto.name?.trim() || service.name,
+        description: dto.description?.trim() ?? service.description,
+        amount: dto.cost ?? service.amount,
+        rate: dto.cost ?? service.rate,
+        quantity: dto.quantity ?? service.quantity,
+        order: dto.order ?? service.order,
+      },
+    });
+
+    // Recalculate totals
+    await this.recalculateTotals(proposalId);
+
+    // Get updated proposal
+    const updatedProposal = await this.prisma.proposal.findUnique({
+      where: { id: proposalId },
+      select: {
+        id: true,
+        subtotal: true,
+        taxAmount: true,
+        totalAmount: true,
+      },
+    });
+
+    this.logger.log(
+      `Service ${serviceId} updated in proposal ${proposalId} by ${user.email}`,
     );
+
+    return {
+      success: true,
+      message: `Service "${updated.name}" updated successfully`,
+      data: {
+        service: updated,
+        proposal: updatedProposal,
+      },
+    };
   }
 
-  this.logger.log(
-    `Service ${serviceId} deleted from proposal ${proposalId} by ${user.email}`
-  );
+  async deleteService(proposalId: string, serviceId: string, user: User) {
+    if (!this.canManage(user)) {
+      throw new ForbiddenException('Access denied');
+    }
 
-  return {
-    success: true,
-    message: `Service "${service.name}" deleted successfully`,
-    data: {
-      deletedService: {
-        id: service.id,
-        name: service.name,
+    const proposal = await this.prisma.proposal.findUnique({
+      where: { id: proposalId },
+      include: { services: true },
+    });
+
+    if (!proposal) {
+      throw new NotFoundException('Proposal not found');
+    }
+
+    if (proposal.status !== ProposalStatus.DRAFT) {
+      throw new BadRequestException(
+        'Cannot delete services from non-DRAFT proposal',
+      );
+    }
+
+    const service = await this.prisma.proposalService.findFirst({
+      where: {
+        id: serviceId,
+        proposalId: proposalId,
       },
-      proposal: {
-        id: updatedProposal.id,
-        subtotal: updatedProposal.subtotal,
-        taxAmount: updatedProposal.taxAmount,
-        totalAmount: updatedProposal.totalAmount,
-        servicesCount: updatedProposal.services.length,
-        services: updatedProposal.services,
+    });
+
+    if (!service) {
+      throw new NotFoundException('Service not found in this proposal');
+    }
+
+    // Delete the service
+    await this.prisma.proposalService.delete({
+      where: { id: serviceId },
+    });
+
+    // Reorder remaining services
+    const remainingServices = proposal.services
+      .filter((s) => s.id !== serviceId)
+      .sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
+
+    for (let i = 0; i < remainingServices.length; i++) {
+      await this.prisma.proposalService.update({
+        where: { id: remainingServices[i].id },
+        data: { order: i + 1 },
+      });
+    }
+
+    // Recalculate totals
+    await this.recalculateTotals(proposalId);
+
+    // Fetch updated proposal
+    const updatedProposal = await this.prisma.proposal.findUnique({
+      where: { id: proposalId },
+      include: {
+        services: { orderBy: { order: 'asc' } },
       },
-    },
-  };
-}
+    });
+
+    // Safety check (should never happen, but TypeScript requires it)
+    if (!updatedProposal) {
+      throw new NotFoundException(
+        'Proposal disappeared after service deletion – please try again',
+      );
+    }
+
+    this.logger.log(
+      `Service ${serviceId} deleted from proposal ${proposalId} by ${user.email}`,
+    );
+
+    return {
+      success: true,
+      message: `Service "${service.name}" deleted successfully`,
+      data: {
+        deletedService: {
+          id: service.id,
+          name: service.name,
+        },
+        proposal: {
+          id: updatedProposal.id,
+          subtotal: updatedProposal.subtotal,
+          taxAmount: updatedProposal.taxAmount,
+          totalAmount: updatedProposal.totalAmount,
+          servicesCount: updatedProposal.services.length,
+          services: updatedProposal.services,
+        },
+      },
+    };
+  }
 
   //=====================for the service ==============
 
@@ -1419,148 +1625,154 @@ async deleteService(
     return { message: 'Proposal sent to client successfully' };
   }
 
+  async updateProposalStatus(
+    proposalId: string,
+    user: User,
+    newStatus: ProposalStatus,
+    notes?: string,
+  ) {
+    const proposal = await this.prisma.proposal.findUnique({
+      where: { id: proposalId },
+      include: {
+        projectRequest: true,
+        services: true,
+      },
+    });
 
-async updateProposalStatus(
-  proposalId: string,
-  user: User,
-  newStatus: ProposalStatus,
-  notes?: string,
-) {
-  const proposal = await this.prisma.proposal.findUnique({
-    where: { id: proposalId },
-    include: {
-      projectRequest: true,
-      services: true,
-    },
-  });
+    if (!proposal) {
+      throw new NotFoundException('Proposal not found');
+    }
 
-  if (!proposal) {
-    throw new NotFoundException('Proposal not found');
-  }
+    // Permission checks
+    const isManager = this.canManage(user);
+    const isOwner =
+      proposal.userId === user.id || proposal.clientEmail === user.email;
 
-  // Permission checks
-  const isManager = this.canManage(user);
-  const isOwner =
-    proposal.userId === user.id || proposal.clientEmail === user.email;
-
-  if (!isManager && !isOwner) {
-    throw new ForbiddenException(
-      'You are not authorized to update this proposal status',
-    );
-  }
-
- 
-  if (!isManager) {
-    const allowedClientStatuses: ProposalStatus[] = [ // FIX: Type the array explicitly
-      ProposalStatus.ACCEPTED,
-      ProposalStatus.REJECTED,
-    ];
-    if (!allowedClientStatuses.includes(newStatus)) {
-      throw new BadRequestException(
-        `Clients can only set status to: ${allowedClientStatuses.join(', ')}`,
+    if (!isManager && !isOwner) {
+      throw new ForbiddenException(
+        'You are not authorized to update this proposal status',
       );
     }
-  }
 
-  // Validate allowed status transitions
-  const allowedTransitions: Record<ProposalStatus, ProposalStatus[]> = {
-    [ProposalStatus.DRAFT]: [ProposalStatus.SENT],
-    [ProposalStatus.SENT]: [
-      ProposalStatus.VIEWED,
-      ProposalStatus.ACCEPTED,
-      ProposalStatus.REJECTED,
-    ],
-    [ProposalStatus.VIEWED]: [
-      ProposalStatus.ACCEPTED,
-      ProposalStatus.REJECTED,
-    ],
-    [ProposalStatus.ACCEPTED]: [],
-    [ProposalStatus.REJECTED]: [],
-    EXPIRED: []
-  };
+    if (!isManager) {
+      const allowedClientStatuses: ProposalStatus[] = [
+        // FIX: Type the array explicitly
+        ProposalStatus.ACCEPTED,
+        ProposalStatus.REJECTED,
+      ];
+      if (!allowedClientStatuses.includes(newStatus)) {
+        throw new BadRequestException(
+          `Clients can only set status to: ${allowedClientStatuses.join(', ')}`,
+        );
+      }
+    }
 
-  const currentTransitions = allowedTransitions[proposal.status] || [];
-  if (!currentTransitions.includes(newStatus)) {
-    throw new BadRequestException(
-      `Cannot change status from ${proposal.status} to ${newStatus}`,
+    // Validate allowed status transitions
+    const allowedTransitions: Record<ProposalStatus, ProposalStatus[]> = {
+      [ProposalStatus.DRAFT]: [ProposalStatus.SENT],
+      [ProposalStatus.SENT]: [
+        ProposalStatus.VIEWED,
+        ProposalStatus.ACCEPTED,
+        ProposalStatus.REJECTED,
+      ],
+      [ProposalStatus.VIEWED]: [
+        ProposalStatus.ACCEPTED,
+        ProposalStatus.REJECTED,
+      ],
+      [ProposalStatus.ACCEPTED]: [],
+      [ProposalStatus.REJECTED]: [],
+      EXPIRED: [],
+    };
+
+    const currentTransitions = allowedTransitions[proposal.status] || [];
+    if (!currentTransitions.includes(newStatus)) {
+      throw new BadRequestException(
+        `Cannot change status from ${proposal.status} to ${newStatus}`,
+      );
+    }
+
+    // Update the proposal
+    const updated = await this.prisma.proposal.update({
+      where: { id: proposalId },
+      data: {
+        status: newStatus,
+        notes: notes
+          ? `${proposal.notes ? proposal.notes + '\n\n' : ''}[${new Date().toISOString()}] Status changed to ${newStatus}: ${notes}`
+          : proposal.notes,
+        // Set respondedAt when client accepts/rejects
+        ...(newStatus === ProposalStatus.ACCEPTED ||
+        newStatus === ProposalStatus.REJECTED
+          ? { respondedAt: new Date() }
+          : {}),
+        // Set viewedAt when status changes to VIEWED
+        ...(newStatus === ProposalStatus.VIEWED && !proposal.viewedAt
+          ? { viewedAt: new Date() }
+          : {}),
+        // Set sentAt when status changes to SENT
+        ...(newStatus === ProposalStatus.SENT && !proposal.sentAt
+          ? { sentAt: new Date() }
+          : {}),
+      },
+      include: {
+        projectRequest: true,
+        services: { orderBy: { order: 'asc' } },
+        user: {
+          select: {
+            id: true,
+            name: true,
+            email: true,
+            avatar: true,
+          },
+        },
+        createdBy: {
+          select: {
+            id: true,
+            name: true,
+            email: true,
+          },
+        },
+        projectStages: {
+          orderBy: { order: 'asc' },
+        },
+      },
+    });
+
+    this.logger.log(
+      `Proposal ${proposal.proposalNumber} status updated from ${proposal.status} to ${newStatus} by ${user.email}`,
     );
+
+    // Send notification emails based on status change
+    await this.sendStatusChangeNotification(
+      updated,
+      proposal.status,
+      newStatus,
+    );
+
+    return {
+      success: true,
+      message: `Proposal status updated to ${newStatus} successfully`,
+      data: updated,
+    };
   }
 
-  // Update the proposal
-  const updated = await this.prisma.proposal.update({
-    where: { id: proposalId },
-    data: {
-      status: newStatus,
-      notes: notes
-        ? `${proposal.notes ? proposal.notes + '\n\n' : ''}[${new Date().toISOString()}] Status changed to ${newStatus}: ${notes}`
-        : proposal.notes,
-      // Set respondedAt when client accepts/rejects
-      ...(newStatus === ProposalStatus.ACCEPTED ||
-      newStatus === ProposalStatus.REJECTED
-        ? { respondedAt: new Date() }
-        : {}),
-      // Set viewedAt when status changes to VIEWED
-      ...(newStatus === ProposalStatus.VIEWED && !proposal.viewedAt
-        ? { viewedAt: new Date() }
-        : {}),
-      // Set sentAt when status changes to SENT
-      ...(newStatus === ProposalStatus.SENT && !proposal.sentAt
-        ? { sentAt: new Date() }
-        : {}),
-    },
-    include: {
-      projectRequest: true,
-      services: { orderBy: { order: 'asc' } },
-      user: {
-        select: {
-          id: true,
-          name: true,
-          email: true,
-          avatar: true,
-        },
-      },
-      createdBy: {
-        select: {
-          id: true,
-          name: true,
-          email: true,
-        },
-      },
-      projectStages: {
-        orderBy: { order: 'asc' },
-      },
-    },
-  });
+  // Add this helper method for sending notifications
+  private async sendStatusChangeNotification(
+    proposal: any,
+    oldStatus: ProposalStatus,
+    newStatus: ProposalStatus,
+  ) {
+    try {
+      const frontendUrl = this.config.get(
+        'FRONTEND_URL',
+        'http://localhost:3000',
+      );
 
-  this.logger.log(
-    `Proposal ${proposal.proposalNumber} status updated from ${proposal.status} to ${newStatus} by ${user.email}`,
-  );
-
-  // Send notification emails based on status change
-  await this.sendStatusChangeNotification(updated, proposal.status, newStatus);
-
-  return {
-    success: true,
-    message: `Proposal status updated to ${newStatus} successfully`,
-    data: updated,
-  };
-}
-
-// Add this helper method for sending notifications
-private async sendStatusChangeNotification(
-  proposal: any,
-  oldStatus: ProposalStatus,
-  newStatus: ProposalStatus,
-) {
-  try {
-    const frontendUrl = this.config.get('FRONTEND_URL', 'http://localhost:3000');
-
-    // Notify client when proposal is sent
-    if (newStatus === ProposalStatus.SENT) {
-      await this.mailer.sendMail({
-        to: proposal.clientEmail,
-        subject: `Proposal Ready: ${proposal.projectName}`,
-        html: `
+      // Notify client when proposal is sent
+      if (newStatus === ProposalStatus.SENT) {
+        await this.mailer.sendMail({
+          to: proposal.clientEmail,
+          subject: `Proposal Ready: ${proposal.projectName}`,
+          html: `
           <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
             <h2 style="color: #2563eb;">New Proposal Available</h2>
             <p>Dear ${proposal.clientName},</p>
@@ -1581,28 +1793,33 @@ private async sendStatusChangeNotification(
             </div>
           </div>
         `,
-      });
-    }
+        });
+      }
 
-    // Notify admin when client accepts/rejects
-    if (newStatus === ProposalStatus.ACCEPTED || newStatus === ProposalStatus.REJECTED) {
-      const statusColor = newStatus === ProposalStatus.ACCEPTED ? '#10b981' : '#ef4444';
-      const statusText = newStatus === ProposalStatus.ACCEPTED ? 'Accepted' : 'Rejected';
+      // Notify admin when client accepts/rejects
+      if (
+        newStatus === ProposalStatus.ACCEPTED ||
+        newStatus === ProposalStatus.REJECTED
+      ) {
+        const statusColor =
+          newStatus === ProposalStatus.ACCEPTED ? '#10b981' : '#ef4444';
+        const statusText =
+          newStatus === ProposalStatus.ACCEPTED ? 'Accepted' : 'Rejected';
 
-      // Notify team
-      const team = await this.prisma.user.findMany({
-        where: {
-          role: { in: this.MANAGER_ROLES_ARRAY },
-          isActive: true,
-        },
-        select: { email: true, name: true },
-      });
+        // Notify team
+        const team = await this.prisma.user.findMany({
+          where: {
+            role: { in: this.MANAGER_ROLES_ARRAY },
+            isActive: true,
+          },
+          select: { email: true, name: true },
+        });
 
-      for (const member of team) {
-        await this.mailer.sendMail({
-          to: member.email,
-          subject: `Proposal ${statusText}: ${proposal.projectName}`,
-          html: `
+        for (const member of team) {
+          await this.mailer.sendMail({
+            to: member.email,
+            subject: `Proposal ${statusText}: ${proposal.projectName}`,
+            html: `
             <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
               <h2 style="color: ${statusColor};">Proposal ${statusText}</h2>
               <p>Hello ${member.name || 'Team Member'},</p>
@@ -1624,14 +1841,14 @@ private async sendStatusChangeNotification(
               </div>
             </div>
           `,
-        });
-      }
+          });
+        }
 
-      // Confirm to client
-      await this.mailer.sendMail({
-        to: proposal.clientEmail,
-        subject: `Proposal ${statusText}: ${proposal.projectName}`,
-        html: `
+        // Confirm to client
+        await this.mailer.sendMail({
+          to: proposal.clientEmail,
+          subject: `Proposal ${statusText}: ${proposal.projectName}`,
+          html: `
           <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
             <h2 style="color: ${statusColor};">Proposal ${statusText}</h2>
             <p>Dear ${proposal.clientName},</p>
@@ -1652,14 +1869,458 @@ private async sendStatusChangeNotification(
             </div>
           </div>
         `,
-      });
+        });
+      }
+    } catch (error) {
+      if (error instanceof Error) {
+        this.logger.error(
+          `Failed to send status change notification: ${error.message}`,
+        );
+      } else {
+        this.logger.error(
+          `Failed to send status change notification: ${String(error)}`,
+        );
+      }
     }
-  } catch (error) {
-    this.logger.error(`Failed to send status change notification: ${error.message}`);
-    // Don't throw - email failure shouldn't block the status update
   }
+  //=============================================service add============
+
+async addServiceWithApproval(
+  proposalId: string,
+  dto: AddServiceWithApprovalDto,
+  user: User,
+) {
+  if (!this.canManage(user)) {
+    throw new ForbiddenException('Access denied');
+  }
+
+  const proposal = await this.prisma.proposal.findUnique({
+    where: { id: proposalId },
+    include: {
+      services: true,
+      user: {
+        select: {
+          id: true,
+          name: true,
+          email: true,
+        },
+      },
+    },
+  });
+
+  if (!proposal) {
+    throw new NotFoundException('Proposal not found');
+  }
+
+  // Can add services to DRAFT, SENT, or VIEWED proposals
+  const allowedStatuses: ProposalStatus[] = [ // ← Add this type annotation
+    ProposalStatus.DRAFT,
+    ProposalStatus.SENT,
+    ProposalStatus.VIEWED,
+  ];
+
+  if (!allowedStatuses.includes(proposal.status)) {
+    throw new BadRequestException(
+      'Cannot add services to this proposal. Status must be DRAFT, SENT, or VIEWED.',
+    );
+  }
+
+  const maxOrder = proposal.services.reduce(
+    (max, s) => Math.max(max, s.order ?? 0),
+    0,
+  );
+
+  const costDecimal = new Prisma.Decimal(dto.cost);
+
+  // Create service with pending approval status
+  const service = await this.prisma.proposalService.create({
+    data: {
+      proposalId,
+      name: dto.name.trim(),
+      description: dto.description?.trim() ?? null,
+      amount: costDecimal,
+      rate: costDecimal,
+      quantity: dto.quantity || 1,
+      unit: dto.unit,
+      order: maxOrder + 1,
+      requiresApproval: dto.requiresApproval ?? true,
+      approvalStatus: ServiceApprovalStatus.PENDING_APPROVAL,
+    },
+  });
+
+  this.logger.log(
+    `Service "${service.name}" added to proposal ${proposal.proposalNumber} by ${user.email} - Requires approval`,
+  );
+
+  // Send email notification to client
+  await this.sendServiceApprovalEmail(proposal, service, user);
+
+  return {
+    success: true,
+    message: `Service "${dto.name}" added and sent to client for approval`,
+    data: {
+      service,
+      requiresApproval: true,
+      approvalStatus: 'PENDING_APPROVAL',
+    },
+  };
 }
 
+  async handleServiceApproval(
+    proposalId: string,
+    serviceId: string,
+    dto: ApproveServiceDto,
+    user: User,
+  ) {
+    const proposal = await this.prisma.proposal.findUnique({
+      where: { id: proposalId },
+      include: {
+        services: true,
+        user: {
+          select: {
+            id: true,
+            name: true,
+            email: true,
+          },
+        },
+        createdBy: {
+          select: {
+            id: true,
+            name: true,
+            email: true,
+          },
+        },
+      },
+    });
+
+    if (!proposal) {
+      throw new NotFoundException('Proposal not found');
+    }
+
+    // Verify user is the client
+    const isClient =
+      proposal.userId === user.id || proposal.clientEmail === user.email;
+
+    if (!isClient && !this.canManage(user)) {
+      throw new ForbiddenException(
+        'Only the client or managers can approve/reject services',
+      );
+    }
+
+    const service = await this.prisma.proposalService.findFirst({
+      where: {
+        id: serviceId,
+        proposalId: proposalId,
+      },
+    });
+
+    if (!service) {
+      throw new NotFoundException('Service not found in this proposal');
+    }
+
+    if (service.approvalStatus !== ServiceApprovalStatus.PENDING_APPROVAL) {
+      throw new BadRequestException(
+        `Service has already been ${service.approvalStatus.toLowerCase()}`,
+      );
+    }
+
+    // Validate rejection reason
+    if (dto.action === 'reject' && !dto.rejectionReason?.trim()) {
+      throw new BadRequestException(
+        'Rejection reason is required when rejecting a service',
+      );
+    }
+
+    const isApproval = dto.action === 'approve';
+
+    // Update service status
+    const updatedService = await this.prisma.proposalService.update({
+      where: { id: serviceId },
+      data: {
+        approvalStatus: isApproval
+          ? ServiceApprovalStatus.APPROVED
+          : ServiceApprovalStatus.REJECTED,
+        approvedAt: isApproval ? new Date() : null,
+        approvedBy: isApproval ? user.id : null,
+        rejectedAt: !isApproval ? new Date() : null,
+        rejectedBy: !isApproval ? user.id : null,
+        rejectionReason: dto.rejectionReason?.trim() || null,
+        active: isApproval,
+      },
+    });
+
+    // Recalculate totals if approved
+    if (isApproval) {
+      await this.recalculateTotals(proposalId);
+    }
+
+    // Send confirmation emails
+    await this.sendServiceApprovalConfirmation(
+      proposal,
+      updatedService,
+      user,
+      dto.action,
+      dto.rejectionReason,
+    );
+
+    // Get updated proposal with totals
+    const updatedProposal = await this.prisma.proposal.findUnique({
+      where: { id: proposalId },
+      select: {
+        id: true,
+        proposalNumber: true,
+        subtotal: true,
+        taxAmount: true,
+        totalAmount: true,
+      },
+    });
+
+    this.logger.log(
+      `Service ${serviceId} ${dto.action === 'approve' ? 'approved' : 'rejected'} by ${user.email} for proposal ${proposal.proposalNumber}`,
+    );
+
+    return {
+      success: true,
+      message: `Service "${service.name}" ${dto.action === 'approve' ? 'approved' : 'rejected'} successfully`,
+      data: {
+        service: updatedService,
+        proposal: updatedProposal,
+        action: dto.action,
+      },
+    };
+  }
+
+  async getPendingApprovals(proposalId: string, user: User) {
+    const proposal = await this.prisma.proposal.findUnique({
+      where: { id: proposalId },
+      include: {
+        services: {
+          where: {
+            approvalStatus: ServiceApprovalStatus.PENDING_APPROVAL,
+          },
+          orderBy: { createdAt: 'desc' },
+        },
+        user: {
+          select: {
+            id: true,
+            name: true,
+            email: true,
+          },
+        },
+      },
+    });
+
+    if (!proposal) {
+      throw new NotFoundException('Proposal not found');
+    }
+
+    // Check permissions
+    const isManager = this.canManage(user);
+    const isClient =
+      proposal.userId === user.id || proposal.clientEmail === user.email;
+
+    if (!isManager && !isClient) {
+      throw new ForbiddenException('Not authorized to view this proposal');
+    }
+
+    return {
+      success: true,
+      message: 'Successfully retrieved pending approvals',
+      data: {
+        proposalId: proposal.id,
+        proposalNumber: proposal.proposalNumber,
+        pendingCount: proposal.services.length,
+        pendingServices: proposal.services,
+      },
+    };
+  }
+
+  /**
+   * Send email to client for service approval
+   */
+  private async sendServiceApprovalEmail(
+    proposal: any,
+    service: any,
+    addedBy: User,
+  ) {
+    try {
+      const frontendUrl = this.config.get(
+        'FRONTEND_URL',
+        'http://localhost:3000',
+      );
+      const approvalUrl = `${frontendUrl}/proposals/${proposal.id}/approve-service/${service.id}`;
+
+      await this.mailer.sendMail({
+        to: proposal.clientEmail,
+        subject: `New Service Added - Approval Required: ${proposal.projectName}`,
+        html: `
+        <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+          <h2 style="color: #f59e0b;">⏳ Service Approval Required</h2>
+          <p>Dear ${proposal.clientName},</p>
+          <p>A new service has been added to your proposal and requires your approval.</p>
+          
+          <div style="background: #fffbeb; padding: 20px; border-left: 4px solid #f59e0b; margin: 20px 0;">
+            <h3 style="margin: 0 0 10px 0; color: #92400e;">New Service Details</h3>
+            <p style="margin: 5px 0;"><strong>Service Name:</strong> ${service.name}</p>
+            ${service.description ? `<p style="margin: 5px 0;"><strong>Description:</strong> ${service.description}</p>` : ''}
+            <p style="margin: 5px 0;"><strong>Amount:</strong> $${Number(service.amount).toFixed(2)}</p>
+            <p style="margin: 5px 0;"><strong>Added By:</strong> ${addedBy.name || addedBy.email}</p>
+          </div>
+
+          <div style="background: #f3f4f6; padding: 20px; border-radius: 8px; margin: 20px 0;">
+            <p style="margin: 5px 0;"><strong>Proposal:</strong> ${proposal.proposalNumber}</p>
+            <p style="margin: 5px 0;"><strong>Project:</strong> ${proposal.projectName}</p>
+          </div>
+          
+          <p><strong>Please review and take action on this service:</strong></p>
+          
+          <div style="text-align: center; margin: 30px 0;">
+            <a href="${approvalUrl}" 
+               style="background: #10b981; color: white; padding: 12px 24px; 
+                      text-decoration: none; border-radius: 6px; display: inline-block; margin-right: 10px;">
+              Review Service
+            </a>
+          </div>
+          
+          <p style="color: #6b7280; font-size: 14px;">
+            <strong>Note:</strong> This service will not be included in your proposal total until you approve it.
+          </p>
+          
+          <p>If you have any questions about this service, please contact us.</p>
+          
+          <p>Best regards,<br>Your Architecture Team</p>
+        </div>
+      `,
+        text: `New service "${service.name}" added to proposal ${proposal.proposalNumber}.\nAmount: $${Number(service.amount).toFixed(2)}\nReview and approve: ${approvalUrl}`,
+      });
+
+      this.logger.log(
+        `Service approval email sent to ${proposal.clientEmail} for service ${service.id}`,
+      );
+    } catch (error) {
+      if (error instanceof Error) {
+        this.logger.error(
+          `Failed to send service approval email: ${error.message}`,
+        );
+      } else {
+        this.logger.error(
+          `Failed to send ervice approval email: ${String(error)}`,
+        );
+      }
+    }
+  }
+
+  /**
+   * Send confirmation email after approval/rejection
+   */
+  private async sendServiceApprovalConfirmation(
+    proposal: any,
+    service: any,
+    user: User,
+    action: 'approve' | 'reject',
+    rejectionReason?: string,
+  ) {
+    try {
+      const frontendUrl = this.config.get(
+        'FRONTEND_URL',
+        'http://localhost:3000',
+      );
+      const isApproval = action === 'approve';
+      const statusColor = isApproval ? '#10b981' : '#ef4444';
+      const statusText = isApproval ? 'Approved' : 'Rejected';
+      const icon = isApproval ? '✅' : '❌';
+
+      // Email to client (confirmation)
+      await this.mailer.sendMail({
+        to: proposal.clientEmail,
+        subject: `Service ${statusText}: ${service.name}`,
+        html: `
+        <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+          <h2 style="color: ${statusColor};">${icon} Service ${statusText}</h2>
+          <p>Dear ${proposal.clientName},</p>
+          <p>Thank you for your response. The service has been ${statusText.toLowerCase()}.</p>
+          
+          <div style="background: ${isApproval ? '#f0fdf4' : '#fef2f2'}; padding: 20px; 
+                      border-left: 4px solid ${statusColor}; margin: 20px 0;">
+            <h3 style="margin: 0 0 10px 0;">Service Details</h3>
+            <p style="margin: 5px 0;"><strong>Service:</strong> ${service.name}</p>
+            <p style="margin: 5px 0;"><strong>Amount:</strong> $${Number(service.amount).toFixed(2)}</p>
+            <p style="margin: 5px 0;"><strong>Status:</strong> ${statusText}</p>
+            ${rejectionReason ? `<p style="margin: 5px 0;"><strong>Reason:</strong> ${rejectionReason}</p>` : ''}
+          </div>
+
+          ${
+            isApproval
+              ? `<p>This service has been added to your proposal total.</p>`
+              : `<p>This service will not be included in your proposal. Our team will reach out to discuss alternatives.</p>`
+          }
+          
+          <div style="text-align: center; margin: 30px 0;">
+            <a href="${frontendUrl}/proposals/${proposal.id}" 
+               style="background: #2563eb; color: white; padding: 12px 24px; 
+                      text-decoration: none; border-radius: 6px; display: inline-block;">
+              View Proposal
+            </a>
+          </div>
+          
+          <p>Best regards,<br>Your Architecture Team</p>
+        </div>
+      `,
+        text: `Service "${service.name}" ${statusText.toLowerCase()}.\nView proposal: ${frontendUrl}/proposals/${proposal.id}`,
+      });
+
+      // Email to admin team
+      const team = await this.prisma.user.findMany({
+        where: {
+          role: { in: this.MANAGER_ROLES_ARRAY },
+          isActive: true,
+        },
+        select: { email: true, name: true },
+      });
+
+      for (const member of team) {
+        await this.mailer.sendMail({
+          to: member.email,
+          subject: `Service ${statusText} by Client: ${proposal.projectName}`,
+          html: `
+          <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+            <h2 style="color: ${statusColor};">Service ${statusText}</h2>
+            <p>Hello ${member.name || 'Team Member'},</p>
+            <p>A client has ${statusText.toLowerCase()} a service on their proposal.</p>
+            
+            <div style="background: #f3f4f6; padding: 20px; border-radius: 8px; margin: 20px 0;">
+              <p><strong>Client:</strong> ${proposal.clientName}</p>
+              <p><strong>Proposal:</strong> ${proposal.proposalNumber}</p>
+              <p><strong>Service:</strong> ${service.name}</p>
+              <p><strong>Amount:</strong> $${Number(service.amount).toFixed(2)}</p>
+              <p><strong>Status:</strong> ${statusText}</p>
+              ${rejectionReason ? `<p><strong>Rejection Reason:</strong> ${rejectionReason}</p>` : ''}
+            </div>
+            
+            <div style="text-align: center; margin: 30px 0;">
+              <a href="${frontendUrl}/admin/proposals/${proposal.id}" 
+                 style="background: #2563eb; color: white; padding: 12px 24px; 
+                        text-decoration: none; border-radius: 6px; display: inline-block;">
+                View Proposal
+              </a>
+            </div>
+          </div>
+        `,
+          text: `Service ${statusText}: ${service.name}\nClient: ${proposal.clientName}\nProposal: ${proposal.proposalNumber}${rejectionReason ? `\nReason: ${rejectionReason}` : ''}`,
+        });
+      }
+    } catch (error) {
+      if (error instanceof Error) {
+        this.logger.error(
+          `Failed to send approval confirmation emails: ${error.message}`,
+        );
+      } else {
+        this.logger.error(
+          `Failed to send approval confirmation emails: ${String(error)}`,
+        );
+      }
+    }
+  }
   // async sign(id: string, dto: ProposalSignatureDto, user: User) {
   //   const proposal = await this.prisma.proposal.findUnique({
   //     where: { id },

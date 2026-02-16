@@ -78,6 +78,12 @@ enum ServiceType {
   OTHER
 }
 
+enum ServiceApprovalStatus {
+  PENDING_APPROVAL
+  APPROVED
+  REJECTED
+}
+
 enum RequestStatus {
   PENDING
   REVIEWED
@@ -139,9 +145,9 @@ model User {
   // sentMeetingLinks     MeetingLink[]      @relation("SentMeetingLinks") // meetings staff sent
   // receivedMeetingLinks MeetingLink[]      @relation("ReceivedMeetingLinks") // meetings user received
   // meetingLinks         MeetingLink[]      @relation("MeetingLinksCreatedBy")
-  sentMeetingLinks   MeetingLink[] @relation("MeetingLinksSentBy")     // ← staff / sender
-  receivedMeetingLinks MeetingLink[] @relation("MeetingLinksSentTo")   // ← client / receiver
-  meetingLinks       MeetingLink[] @relation("MeetingLinksCreatedBy")
+  sentMeetingLinks     MeetingLink[]      @relation("MeetingLinksSentBy") // ← staff / sender
+  receivedMeetingLinks MeetingLink[]      @relation("MeetingLinksSentTo") // ← client / receiver
+  meetingLinks         MeetingLink[]      @relation("MeetingLinksCreatedBy")
   // meetingLinks         MeetingLink[]
 
   @@index([email])
@@ -151,29 +157,29 @@ model User {
 }
 
 model MeetingLink {
-  id              String        @id @default(uuid())
+  id               String         @id @default(uuid())
   projectRequestId String
-  projectRequest  ProjectRequest @relation(fields: [projectRequestId], references: [id])
+  projectRequest   ProjectRequest @relation(fields: [projectRequestId], references: [id])
 
-  sentToUserId    String
-  sentToUser      User          @relation("MeetingLinksSentTo", fields: [sentToUserId], references: [id])
+  sentToUserId String
+  sentToUser   User   @relation("MeetingLinksSentTo", fields: [sentToUserId], references: [id])
 
-  sentByUserId    String
-  sentByUser      User          @relation("MeetingLinksSentBy", fields: [sentByUserId], references: [id])
+  sentByUserId String
+  sentByUser   User   @relation("MeetingLinksSentBy", fields: [sentByUserId], references: [id])
 
-  meetingUrl      String
-  title           String
-  scheduledAt     DateTime
-  notes           String?
-  emailSent       Boolean       @default(false)
-  emailSentAt     DateTime?
-  createdAt       DateTime      @default(now())
-  updatedAt       DateTime      @updatedAt
+  meetingUrl  String
+  title       String
+  scheduledAt DateTime
+  notes       String?
+  emailSent   Boolean   @default(false)
+  emailSentAt DateTime?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
 
   // Keep this one if you really need a third relation to User
   // (but most likely you can remove it — see alternatives below)
-  userId          String?
-  user            User?         @relation("MeetingLinksCreatedBy", fields: [userId], references: [id])
+  userId String?
+  user   User?   @relation("MeetingLinksCreatedBy", fields: [userId], references: [id])
 
   @@index([projectRequestId])
   @@index([sentToUserId])
@@ -577,11 +583,20 @@ model ProposalService {
   unit     String? // "weeks", "hours", "sq ft"
   amount   Decimal  @db.Decimal(10, 2)
 
+  approvalStatus   ServiceApprovalStatus @default(APPROVED)
+  requiresApproval Boolean               @default(false)
+  approvedAt       DateTime?
+  approvedBy       String?
+  rejectedAt       DateTime?
+  rejectedBy       String?
+  rejectionReason  String?               @db.Text
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
   @@index([proposalId])
   @@index([order])
+  @@index([approvalStatus])
   @@map("proposal_services")
 }
 
