@@ -108,6 +108,19 @@ enum MediaStatus {
   REJECTED
 }
 
+enum ProposalType {
+  NORMAL
+  AMENDMENT
+}
+
+enum AmendmentStatus {
+  PENDING
+  UNDER_REVIEW
+  APPROVED
+  REJECTED
+  COMPLETED
+}
+
 // ──────────────────────────────────────────────────────────────
 // Core Models 
 // ──────────────────────────────────────────────────────────────
@@ -149,6 +162,12 @@ model User {
   receivedMeetingLinks MeetingLink[]      @relation("MeetingLinksSentTo") // ← client / receiver
   meetingLinks         MeetingLink[]      @relation("MeetingLinksCreatedBy")
   // meetingLinks         MeetingLink[]
+  amendmentRequests    AmendmentRequest[]
+  // amendmentRequests    AmendmentRequest[]
+  // amendmentRequests    AmendmentRequest[]
+  requestedAmendments  AmendmentRequest[] @relation("RequestedAmendments")
+  reviewedAmendments   AmendmentRequest[] @relation("ReviewedAmendments")
+  completedAmendments  AmendmentRequest[] @relation("CompletedAmendments")
 
   @@index([email])
   @@index([googleId])
@@ -556,14 +575,70 @@ model Proposal {
   projectId String?  @unique
   project   Project?
 
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  proposalType     ProposalType @default(NORMAL)
+  parentProposalId String?
+  parentProposal   Proposal?    @relation("ProposalAmendments", fields: [parentProposalId], references: [id], onDelete: SetNull)
+  amendments       Proposal[]   @relation("ProposalAmendments")
+
+  createdAt         DateTime           @default(now())
+  updatedAt         DateTime           @updatedAt
+  
+  amendmentRequests AmendmentRequest[]
+  linkedAmendment   AmendmentRequest?  @relation("AmendmentProposalLink")
+  // amendmentRequest  AmendmentRequest?
 
   @@index([userId])
   @@index([proposalNumber])
+  @@index([parentProposalId])
+  @@index([proposalType])
   @@index([status])
   @@index([projectRequestId])
   @@map("proposals")
+}
+
+model AmendmentRequest {
+  id         String   @id @default(uuid())
+  proposalId String
+  proposal   Proposal @relation(fields: [proposalId], references: [id], onDelete: Cascade)
+
+  // Request Details
+  projectName String
+  description String @db.Text
+  services    String @db.Text
+  urgency     String // "LOW", "MEDIUM", "HIGH", "URGENT"
+
+  // Status
+  status AmendmentStatus @default(PENDING)
+
+  // Client Info
+  requestedById String?
+  requestedBy   User?   @relation("RequestedAmendments", fields: [requestedById], references: [id])
+
+  // PM Response
+  reviewedById String?
+  reviewedBy   User?     @relation("ReviewedAmendments", fields: [reviewedById], references: [id])
+  reviewedAt   DateTime?
+  reviewNotes  String?   @db.Text
+
+  // Amendment Proposal (if created)
+  amendmentProposalId String?   @unique
+  amendmentProposal   Proposal? @relation("AmendmentProposalLink", fields: [amendmentProposalId], references: [id], onDelete: SetNull)
+
+  // Completion
+  completedAt   DateTime?
+  completedBy   String?
+  completedById User?     @relation("CompletedAmendments", fields: [completedBy], references: [id])
+
+  // Timestamps
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  user      User?    @relation(fields: [userId], references: [id])
+  userId    String?
+
+  @@index([proposalId])
+  @@index([status])
+  @@index([requestedById])
+  @@map("amendment_requests")
 }
 
 model ProposalService {
@@ -583,7 +658,7 @@ model ProposalService {
   unit     String? // "weeks", "hours", "sq ft"
   amount   Decimal  @db.Decimal(10, 2)
 
-  approvalStatus   ServiceApprovalStatus @default(APPROVED)
+  approvalStatus   ServiceApprovalStatus @default(PENDING_APPROVAL)
   requiresApproval Boolean               @default(false)
   approvedAt       DateTime?
   approvedBy       String?

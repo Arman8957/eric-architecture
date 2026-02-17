@@ -4,7 +4,7 @@ import { ProposalStatus } from '@prisma/client';
 
 export class UpdateProposalStatusDto {
   @IsEnum(ProposalStatus)
-  status: ProposalStatus;
+  status!: ProposalStatus;
 
   @IsOptional()
   @IsString()

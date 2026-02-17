@@ -1966,129 +1966,148 @@ async addServiceWithApproval(
   };
 }
 
-  async handleServiceApproval(
-    proposalId: string,
-    serviceId: string,
-    dto: ApproveServiceDto,
-    user: User,
-  ) {
-    const proposal = await this.prisma.proposal.findUnique({
-      where: { id: proposalId },
-      include: {
-        services: true,
-        user: {
-          select: {
-            id: true,
-            name: true,
-            email: true,
-          },
-        },
-        createdBy: {
-          select: {
-            id: true,
-            name: true,
-            email: true,
-          },
+async handleServiceApproval(
+  proposalId: string,
+  serviceId: string,
+  dto: ApproveServiceDto,
+  user: User,
+) {
+  const proposal = await this.prisma.proposal.findUnique({
+    where: { id: proposalId },
+    include: {
+      services: true,
+      user: {
+        select: {
+          id: true,
+          name: true,
+          email: true,
         },
       },
-    });
-
-    if (!proposal) {
-      throw new NotFoundException('Proposal not found');
-    }
-
-    // Verify user is the client
-    const isClient =
-      proposal.userId === user.id || proposal.clientEmail === user.email;
-
-    if (!isClient && !this.canManage(user)) {
-      throw new ForbiddenException(
-        'Only the client or managers can approve/reject services',
-      );
-    }
-
-    const service = await this.prisma.proposalService.findFirst({
-      where: {
-        id: serviceId,
-        proposalId: proposalId,
+      createdBy: {
+        select: {
+          id: true,
+          name: true,
+          email: true,
+        },
       },
-    });
-
-    if (!service) {
-      throw new NotFoundException('Service not found in this proposal');
-    }
-
-    if (service.approvalStatus !== ServiceApprovalStatus.PENDING_APPROVAL) {
-      throw new BadRequestException(
-        `Service has already been ${service.approvalStatus.toLowerCase()}`,
-      );
-    }
-
-    // Validate rejection reason
-    if (dto.action === 'reject' && !dto.rejectionReason?.trim()) {
-      throw new BadRequestException(
-        'Rejection reason is required when rejecting a service',
-      );
-    }
-
-    const isApproval = dto.action === 'approve';
-
-    // Update service status
-    const updatedService = await this.prisma.proposalService.update({
-      where: { id: serviceId },
-      data: {
-        approvalStatus: isApproval
-          ? ServiceApprovalStatus.APPROVED
-          : ServiceApprovalStatus.REJECTED,
-        approvedAt: isApproval ? new Date() : null,
-        approvedBy: isApproval ? user.id : null,
-        rejectedAt: !isApproval ? new Date() : null,
-        rejectedBy: !isApproval ? user.id : null,
-        rejectionReason: dto.rejectionReason?.trim() || null,
-        active: isApproval,
+      projectRequest: {
+        select: {
+          email: true,
+          userId: true,
+        },
       },
-    });
+    },
+  });
 
-    // Recalculate totals if approved
-    if (isApproval) {
-      await this.recalculateTotals(proposalId);
-    }
-
-    // Send confirmation emails
-    await this.sendServiceApprovalConfirmation(
-      proposal,
-      updatedService,
-      user,
-      dto.action,
-      dto.rejectionReason,
-    );
-
-    // Get updated proposal with totals
-    const updatedProposal = await this.prisma.proposal.findUnique({
-      where: { id: proposalId },
-      select: {
-        id: true,
-        proposalNumber: true,
-        subtotal: true,
-        taxAmount: true,
-        totalAmount: true,
-      },
-    });
-
-    this.logger.log(
-      `Service ${serviceId} ${dto.action === 'approve' ? 'approved' : 'rejected'} by ${user.email} for proposal ${proposal.proposalNumber}`,
-    );
-
-    return {
-      success: true,
-      message: `Service "${service.name}" ${dto.action === 'approve' ? 'approved' : 'rejected'} successfully`,
-      data: {
-        service: updatedService,
-        proposal: updatedProposal,
-        action: dto.action,
-      },
-    };
+  if (!proposal) {
+    throw new NotFoundException('Proposal not found');
   }
+
+
+  const isClient =
+    proposal.userId === user.id ||
+    proposal.clientEmail === user.email ||
+    proposal.clientEmail.toLowerCase() === user.email.toLowerCase() ||
+    (proposal.user && proposal.user.email.toLowerCase() === user.email.toLowerCase()) ||
+    (proposal.projectRequest && proposal.projectRequest.email.toLowerCase() === user.email.toLowerCase()) ||
+    (proposal.projectRequest && proposal.projectRequest.userId === user.id);
+
+  if (!isClient && !this.canManage(user)) {
+    // Add detailed logging for debugging
+    this.logger.warn(
+      `Service approval denied for user ${user.email}. ` +
+      `Proposal userId: ${proposal.userId}, ` +
+      `clientEmail: ${proposal.clientEmail}, ` +
+      `user.id: ${user.id}`
+    );
+    
+    throw new ForbiddenException(
+      'Only the client or managers can approve/reject services',
+    );
+  }
+
+  const service = await this.prisma.proposalService.findFirst({
+    where: {
+      id: serviceId,
+      proposalId: proposalId,
+    },
+  });
+
+  if (!service) {
+    throw new NotFoundException('Service not found in this proposal');
+  }
+
+  if (service.approvalStatus !== ServiceApprovalStatus.PENDING_APPROVAL) {
+    throw new BadRequestException(
+      `Service has already been ${service.approvalStatus.toLowerCase()}`,
+    );
+  }
+
+  // Validate rejection reason
+  if (dto.action === 'reject' && !dto.rejectionReason?.trim()) {
+    throw new BadRequestException(
+      'Rejection reason is required when rejecting a service',
+    );
+  }
+
+  const isApproval = dto.action === 'approve';
+
+  // Update service status
+  const updatedService = await this.prisma.proposalService.update({
+    where: { id: serviceId },
+    data: {
+      approvalStatus: isApproval
+        ? ServiceApprovalStatus.APPROVED
+        : ServiceApprovalStatus.REJECTED,
+      approvedAt: isApproval ? new Date() : null,
+      approvedBy: isApproval ? user.id : null,
+      rejectedAt: !isApproval ? new Date() : null,
+      rejectedBy: !isApproval ? user.id : null,
+      rejectionReason: dto.rejectionReason?.trim() || null,
+      active: isApproval,
+    },
+  });
+
+  // Recalculate totals if approved
+  if (isApproval) {
+    await this.recalculateTotals(proposalId);
+  }
+
+  // Send confirmation emails
+  await this.sendServiceApprovalConfirmation(
+    proposal,
+    updatedService,
+    user,
+    dto.action,
+    dto.rejectionReason,
+  );
+
+  // Get updated proposal with totals
+  const updatedProposal = await this.prisma.proposal.findUnique({
+    where: { id: proposalId },
+    select: {
+      id: true,
+      proposalNumber: true,
+      subtotal: true,
+      taxAmount: true,
+      totalAmount: true,
+    },
+  });
+
+  this.logger.log(
+    `Service ${serviceId} ${dto.action === 'approve' ? 'approved' : 'rejected'} by ${user.email} for proposal ${proposal.proposalNumber}`,
+  );
+
+  return {
+    success: true,
+    message: `Service "${service.name}" ${dto.action === 'approve' ? 'approved' : 'rejected'} successfully`,
+    data: {
+      service: updatedService,
+      proposal: updatedProposal,
+      action: dto.action,
+    },
+  };
+}
 
   async getPendingApprovals(proposalId: string, user: User) {
     const proposal = await this.prisma.proposal.findUnique({

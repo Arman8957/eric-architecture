@@ -24,7 +24,10 @@ import {
   UpdateProposalServiceDto,
   UpdateProposalStatusDto,
 } from './dto/update-proposal-status.dto';
-import { AddServiceWithApprovalDto, ApproveServiceDto } from './dto/service-approval.dto';
+import {
+  AddServiceWithApprovalDto,
+  ApproveServiceDto,
+} from './dto/service-approval.dto';
 
 @Controller('proposals')
 @UseGuards(JwtAuthGuard, RolesGuard)
@@ -44,7 +47,7 @@ export class ProposalController {
     return this.proposalService.create(createProposalDto, user);
   }
 
-@Get()
+  @Get()
   @Roles(
     client.UserRole.SUPER_ADMIN,
     client.UserRole.ADMIN,
@@ -149,7 +152,7 @@ export class ProposalController {
     @Param('id') id: string,
     @Param('serviceId') serviceId: string,
     @Body() updateServiceDto: UpdateProposalServiceDto,
-    @CurrentUser() user: client.User, 
+    @CurrentUser() user: client.User,
   ) {
     return this.proposalService.updateService(
       id,
@@ -174,8 +177,7 @@ export class ProposalController {
     return this.proposalService.deleteService(id, serviceId, user);
   }
 
-
-    @Post(':id/services/with-approval')
+  @Post(':id/services/with-approval')
   @Roles(
     client.UserRole.SUPER_ADMIN,
     client.UserRole.ADMIN,
@@ -189,9 +191,7 @@ export class ProposalController {
     return this.proposalService.addServiceWithApproval(id, dto, user);
   }
 
-  /**
-   * Client approves or rejects a service
-   */
+
   @Post(':proposalId/services/:serviceId/approval')
   approveOrRejectService(
     @Param('proposalId') proposalId: string,
@@ -207,9 +207,6 @@ export class ProposalController {
     );
   }
 
-  /**
-   * Get pending service approvals for a proposal
-   */
   @Get(':id/pending-approvals')
   getPendingApprovals(
     @Param('id') id: string,
