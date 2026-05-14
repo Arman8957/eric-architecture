@@ -41,6 +41,11 @@ enum ProposalStatus {
   EXPIRED
 }
 
+enum ProposalType {
+  NORMAL
+  AMENDMENT
+}
+
 enum StageStatus {
   NOT_STARTED
   IN_PROGRESS
@@ -108,17 +113,37 @@ enum MediaStatus {
   REJECTED
 }
 
-enum ProposalType {
-  NORMAL
-  AMENDMENT
-}
-
 enum AmendmentStatus {
   PENDING
   UNDER_REVIEW
   APPROVED
   REJECTED
   COMPLETED
+}
+
+enum TimecardStatus {
+  DRAFT
+  SUBMITTED
+  APPROVED
+  REJECTED
+}
+
+enum RefundStatus {
+  PENDING
+  APPROVED
+  REJECTED
+}
+
+enum PaymentType {
+  LUMP_SUM
+  INSTALLMENT
+}
+
+enum PaymentStatus {
+  PENDING
+  COMPLETED
+  FAILED
+  REFUNDED
 }
 
 // ──────────────────────────────────────────────────────────────
@@ -146,6 +171,7 @@ model User {
   likes                Like[]
   employeeProfile      EmployeeProfile?
   projectRequests      ProjectRequest[]
+  assignedProjects     ProjectRequest[]   @relation("AssignedProjects")
   mediaContents        MediaContent[]
   mediaAssets          MediaAsset[]
   mediaLikes           MediaLike[]
@@ -168,6 +194,13 @@ model User {
   requestedAmendments  AmendmentRequest[] @relation("RequestedAmendments")
   reviewedAmendments   AmendmentRequest[] @relation("ReviewedAmendments")
   completedAmendments  AmendmentRequest[] @relation("CompletedAmendments")
+  timecards            Timecard[]
+  managedTeams         Team[]             @relation("ManagedTeams")
+  teams                Team[]             @relation("TeamMembers")
+  bankDetails          UserBankDetails?
+  refundRequests       RefundRequest[]
+  approvedRefunds      RefundRequest[]    @relation("ApprovedRefunds")
+  payments             Payment[]
 
   @@index([email])
   @@index([googleId])
@@ -467,10 +500,23 @@ model ProjectRequest {
   appointmentTime             String? // e.g., "10:00 AM"
   appointmentType             String? // e.g., "Initial Consultation"
   additionalNotes             String?
+  consultationPaymentId       String? // Stripe PaymentIntent ID for the $250 fee
+  driveLink                   String?  // Google Drive link for internal project files
   // meetingLinks                MeetingLink[]
   stages                      ProjectStage[]
 
   // Assets
+
+  // New Inquiry flag (PM-created inquiries for outside clients)
+  isNewInquiry              Boolean          @default(false)
+  isApproved                Boolean          @default(false) // Client requests need approval
+  isArchived                Boolean          @default(false)
+  archiverId                String?
+  archivedAt                DateTime?
+
+  // Assigned Project Manager (only SUPER_ADMIN can assign)
+  assignedManagerId String?
+  assignedManager   User?          @relation("AssignedProjects", fields: [assignedManagerId], references: [id])
 
   // Status and Relations
   status       RequestStatus  @default(PENDING)
@@ -483,12 +529,19 @@ model ProjectRequest {
   updatedAt    DateTime       @updatedAt
   proposals    Proposal[]
   meetingLinks MeetingLink[]
+  teams                Team[]             @relation("ProjectTeams")
+  isProjectStarted     Boolean            @default(false)
+  projectStartedAt     DateTime?
+  refundRequests       RefundRequest[]
+  payments             Payment[]
 
   @@index([email])
   @@index([status])
   @@index([deletedAt])
   @@index([userId])
   @@index([createdAt])
+  @@index([isArchived])
+  @@index([assignedManagerId])
   @@map("project_requests")
 }
 
@@ -546,6 +599,7 @@ model Proposal {
 
   // Payment
   paymentMethod String? // "LUMP_SUM" or "INSTALLMENT"
+  paymentType   PaymentType? // Formal enum for payment gating
   paymentTerms  String? @db.Text
 
   // Schedule & Contact
@@ -564,6 +618,12 @@ model Proposal {
   // Additional
   notes              String? @db.Text
   termsAndConditions String? @db.Text
+
+  // Contract data - snapshot of master contract sections when proposal is sent
+  contractSections         Json?     // JSON array of contract article sections
+  architectContractSignature String?  @db.Text // base64 canvas signature from architect
+  clientContractSignature    String?  @db.Text // base64 canvas signature from client
+  clientContractSignedAt     DateTime?
 
   // Metadata
   createdById String
@@ -716,6 +776,10 @@ model ProjectStage {
   // Timeline
   startDate   DateTime?
   dueDate     DateTime?
+
+  // Deadlines
+  internalDeadline DateTime?
+  externalDeadline DateTime?
   completedAt DateTime?
 
   // Assignment
@@ -724,6 +788,12 @@ model ProjectStage {
 
   // Tracking
   notes String? @db.Text
+  driveLink String? // Optional Google Drive link for deliverables
+
+  // Timer tracking for phase time
+  activeTimerStart DateTime? // when timer was last started
+  accumulatedTime  Int       @default(0) // total seconds accumulated
+  timerUserId      String?   // who started the timer
 
   // Metadata
   createdAt        DateTime        @default(now())
@@ -731,44 +801,104 @@ model ProjectStage {
   projectRequest   ProjectRequest? @relation(fields: [projectRequestId], references: [id])
   projectRequestId String?
 
+  deadlineReminders DeadlineReminder[]
+
   @@index([proposalId])
   @@index([status])
   @@index([assignedToId])
   @@map("project_stages")
 }
 
+// ──────────────────────────────────────────────────────────────
+// Deadline Reminders – scheduled notifications for deadlines
+// ──────────────────────────────────────────────────────────────
+model DeadlineReminder {
+  id String @id @default(uuid())
+
+  // Link to stage
+  stageId String
+  stage   ProjectStage @relation(fields: [stageId], references: [id], onDelete: Cascade)
+
+  // Which deadline this reminder is for
+  deadlineType  String // "INTERNAL" or "EXTERNAL"
+  deadlineDate  DateTime // The actual deadline date
+  reminderDate  DateTime // When the reminder should fire (7/3/1 day before)
+  daysBefore    Int      // 7, 3, or 1
+
+  // Target user for the notification
+  targetUserId String
+
+  // Status tracking
+  sentAt    DateTime? // null = not yet sent
+  cancelled Boolean   @default(false)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([stageId])
+  @@index([reminderDate])
+  @@index([sentAt])
+  @@index([cancelled])
+  @@map("deadline_reminders")
+}
+
 //===========notification========
 model Notification {
-  id        String   @id @default(uuid())
-  userId    String
-  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
-  type      String // NEW_REQUEST, STATUS_UPDATED, etc.
-  title     String
-  message   String
-  link      String?
-  isRead    Boolean  @default(false)
-  createdAt DateTime @default(now())
+  id               String   @id @default(uuid())
+  userId           String
+  user             User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  type             String // NEW_PROJECT_REQUEST, STATUS_UPDATED, etc.
+  title            String
+  message          String
+  link             String?
+  isRead           Boolean  @default(false)
+  projectRequestId String?  // Link to project request for accept/reject
+  createdAt        DateTime @default(now())
 
   @@index([userId])
   @@index([createdAt])
+  @@index([projectRequestId])
 }
 
 //==================================project req========================
 
 model EmployeeProfile {
-  id         String   @id @default(uuid())
-  userId     String   @unique
-  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
-  employeeId String   @unique
-  department String?
-  position   String?
-  joinDate   DateTime @default(now())
-  phone      String?
-  address    String?
-  salary     Decimal? @db.Decimal(10, 2)
+  id              String    @id @default(uuid())
+  userId          String    @unique
+  user            User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  employeeId      String    @unique
+  department      String?
+  position        String?
+  joinDate        DateTime  @default(now())
+  phone           String?
+  address         String?
+  salary          Decimal?  @db.Decimal(10, 2)
+  state           String?
+  startingDate    DateTime?
+  utilizationRate Decimal?  @db.Decimal(5, 2)
+  hourlyRate      Decimal?  @db.Decimal(10, 2)
+  taxPercentage   Decimal?  @db.Decimal(5, 2)
+  taxes           EmployeeTax[]
 
   @@index([employeeId])
   @@map("employee_profiles")
+}
+
+// ──────────────────────────────────────────────────────────────
+// Employee Taxes – dynamic multi-tax system
+// ──────────────────────────────────────────────────────────────
+model EmployeeTax {
+  id                String          @id @default(uuid())
+  employeeProfileId String
+  employeeProfile   EmployeeProfile @relation(fields: [employeeProfileId], references: [id], onDelete: Cascade)
+  taxType           String          // FITWH, MED, SOC, CA, CASDI, OTHERS
+  customName        String?         // custom name when taxType is OTHERS
+  percentage        Decimal         @db.Decimal(5, 2)
+  createdAt         DateTime        @default(now())
+  updatedAt         DateTime        @updatedAt
+
+  @@index([employeeProfileId])
+  @@map("employee_taxes")
 }
 
 // ──────────────────────────────────────────────────────────────
@@ -814,12 +944,15 @@ model Project {
   createdAt   DateTime  @default(now())
   updatedAt   DateTime  @updatedAt
 
+  isArchived Boolean @default(false)
+
   @@index([slug])
   @@index([status])
   @@index([category])
   @@index([authorId])
   @@index([featuredOrder])
   @@index([publishedAt])
+  @@index([isArchived])
   @@map("projects")
 }
 
@@ -982,4 +1115,254 @@ model SiteSettings {
   updatedAt   DateTime @updatedAt
 
   @@map("site_settings")
+}
+
+// ──────────────────────────────────────────────────────────────
+// Master Contract - Editable article sections for proposals
+// ──────────────────────────────────────────────────────────────
+model MasterContract {
+  id        String   @id @default(uuid())
+  articleKey String  @unique // e.g., "article_1_definitions", "article_2_scope"
+  title     String           // e.g., "Article 1 - Definitions"
+  content   String   @db.Text // The editable static text content
+  order     Int      @default(0)
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([order])
+  @@index([isActive])
+  @@map("master_contracts")
+}
+
+model AmendmentContract {
+  id        String   @id @default(uuid())
+  articleKey String  @unique // e.g., "article_1_definitions", "article_2_scope"
+  title     String           // e.g., "Article 1 - Definitions"
+  content   String   @db.Text // The editable static text content
+  order     Int      @default(0)
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([order])
+  @@index([isActive])
+  @@map("amendment_contracts")
+}
+
+// ──────────────────────────────────────────────────────────────
+// Overhead Expenses
+// ──────────────────────────────────────────────────────────────
+model OverheadExpense {
+  id        String   @id @default(uuid())
+  name      String
+  amount    Decimal  @db.Decimal(10, 2)
+  frequency String   // "monthly", "semi-annually", "yearly"
+  category  String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@map("overhead_expenses")
+}
+
+// ──────────────────────────────────────────────────────────────
+// Timecards – weekly timesheet per employee
+// ──────────────────────────────────────────────────────────────
+model Timecard {
+  id            String         @id @default(uuid())
+  userId        String
+  user          User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+  weekStarting  DateTime       @default(now()) // Start of the bi-weekly pay period (Monday)
+  weekEnding    DateTime       // End of the bi-weekly pay period (Sunday +13 days)
+  payPeriod     Int            @default(1) // 1-26 bi-weekly pay periods per year
+  payYear       Int            @default(2026) // year of the pay period
+  status        TimecardStatus @default(DRAFT)
+  billableHours    Decimal        @default(0) @db.Decimal(6, 2)
+  nonBillableHours Decimal        @default(0) @db.Decimal(6, 2)
+  totalHours       Decimal        @default(0) @db.Decimal(6, 2)
+  totalCost     Decimal        @default(0) @db.Decimal(10, 2)
+  submittedAt   DateTime?
+  approvedAt    DateTime?
+  approvedBy    String?
+  rejectedAt    DateTime?
+  rejectedBy    String?
+  rejectionNote String?
+  entries         TimecardEntry[]
+  billableEntries TimecardBillableEntry[]
+  createdAt       DateTime       @default(now())
+  updatedAt     DateTime       @updatedAt
+
+  @@unique([userId, weekStarting])
+  @@index([userId])
+  @@index([status])
+  @@index([weekEnding])
+  @@index([payPeriod, payYear])
+  @@map("timecards")
+}
+
+model TimecardEntry {
+  id          String   @id @default(uuid())
+  timecardId  String
+  timecard    Timecard @relation(fields: [timecardId], references: [id], onDelete: Cascade)
+  
+  // Overhead category (Bereavement, Holiday, Sick, etc.)
+  category    String
+  
+  // Optional association with a project/phase for direct overhead tracking
+  projectRequestId String?
+  phaseName        String?
+
+  entryWeek   Int      @default(1)
+  
+  monday      Decimal  @default(0) @db.Decimal(4, 2)
+  tuesday     Decimal  @default(0) @db.Decimal(4, 2)
+  wednesday   Decimal  @default(0) @db.Decimal(4, 2)
+  thursday    Decimal  @default(0) @db.Decimal(4, 2)
+  friday      Decimal  @default(0) @db.Decimal(4, 2)
+  saturday    Decimal  @default(0) @db.Decimal(4, 2)
+  sunday      Decimal  @default(0) @db.Decimal(4, 2)
+  totalHours  Decimal  @default(0) @db.Decimal(6, 2)
+
+  @@index([timecardId])
+  @@index([projectRequestId])
+  @@map("timecard_entries")
+}
+
+// ──────────────────────────────────────────────────────────────
+// Timecard Billable Entries – per-project/per-phase time tracking
+// ──────────────────────────────────────────────────────────────
+model TimecardBillableEntry {
+  id               String   @id @default(uuid())
+  timecardId       String
+  timecard         Timecard @relation(fields: [timecardId], references: [id], onDelete: Cascade)
+  projectRequestId String   // which project
+  projectName      String   // cached project name
+  phaseName        String   // phase name
+  description      String?  @db.Text
+  entryWeek        Int      @default(1) // 1 = Week 1, 2 = Week 2 of bi-weekly period
+
+  // Billable hours (per day)
+  monday           Decimal  @default(0) @db.Decimal(4, 2)
+  tuesday          Decimal  @default(0) @db.Decimal(4, 2)
+  wednesday        Decimal  @default(0) @db.Decimal(4, 2)
+  thursday         Decimal  @default(0) @db.Decimal(4, 2)
+  friday           Decimal  @default(0) @db.Decimal(4, 2)
+  saturday         Decimal  @default(0) @db.Decimal(4, 2)
+  sunday           Decimal  @default(0) @db.Decimal(4, 2)
+  totalHours       Decimal  @default(0) @db.Decimal(6, 2)
+
+  @@index([timecardId])
+  @@index([projectRequestId])
+  @@map("timecard_billable_entries")
+}
+model Team {
+  id           String           @id @default(uuid())
+  name         String
+  createdById  String
+  createdBy    User             @relation("ManagedTeams", fields: [createdById], references: [id])
+  members      User[]           @relation("TeamMembers")
+  projects     ProjectRequest[] @relation("ProjectTeams")
+  createdAt    DateTime         @default(now())
+  updatedAt    DateTime         @updatedAt
+
+  @@map("teams")
+}
+
+// ──────────────────────────────────────────────────────────────
+// User Bank Details – for refund payments
+// ──────────────────────────────────────────────────────────────
+model UserBankDetails {
+  id            String   @id @default(uuid())
+  userId        String   @unique
+  user          User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  bankName      String
+  accountNumber String
+  routingNumber String
+  branchName    String?
+  bankType      String?  // "TRADITIONAL", "ONLINE", "CREDIT_UNION", "MOBILE_BANK"
+
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  @@index([userId])
+  @@map("user_bank_details")
+}
+
+// ──────────────────────────────────────────────────────────────
+// Refund Requests – client can request refund after phase completion
+// ──────────────────────────────────────────────────────────────
+model RefundRequest {
+  id                String       @id @default(uuid())
+
+  // Who requested
+  userId            String
+  user              User         @relation(fields: [userId], references: [id])
+
+  // Which project/phase
+  projectRequestId  String
+  projectRequest    ProjectRequest @relation(fields: [projectRequestId], references: [id])
+  stageId           String
+  stageName         String       // cached for display
+
+  // Refund details
+  refundName        String       // e.g., "Refund for Schematic Design"
+  refundDescription String       @db.Text
+  refundCause       String
+  amount            Decimal      @db.Decimal(10, 2)
+
+  // Status
+  refundStatus      RefundStatus @default(PENDING)
+
+  // Approval
+  approvedById      String?
+  approvedBy        User?        @relation("ApprovedRefunds", fields: [approvedById], references: [id])
+  approvedAt        DateTime?
+  rejectedAt        DateTime?
+  rejectionReason   String?
+
+  createdAt         DateTime     @default(now())
+  updatedAt         DateTime     @updatedAt
+
+  @@index([userId])
+  @@index([projectRequestId])
+  @@index([refundStatus])
+  @@map("refund_requests")
+}
+
+// ──────────────────────────────────────────────────────────────
+// Payments – Stripe payments for project phases
+// ──────────────────────────────────────────────────────────────
+model Payment {
+  id                    String        @id @default(uuid())
+
+  // Who paid
+  userId                String
+  user                  User          @relation(fields: [userId], references: [id])
+
+  // Which project
+  projectRequestId      String
+  projectRequest        ProjectRequest @relation(fields: [projectRequestId], references: [id])
+  proposalId            String
+
+  // For installment: which phase this payment covers
+  stageId               String?       // null for lump sum
+  stageName             String?       // cached
+
+  // Payment details
+  amount                Decimal       @db.Decimal(10, 2)
+  paymentType           PaymentType   // LUMP_SUM or INSTALLMENT
+  paymentStatus         PaymentStatus @default(PENDING)
+
+  // Stripe
+  stripeSessionId       String?       @unique
+  stripePaymentIntentId String?       @unique
+
+  createdAt             DateTime      @default(now())
+  updatedAt             DateTime      @updatedAt
+
+  @@index([userId])
+  @@index([projectRequestId])
+  @@index([paymentStatus])
+  @@map("payments")
 }

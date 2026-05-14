@@ -32,7 +32,7 @@ import {
 @Controller('proposals')
 @UseGuards(JwtAuthGuard, RolesGuard)
 export class ProposalController {
-  constructor(private readonly proposalService: ProposalService) {}
+  constructor(private readonly proposalService: ProposalService) { }
 
   @Post()
   @Roles(
@@ -48,16 +48,13 @@ export class ProposalController {
   }
 
   @Get()
-  @Roles(
-    client.UserRole.SUPER_ADMIN,
-    client.UserRole.ADMIN,
-    client.UserRole.PROJECT_MANAGER,
-  )
+  @Roles('SUPER_ADMIN', 'ADMIN', 'PROJECT_MANAGER', 'DRAFTER', 'EMPLOYEE')
   findAll(
     @CurrentUser() user: client.User,
     @Query('includeApprovalStatus') includeApprovalStatus?: string,
+    @Query('projectRequestId') projectRequestId?: string,
   ) {
-    return this.proposalService.findAll(user, includeApprovalStatus === 'true');
+    return this.proposalService.findAll(user, includeApprovalStatus === 'true', projectRequestId);
   }
 
   @Get('my-proposals')
@@ -112,8 +109,17 @@ export class ProposalController {
     client.UserRole.ADMIN,
     client.UserRole.PROJECT_MANAGER,
   )
-  send(@Param('id') id: string, @CurrentUser() user: client.User) {
-    return this.proposalService.send(id, user);
+  send(
+    @Param('id') id: string,
+    @Body() body: { architectSignature?: string; scopeNotes?: string },
+    @CurrentUser() user: client.User,
+  ) {
+    return this.proposalService.send(
+      id,
+      user,
+      body?.architectSignature,
+      body?.scopeNotes,
+    );
   }
 
   @Patch(':id/sign')
@@ -175,6 +181,20 @@ export class ProposalController {
     @CurrentUser() user: client.User,
   ) {
     return this.proposalService.deleteService(id, serviceId, user);
+  }
+
+  // Delete proposal
+  @Delete(':id')
+  @Roles(
+    client.UserRole.SUPER_ADMIN,
+    client.UserRole.ADMIN,
+    client.UserRole.PROJECT_MANAGER,
+  )
+  deleteProposal(
+    @Param('id') id: string,
+    @CurrentUser() user: client.User,
+  ) {
+    return this.proposalService.deleteProposal(id, user);
   }
 
   @Post(':id/services/with-approval')

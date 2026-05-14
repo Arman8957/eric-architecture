@@ -38,6 +38,10 @@ export class CreateProjectRequestDto {
   @IsNotEmpty()
   serviceType: ServiceType;
 
+  @IsString()
+  @IsNotEmpty()
+  paymentIntentId: string;
+
   // Optional fields
   @IsString()
   @MaxLength(50)

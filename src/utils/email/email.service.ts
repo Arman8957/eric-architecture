@@ -429,6 +429,325 @@ If this wasn't you, ignore this email.
     });
   }
 
+  async sendNewInquiryWelcomeEmail(
+    to: string,
+    clientName: string,
+    data: {
+      projectName: string;
+      password: string;
+    },
+  ): Promise<void> {
+    const appName = this.getAppName();
+    const frontendUrl = this.config.get('FRONTEND_URL', 'http://localhost:5173');
+    const loginLink = `${frontendUrl}/login`;
+
+    const html = `
+    <div style="font-family: 'Segoe UI', Arial, Helvetica, sans-serif; max-width: 600px; margin: 0 auto; background: #fff; border-radius: 12px; overflow: hidden; box-shadow: 0 4px 24px rgba(0,0,0,0.08);">
+      <!-- HEADER -->
+      <div style="background: linear-gradient(135deg, #1a1a2e 0%, #16213e 50%, #0f3460 100%); padding: 40px 36px 32px; text-align: center;">
+        <h1 style="color: #fff; font-size: 24px; font-weight: 600; margin: 0;">Welcome to ${appName}</h1>
+        <p style="color: rgba(255,255,255,0.7); font-size: 14px; margin: 8px 0 0;">Your project inquiry has been received</p>
+      </div>
+
+      <!-- BODY -->
+      <div style="padding: 32px 36px;">
+        <p style="font-size: 16px; color: #333; margin: 0 0 20px; line-height: 1.5;">
+          Hello <strong>${clientName}</strong>,
+        </p>
+        <p style="font-size: 14px; color: #475569; margin: 0 0 24px; line-height: 1.6;">
+          Your project inquiry for "<strong>${data.projectName}</strong>" has been successfully created. 
+          A secure account has been set up for you to track progress, view proposals, and schedule meetings.
+        </p>
+
+        <!-- CREDENTIALS BOX -->
+        <div style="background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 8px; padding: 24px; margin-bottom: 24px;">
+          <h3 style="font-size: 14px; font-weight: 600; color: #1e293b; margin: 0 0 16px; text-transform: uppercase; letter-spacing: 0.5px;">Login Credentials</h3>
+          <div style="margin-bottom: 12px;">
+            <span style="font-size: 13px; color: #64748b; display: block; margin-bottom: 4px;">Email Address</span>
+            <strong style="font-size: 15px; color: #0f3460;">${to}</strong>
+          </div>
+          <div>
+            <span style="font-size: 13px; color: #64748b; display: block; margin-bottom: 4px;">Temporary Password</span>
+            <strong style="font-size: 15px; color: #0f3460;">${data.password}</strong>
+          </div>
+          <p style="font-size: 12px; color: #94a3b8; margin: 16px 0 0;">Note: You can change your password once you log in.</p>
+        </div>
+
+        <!-- CTA BUTTON -->
+        <div style="text-align: center; margin: 32px 0;">
+          <a href="${loginLink}" style="display: inline-block; background: #0f3460; color: #fff; text-decoration: none; padding: 14px 40px; border-radius: 8px; font-size: 16px; font-weight: 600;">
+            Log In to Your Dashboard
+          </a>
+        </div>
+
+        <p style="font-size: 14px; color: #475569; margin: 0; line-height: 1.6;">
+          Once logged in, you can find your inquiry under the "New Inquiries" tab. 
+          We look forward to working with you!
+        </p>
+      </div>
+
+      <!-- FOOTER -->
+      <div style="background: #f8fafc; border-top: 1px solid #e2e8f0; padding: 24px 36px; text-align: center;">
+        <p style="font-size: 12px; color: #94a3b8; margin: 0;">
+          If you did not expect this invitation, please contact us immediately.<br/>
+          © ${this.getCurrentYear()} ${appName}. All rights reserved.
+        </p>
+      </div>
+    </div>
+    `;
+
+    const text = `
+Welcome to ${appName}!
+
+Hello ${clientName},
+
+Your project inquiry for "${data.projectName}" has been successfully created.
+A secure account has been set up for you.
+
+Login Credentials:
+Email: ${to}
+Password: ${data.password}
+
+Log in here: ${loginLink}
+
+Once logged in, you can find your inquiry under the "New Inquiries" tab.
+
+Best regards,
+The ${appName} Team
+    `.trim();
+
+    await this.sendMail({
+      to,
+      subject: `Welcome to ${appName} - Project Inquiry Received`,
+      html,
+      text,
+    });
+  }
+
+  async sendGeneralNotification(
+    to: string,
+    recipientName: string,
+    data: {
+      title: string;
+      message: string;
+      actionText?: string;
+      actionUrl?: string;
+    },
+  ): Promise<void> {
+    const appName = this.getAppName();
+
+    const html = `
+    <div style="font-family: 'Segoe UI', Arial, Helvetica, sans-serif; max-width: 600px; margin: 0 auto; background: #fff; border-radius: 12px; overflow: hidden; box-shadow: 0 4px 24px rgba(0,0,0,0.08);">
+      <div style="background: linear-gradient(135deg, #1a1a2e 0%, #16213e 50%, #0f3460 100%); padding: 40px 36px 32px; text-align: center;">
+        <h1 style="color: #fff; font-size: 22px; font-weight: 600; margin: 0;">${data.title}</h1>
+      </div>
+      <div style="padding: 32px 36px;">
+        <p style="font-size: 16px; color: #333; margin: 0 0 24px; line-height: 1.5;">
+          Hello <strong>${recipientName}</strong>,
+        </p>
+        <p style="font-size: 14px; color: #475569; margin: 0 0 24px; line-height: 1.6;">
+          ${data.message}
+        </p>
+        ${data.actionUrl && data.actionText ? `
+        <div style="text-align: center; margin: 32px 0;">
+          <a href="${data.actionUrl}" style="display: inline-block; background: #0f3460; color: #fff; text-decoration: none; padding: 14px 40px; border-radius: 8px; font-size: 16px; font-weight: 600;">
+            ${data.actionText}
+          </a>
+        </div>
+        ` : ''}
+      </div>
+      <div style="background: #f8fafc; border-top: 1px solid #e2e8f0; padding: 24px 36px; text-align: center;">
+        <p style="font-size: 12px; color: #94a3b8; margin: 0;">
+          © ${this.getCurrentYear()} ${appName}. All rights reserved.
+        </p>
+      </div>
+    </div>
+    `;
+
+    const text = `
+${data.title}
+
+Hello ${recipientName},
+
+${data.message}
+
+${data.actionUrl ? `Take action here: ${data.actionUrl}` : ''}
+
+Best regards,
+The ${appName} Team
+    `.trim();
+
+    await this.sendMail({
+      to,
+      subject: `${data.title} - ${appName}`,
+      html,
+      text,
+    });
+  }
+
+  // ============================================
+  // REFUND ACCEPTED EMAIL
+  // ============================================
+  async sendRefundAcceptedEmail(
+    to: string,
+    clientName: string,
+    data: {
+      refundName: string;
+      projectName: string;
+      amount: number;
+      stageName: string;
+    },
+  ): Promise<void> {
+    const appName = this.getAppName();
+
+    const html = `
+    <div style="font-family: 'Segoe UI', Arial, Helvetica, sans-serif; max-width: 600px; margin: 0 auto; background: #fff; border-radius: 12px; overflow: hidden; box-shadow: 0 4px 24px rgba(0,0,0,0.08);">
+      <div style="background: linear-gradient(135deg, #1a1a2e 0%, #16213e 50%, #0f3460 100%); padding: 40px 36px 32px; text-align: center;">
+        <h1 style="color: #fff; font-size: 22px; font-weight: 600; margin: 0 0 6px;">Refund Request Approved</h1>
+        <p style="color: rgba(255,255,255,0.6); font-size: 13px; margin: 0;">Your refund has been processed</p>
+      </div>
+      <div style="padding: 32px 36px;">
+        <p style="font-size: 16px; color: #333; margin: 0 0 24px; line-height: 1.5;">
+          Dear <strong style="color: #0f3460;">${clientName}</strong>,
+        </p>
+        <p style="font-size: 14px; color: #475569; margin: 0 0 24px; line-height: 1.6;">
+          Your refund request has been accepted. Here are the details:
+        </p>
+        <div style="background: #f0fff4; border-radius: 10px; border: 1px solid #c6f6d5; padding: 20px; margin-bottom: 20px;">
+          <div style="padding: 8px 0; border-bottom: 1px solid #e2e8f0;">
+            <span style="font-size: 13px; color: #64748b; font-weight: 600;">Project:</span>
+            <span style="font-size: 13px; color: #1e293b; margin-left: 8px;">${data.projectName}</span>
+          </div>
+          <div style="padding: 8px 0; border-bottom: 1px solid #e2e8f0;">
+            <span style="font-size: 13px; color: #64748b; font-weight: 600;">Phase:</span>
+            <span style="font-size: 13px; color: #1e293b; margin-left: 8px;">${data.stageName}</span>
+          </div>
+          <div style="padding: 8px 0;">
+            <span style="font-size: 13px; color: #64748b; font-weight: 600;">Amount:</span>
+            <span style="font-size: 16px; color: #2f855a; font-weight: bold; margin-left: 8px;">$${data.amount.toLocaleString()}</span>
+          </div>
+        </div>
+        <p style="font-size: 14px; color: #475569; line-height: 1.6;">
+          The refund will be processed to your bank account on file. Please allow 5-10 business days for the funds to appear.
+        </p>
+      </div>
+      <div style="background: #f8fafc; border-top: 1px solid #e2e8f0; padding: 24px 36px; text-align: center;">
+        <p style="font-size: 12px; color: #94a3b8; margin: 0;">
+          © ${this.getCurrentYear()} ${appName}. All rights reserved.
+        </p>
+      </div>
+    </div>
+    `;
+
+    const text = `
+Refund Request Approved
+
+Dear ${clientName},
+
+Your refund request has been accepted.
+
+Project: ${data.projectName}
+Phase: ${data.stageName}
+Amount: $${data.amount}
+
+The refund will be processed to your bank account on file.
+
+© ${this.getCurrentYear()} ${appName}
+    `.trim();
+
+    await this.sendMail({
+      to,
+      subject: `Refund Approved – ${data.projectName} - ${appName}`,
+      html,
+      text,
+    });
+  }
+
+  // ============================================
+  // PHASE COMPLETED - PAYMENT REMINDER
+  // ============================================
+  async sendPhasePaymentReminder(
+    to: string,
+    clientName: string,
+    data: {
+      completedPhaseName: string;
+      nextPhaseName: string;
+      projectName: string;
+      amount: number;
+      dashboardUrl: string;
+    },
+  ): Promise<void> {
+    const appName = this.getAppName();
+
+    const html = `
+    <div style="font-family: 'Segoe UI', Arial, Helvetica, sans-serif; max-width: 600px; margin: 0 auto; background: #fff; border-radius: 12px; overflow: hidden; box-shadow: 0 4px 24px rgba(0,0,0,0.08);">
+      <div style="background: linear-gradient(135deg, #1a1a2e 0%, #16213e 50%, #0f3460 100%); padding: 40px 36px 32px; text-align: center;">
+        <h1 style="color: #fff; font-size: 22px; font-weight: 600; margin: 0 0 6px;">Phase Completed</h1>
+        <p style="color: rgba(255,255,255,0.6); font-size: 13px; margin: 0;">Payment required for next phase</p>
+      </div>
+      <div style="padding: 32px 36px;">
+        <p style="font-size: 16px; color: #333; margin: 0 0 24px; line-height: 1.5;">
+          Dear <strong style="color: #0f3460;">${clientName}</strong>,
+        </p>
+        <p style="font-size: 14px; color: #475569; margin: 0 0 24px; line-height: 1.6;">
+          The phase <strong>"${data.completedPhaseName}"</strong> has been completed. Please access your dashboard to submit next round of payment for the next phase to begin.
+        </p>
+        <div style="background: #eff6ff; border-radius: 10px; border: 1px solid #bfdbfe; padding: 20px; margin-bottom: 20px;">
+          <div style="padding: 8px 0; border-bottom: 1px solid #e2e8f0;">
+            <span style="font-size: 13px; color: #64748b; font-weight: 600;">Project:</span>
+            <span style="font-size: 13px; color: #1e293b; margin-left: 8px;">${data.projectName}</span>
+          </div>
+          <div style="padding: 8px 0; border-bottom: 1px solid #e2e8f0;">
+            <span style="font-size: 13px; color: #64748b; font-weight: 600;">Completed Phase:</span>
+            <span style="font-size: 13px; color: #2f855a; margin-left: 8px;">${data.completedPhaseName} ✓</span>
+          </div>
+          <div style="padding: 8px 0; border-bottom: 1px solid #e2e8f0;">
+            <span style="font-size: 13px; color: #64748b; font-weight: 600;">Next Phase:</span>
+            <span style="font-size: 13px; color: #1e293b; margin-left: 8px;">${data.nextPhaseName}</span>
+          </div>
+          <div style="padding: 8px 0;">
+            <span style="font-size: 13px; color: #64748b; font-weight: 600;">Payment Due:</span>
+            <span style="font-size: 16px; color: #1d4ed8; font-weight: bold; margin-left: 8px;">$${data.amount.toLocaleString()}</span>
+          </div>
+        </div>
+        <div style="text-align: center; margin: 32px 0;">
+          <a href="${data.dashboardUrl}" style="display: inline-block; background: #0f3460; color: #fff; text-decoration: none; padding: 14px 40px; border-radius: 8px; font-size: 16px; font-weight: 600;">
+            Go to Dashboard & Pay
+          </a>
+        </div>
+      </div>
+      <div style="background: #f8fafc; border-top: 1px solid #e2e8f0; padding: 24px 36px; text-align: center;">
+        <p style="font-size: 12px; color: #94a3b8; margin: 0;">
+          © ${this.getCurrentYear()} ${appName}. All rights reserved.
+        </p>
+      </div>
+    </div>
+    `;
+
+    const text = `
+Phase Completed - Payment Required
+
+Dear ${clientName},
+
+The phase: ${data.completedPhaseName} has been completed. Please access your dashboard to submit next round of payment.
+
+Project: ${data.projectName}
+Next Phase: ${data.nextPhaseName}
+Payment Due: $${data.amount}
+
+Dashboard: ${data.dashboardUrl}
+
+© ${this.getCurrentYear()} ${appName}
+    `.trim();
+
+    await this.sendMail({
+      to,
+      subject: `Phase Completed: ${data.completedPhaseName} – Payment Required for ${data.nextPhaseName}`,
+      html,
+      text,
+    });
+  }
+
   // Reusable low-level send method
   async sendMail(options: {
     to: string | string[];

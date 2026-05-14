@@ -124,7 +124,7 @@ export class AuthController {
 
   @Post('staff/register') // ← Renamed to /staff/register (cleaner than /admin/register)
   @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles(client.UserRole.SUPER_ADMIN, client.UserRole.ADMIN)
+  @Roles(client.UserRole.SUPER_ADMIN, client.UserRole.ADMIN, client.UserRole.FINANCE)
   @HttpCode(HttpStatus.CREATED)
   async registerStaff(
     @Body() dto: RegisterStaffDto,

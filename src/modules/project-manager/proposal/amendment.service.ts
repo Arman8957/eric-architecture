@@ -550,6 +550,60 @@ async createAmendmentRequest(
   }
 
   /**
+   * Get all amendment requests for a specific project
+   */
+  async getAmendmentsByProject(projectId: string, user: User, status?: string) {
+    if (!this.canManage(user)) {
+      throw new ForbiddenException('Access denied');
+    }
+
+    const where: Prisma.AmendmentRequestWhereInput = {
+      proposal: {
+        projectRequestId: projectId,
+      },
+    };
+
+    if (status) {
+      where.status = status as AmendmentStatus;
+    }
+
+    const amendments = await this.prisma.amendmentRequest.findMany({
+      where,
+      include: {
+        proposal: {
+          select: {
+            id: true,
+            proposalNumber: true,
+            projectName: true,
+            clientName: true,
+          },
+        },
+        requestedBy: {
+          select: {
+            id: true,
+            name: true,
+            email: true,
+          },
+        },
+        amendmentProposal: {
+          select: {
+            id: true,
+            proposalNumber: true,
+            status: true,
+          },
+        },
+      },
+      orderBy: { createdAt: 'desc' },
+    });
+
+    return {
+      success: true,
+      message: 'Successfully retrieved amendment requests for project',
+      data: amendments,
+    };
+  }
+
+  /**
    * Get all proposals for a project (normal + amendments)
    */
   async getAllProposalsForProject(proposalId: string, user: User) {

@@ -99,8 +99,9 @@ export class AuthService {
   }
 
   async registerUser(dto: RegisterUserDto, frontendUrl: string) {
+    const normalizedEmail = dto.email.toLowerCase().trim();
     const existing = await this.prisma.user.findUnique({
-      where: { email: dto.email.toLowerCase() },
+      where: { email: normalizedEmail },
     });
     if (existing) {
       throw new BadRequestException(
@@ -113,7 +114,7 @@ export class AuthService {
     const hashed = await bcrypt.hash(dto.password, 12);
     const user = await this.prisma.user.create({
       data: {
-        email: dto.email.toLowerCase(),
+        email: normalizedEmail,
         name: dto.name?.trim() ?? undefined, // ← Fixed null → undefined
         password: hashed,
         role: UserRole.USER,
@@ -140,10 +141,6 @@ export class AuthService {
     requestingUser: User,
     frontendUrl: string,
   ) {
-    //    if (![UserRole.SUPER_ADMIN, UserRole.ADMIN].includes(requestingUser.role)) {
-    //       throw new ForbiddenException('Only ADMIN or SUPER_ADMIN can create staff accounts.');
-    //     }
-
     if (dto.role === UserRole.SUPER_ADMIN) {
       throw new BadRequestException(
         'Cannot create SUPER_ADMIN via staff registration.',
@@ -165,19 +162,27 @@ export class AuthService {
       throw new BadRequestException('Invalid role for staff creation.');
     }
 
+    const normalizedEmail = dto.email.toLowerCase().trim();
     const existing = await this.prisma.user.findUnique({
-      where: { email: dto.email.toLowerCase() },
+      where: { email: normalizedEmail },
     });
     if (existing) throw new BadRequestException('Email already registered.');
 
     const hashed = await bcrypt.hash(dto.password, 12);
     const user = await this.prisma.user.create({
       data: {
-        email: dto.email.toLowerCase(),
-        name: dto.name?.trim() ?? undefined, // ← Fixed null → undefined
+        email: normalizedEmail,
+        name: dto.name?.trim() ?? undefined,
         password: hashed,
         role: dto.role,
         emailVerified: false,
+        employeeProfile: {
+          create: {
+            employeeId: `EMP-${Date.now()}`,
+            phone: dto.phone,
+            address: dto.address,
+          },
+        },
       },
     });
 

@@ -62,7 +62,7 @@ export class ProjectStageController {
 
 
   @Patch(':id')
-  @Roles(client.UserRole.SUPER_ADMIN, client.UserRole.ADMIN, client.UserRole.PROJECT_MANAGER)
+  @Roles('SUPER_ADMIN', 'ADMIN', 'PROJECT_MANAGER', 'DRAFTER', 'EMPLOYEE')
   update(
     @Param('id') id: string,
     @Body() updateStageDto: UpdateStageDto,
@@ -73,7 +73,7 @@ export class ProjectStageController {
 
 
   @Patch(':id/progress')
-  @Roles(client.UserRole.SUPER_ADMIN, client.UserRole.ADMIN, client.UserRole.PROJECT_MANAGER)
+  @Roles('SUPER_ADMIN', 'ADMIN', 'PROJECT_MANAGER', 'DRAFTER', 'EMPLOYEE')
   updateProgress(
     @Param('id') id: string,
     @Body() dto: UpdateProgressDto,
@@ -83,7 +83,7 @@ export class ProjectStageController {
   }
 
   @Post(':id/complete')
-  @Roles(client.UserRole.SUPER_ADMIN, client.UserRole.ADMIN, client.UserRole.PROJECT_MANAGER)
+  @Roles('SUPER_ADMIN', 'ADMIN', 'PROJECT_MANAGER', 'DRAFTER', 'EMPLOYEE')
   complete(
     @Param('id') id: string,
     @Body() dto: CompleteStageDto,
@@ -93,9 +93,32 @@ export class ProjectStageController {
   }
 
 
+  @Post(':id/notes')
+  @Roles('SUPER_ADMIN', 'ADMIN', 'PROJECT_MANAGER', 'DRAFTER', 'EMPLOYEE')
+  addNotes(
+    @Param('id') id: string,
+    @Body('notes') notes: string,
+    @CurrentUser() user: client.User,
+  ) {
+    return this.projectStageService.addInternalNote(id, notes, user);
+  }
+
+
   @Delete(':id')
   @Roles(client.UserRole.SUPER_ADMIN, client.UserRole.ADMIN, client.UserRole.PROJECT_MANAGER)
   remove(@Param('id') id: string, @CurrentUser() user: client.User) {
     return this.projectStageService.deleteStage(id, user);
+  }
+
+  @Post(':id/start-timer')
+  @Roles('SUPER_ADMIN', 'ADMIN', 'PROJECT_MANAGER', 'DRAFTER', 'EMPLOYEE')
+  startTimer(@Param('id') id: string, @CurrentUser() user: client.User) {
+    return this.projectStageService.startTimer(id, user);
+  }
+
+  @Post(':id/stop-timer')
+  @Roles('SUPER_ADMIN', 'ADMIN', 'PROJECT_MANAGER', 'DRAFTER', 'EMPLOYEE')
+  stopTimer(@Param('id') id: string, @CurrentUser() user: client.User) {
+    return this.projectStageService.stopTimer(id, user);
   }
 }

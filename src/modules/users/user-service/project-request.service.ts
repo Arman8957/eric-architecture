@@ -11,13 +11,19 @@ import { PrismaService } from 'src/prisma/prisma.service';
 import { CreateProjectRequestDto } from '../dto/project-request.dto';
 import { QueryProjectRequestDto } from '../dto/query-project-request.dto';
 import { UpdateProjectRequestDto } from '../dto/update-project-request.dto';
-import { success } from 'zod';
+import { NotificationService } from '../../notification/notification.service';
+
+import { PaymentService } from '../../payment/payment.service';
 
 @Injectable()
 export class ProjectRequestService {
   private readonly logger = new Logger(ProjectRequestService.name);
 
-  constructor(private prisma: PrismaService) {}
+  constructor(
+    private prisma: PrismaService,
+    private notificationService: NotificationService,
+    private paymentService: PaymentService,
+  ) {}
 
   private readonly allowedTransitions: Record<RequestStatus, RequestStatus[]> =
     {
@@ -39,6 +45,13 @@ export class ProjectRequestService {
     userId: string,
   ) {
     try {
+      // 1. Verify Consultation Fee Payment
+      if (!dto.paymentIntentId) {
+        throw new BadRequestException('Consultation fee payment is required');
+      }
+
+      await this.paymentService.verifyConsultationPayment(dto.paymentIntentId, userId);
+      
       const projectData = dto.projectLocationSameAsClient
         ? {
             projectCountry: dto.country || 'United States',
@@ -84,8 +97,10 @@ export class ProjectRequestService {
           appointmentTime: dto.appointmentTime?.trim(),
           appointmentType: dto.appointmentType?.trim(),
           additionalNotes: dto.additionalNotes?.trim(),
+          consultationPaymentId: dto.paymentIntentId,
           userId: userId || null,
           status: StatusEnum.PENDING,
+          isApproved: false, // Requires approval from PM/Admin
         },
         include: {
           user: { select: { id: true, name: true, email: true } },
@@ -95,6 +110,18 @@ export class ProjectRequestService {
       this.logger.log(
         `Project request created: ${request.id} by ${userId || 'anonymous'}`,
       );
+
+      // Send notifications to all admins and project managers
+      try {
+        await this.notificationService.createNotificationsForAdminsAndPMs({
+          type: 'NEW_PROJECT_REQUEST',
+          title: 'New Project Request',
+          message: `${dto.clientFirstName} ${dto.clientLastName} has requested a new project: ${dto.projectName}`,
+          projectRequestId: request.id,
+        });
+      } catch (notifError) {
+        this.logger.error('Failed to send notifications', notifError);
+      }
 
       return request;
     } catch (error) {

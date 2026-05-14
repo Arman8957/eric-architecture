@@ -10,6 +10,8 @@ import {
 import { UserRole, User, StageStatus, Prisma } from '@prisma/client';
 import { PrismaService } from 'src/prisma/prisma.service';
 import { MailerService } from 'src/utils/email/email.service';
+import { NotificationService } from 'src/modules/notification/notification.service';
+import { DeadlineReminderService } from './deadline-reminder.service';
 import { CreateStageDto } from './dto/create-stage.dto';
 import { UpdateStageDto } from './dto/update-stage.dto';
 import { UpdateProgressDto } from './dto/update-progress.dto';
@@ -28,10 +30,39 @@ export class ProjectStageService {
   constructor(
     private prisma: PrismaService,
     private mailer: MailerService,
-  ) {}
+    private notificationService: NotificationService,
+    private deadlineReminderService: DeadlineReminderService,
+  ) { }
 
   private canManageStages(user: User): boolean {
-    return this.REQUEST_MANAGERS.has(user.role);
+    return this.REQUEST_MANAGERS.has(user.role) || user.role === UserRole.DRAFTER || user.role === UserRole.EMPLOYEE;
+  }
+
+  private async isAssignedToProject(stageId: string, user: User): Promise<boolean> {
+    if (this.REQUEST_MANAGERS.has(user.role)) return true;
+
+    const stage = await this.prisma.projectStage.findUnique({
+      where: { id: stageId },
+      include: {
+        proposal: {
+          include: {
+            projectRequest: {
+              include: {
+                teams: {
+                  include: { members: true }
+                }
+              }
+            }
+          }
+        }
+      }
+    });
+
+    if (!stage || !stage.proposal?.projectRequest) return false;
+
+    return stage.proposal.projectRequest.teams.some(team => 
+      team.members.some(member => member.id === user.id)
+    );
   }
 
 
@@ -71,7 +102,7 @@ export class ProjectStageService {
       order = (maxOrder._max.order ?? -1) + 1;
     }
 
-   
+
     const data: Prisma.ProjectStageCreateInput = {
       proposal: { connect: { id: dto.proposalId } },
       name: dto.name,
@@ -82,6 +113,7 @@ export class ProjectStageService {
       dueDate: dto.dueDate ? new Date(dto.dueDate) : undefined,
       assignedTo: dto.assignedToId ? { connect: { id: dto.assignedToId } } : undefined,
       notes: dto.notes,
+      driveLink: dto.driveLink,
       status: StageStatus.NOT_STARTED,
     };
 
@@ -123,11 +155,18 @@ export class ProjectStageService {
       throw new ForbiddenException('Access denied');
     }
 
+    if (!(await this.isAssignedToProject(id, user))) {
+      throw new ForbiddenException('You are not assigned to this project team');
+    }
+
     const stage = await this.prisma.projectStage.findUnique({
       where: { id },
       include: {
         proposal: {
-          include: { user: true },
+          include: {
+            user: true,
+            projectRequest: true,
+          },
         },
       },
     });
@@ -154,7 +193,10 @@ export class ProjectStageService {
       status = StageStatus.IN_PROGRESS;
     }
 
- 
+    // Track old deadlines for change detection
+    const oldInternalDeadline = stage.internalDeadline;
+    const oldExternalDeadline = stage.externalDeadline;
+
     const updateData: Prisma.ProjectStageUpdateInput = {
       name: dto.name,
       description: dto.description,
@@ -169,6 +211,13 @@ export class ProjectStageService {
         ? { connect: { id: dto.assignedToId } }
         : undefined,
       notes: dto.notes,
+      driveLink: dto.driveLink,
+      ...(dto.internalDeadline !== undefined && {
+        internalDeadline: dto.internalDeadline ? new Date(dto.internalDeadline) : null,
+      }),
+      ...(dto.externalDeadline !== undefined && {
+        externalDeadline: dto.externalDeadline ? new Date(dto.externalDeadline) : null,
+      }),
     };
 
     const updated = await this.prisma.projectStage.update({
@@ -186,18 +235,94 @@ export class ProjectStageService {
         proposal: {
           include: {
             user: true,
+            projectRequest: true,
           },
         },
       },
     });
 
+    // Handle internal deadline change -> generate reminders for assigned PM
+    if (dto.internalDeadline !== undefined) {
+      const newDeadline = dto.internalDeadline ? new Date(dto.internalDeadline) : null;
+      if (newDeadline) {
+        // Find the assigned manager for this project
+        const projectRequest = updated.proposal?.projectRequest as any;
+        const targetUserId = projectRequest?.assignedManagerId || user.id;
+        await this.deadlineReminderService.generateReminders(
+          id,
+          'INTERNAL',
+          newDeadline,
+          targetUserId,
+        );
+      } else {
+        // Deadline removed: cancel pending reminders
+        await this.deadlineReminderService.cancelRemindersForStageType(id, 'INTERNAL');
+      }
+    }
+
+    // Handle external deadline change -> generate reminders for client + notify about change
+    if (dto.externalDeadline !== undefined) {
+      const newDeadline = dto.externalDeadline ? new Date(dto.externalDeadline) : null;
+      if (newDeadline) {
+        // Find the client user
+        const clientUserId = updated.proposal?.userId;
+        if (clientUserId) {
+          await this.deadlineReminderService.generateReminders(
+            id,
+            'EXTERNAL',
+            newDeadline,
+            clientUserId,
+          );
+
+          // Notify client about external deadline change (only if it actually changed)
+          if (oldExternalDeadline && oldExternalDeadline.getTime() !== newDeadline.getTime()) {
+            const projectName =
+              (updated.proposal?.projectRequest as any)?.projectName ||
+              updated.proposal?.projectName ||
+              'Unknown Project';
+
+            const oldDateStr = oldExternalDeadline.toLocaleDateString('en-US', {
+              year: 'numeric',
+              month: 'long',
+              day: 'numeric',
+            });
+            const newDateStr = newDeadline.toLocaleDateString('en-US', {
+              year: 'numeric',
+              month: 'long',
+              day: 'numeric',
+            });
+
+            await this.notificationService.createNotification({
+              userId: clientUserId,
+              type: 'EXTERNAL_DEADLINE_CHANGED',
+              title: `Deadline Changed: ${updated.name}`,
+              message: `External deadline for "${updated.name}" changed from ${oldDateStr} to ${newDateStr} in project "${projectName}".`,
+              link: '/dashboard',
+              projectRequestId: (updated.proposal?.projectRequest as any)?.id || null,
+            });
+
+            this.logger.log(
+              `Notified client ${clientUserId} about external deadline change for stage "${updated.name}"`,
+            );
+          }
+        }
+      } else {
+        // Deadline removed: cancel pending reminders
+        await this.deadlineReminderService.cancelRemindersForStageType(id, 'EXTERNAL');
+      }
+    }
+
     return updated;
   }
 
-  
+
   async updateProgress(id: string, dto: UpdateProgressDto, user: User) {
     if (!this.canManageStages(user)) {
       throw new ForbiddenException('Access denied');
+    }
+
+    if (!(await this.isAssignedToProject(id, user))) {
+      throw new ForbiddenException('You are not assigned to this project team');
     }
 
     const stage = await this.prisma.projectStage.findUnique({
@@ -239,9 +364,10 @@ export class ProjectStageService {
       },
     });
 
-    // If completed, notify client
+    // If completed, notify client and cancel reminders
     if (status === StageStatus.COMPLETED && stage.status !== StageStatus.COMPLETED) {
       await this.notifyStageCompleted(updated);
+      await this.deadlineReminderService.cancelAllRemindersForStage(id);
     }
 
     return updated;
@@ -250,6 +376,10 @@ export class ProjectStageService {
   async completeStage(id: string, dto: CompleteStageDto, user: User) {
     if (!this.canManageStages(user)) {
       throw new ForbiddenException('Access denied');
+    }
+
+    if (!(await this.isAssignedToProject(id, user))) {
+      throw new ForbiddenException('You are not assigned to this project team');
     }
 
     const stage = await this.prisma.projectStage.findUnique({
@@ -295,6 +425,9 @@ export class ProjectStageService {
     // Notify client
     await this.notifyStageCompleted(updated);
 
+    // Cancel all pending deadline reminders for this completed stage
+    await this.deadlineReminderService.cancelAllRemindersForStage(id);
+
     this.logger.log(
       `Stage "${stage.name}" completed for proposal ${stage.proposalId}`,
     );
@@ -307,7 +440,6 @@ export class ProjectStageService {
     try {
       const { proposal } = stage;
 
- 
       if (!proposal) {
         this.logger.warn(`Stage ${stage.id} has no linked proposal`);
         return;
@@ -320,6 +452,7 @@ export class ProjectStageService {
       ).length;
       const totalCount = stages.length;
 
+      // 1. Send stage completion email
       await this.mailer.sendStageCompletionEmail(
         proposal.user.email,
         proposal.user.name || 'Client',
@@ -329,12 +462,60 @@ export class ProjectStageService {
           proposalNumber: proposal.proposalNumber,
           completedCount,
           totalCount,
-          dashboardUrl: `${process.env.FRONTEND_URL}/dashboard/proposals/${proposal.id}`,
+          dashboardUrl: `${process.env.FRONTEND_URL}/user-dashboard`,
         },
       );
+
+      // 2. If installment mode, notify for next phase payment
+      const isInstallment = proposal.paymentMethod === 'installments' || 
+                           proposal.paymentMethod === 'INSTALLMENT' ||
+                           proposal.paymentType === 'INSTALLMENT';
+
+      if (isInstallment && completedCount < totalCount) {
+        // Find next stage
+        const sortedStages = [...stages].sort((a, b) => a.order - b.order);
+        const currentIndex = sortedStages.findIndex(s => s.id === stage.id);
+        const nextStage = sortedStages[currentIndex + 1];
+
+        if (nextStage) {
+          // Find next stage price from services
+          const nextStagePrice = proposal.services?.[currentIndex + 1]?.amount || 0;
+
+          await this.mailer.sendPhasePaymentReminder(
+            proposal.user.email,
+            proposal.user.name || 'Client',
+            {
+              completedPhaseName: stage.name,
+              nextPhaseName: nextStage.name,
+              projectName: proposal.projectName,
+              amount: Number(nextStagePrice),
+              dashboardUrl: `${process.env.FRONTEND_URL}/user-dashboard`,
+            },
+          );
+
+          // Internal notification
+          await this.notificationService.createNotification({
+            userId: proposal.userId,
+            type: 'PAYMENT_REMINDER',
+            title: 'Payment Required',
+            message: `"${stage.name}" is completed. Please pay for "${nextStage.name}" to proceed.`,
+            link: '/user-dashboard',
+            projectRequestId: proposal.projectRequestId,
+          });
+        }
+      }
+
+      // 3. If all stages are completed, update project request to COMPLETED
+      if (completedCount === totalCount && totalCount > 0 && proposal.projectRequestId) {
+        await this.prisma.projectRequest.update({
+          where: { id: proposal.projectRequestId },
+          data: { status: 'COMPLETED', updatedAt: new Date() },
+        });
+        this.logger.log(`Project request ${proposal.projectRequestId} marked as COMPLETED because all stages are finished.`);
+      }
     } catch (error) {
       this.logger.error(
-        `Failed to send stage completion email for stage ${stage.id}`,
+        `Failed to handle stage completion tasks for stage ${stage.id}`,
         error,
       );
     }
@@ -446,7 +627,58 @@ export class ProjectStageService {
     return { message: 'Stage deleted successfully' };
   }
 
- 
+
+  async addInternalNote(id: string, note: string, user: User) {
+    if (!this.canManageStages(user)) {
+      throw new ForbiddenException('Access denied');
+    }
+
+    if (!(await this.isAssignedToProject(id, user))) {
+      throw new ForbiddenException('You are not assigned to this project team');
+    }
+
+    const stage = await this.prisma.projectStage.findUnique({
+      where: { id },
+    });
+
+    if (!stage) {
+      throw new NotFoundException('Stage not found');
+    }
+
+    const timestamp = new Date().toLocaleString('en-US', { 
+      year: 'numeric', 
+      month: 'short', 
+      day: 'numeric', 
+      hour: '2-digit', 
+      minute: '2-digit' 
+    });
+    
+    const noteHeader = `[${timestamp} - ${user.name || user.email}]`;
+    const newNotes = stage.notes 
+      ? `${stage.notes}\n\n${noteHeader}\n${note}`
+      : `${noteHeader}\n${note}`;
+
+    const updated = await this.prisma.projectStage.update({
+      where: { id },
+      data: { notes: newNotes },
+      include: {
+        assignedTo: {
+          select: {
+            id: true,
+            name: true,
+            email: true,
+            avatar: true,
+          },
+        },
+      },
+    });
+
+    this.logger.log(`Internal note added to stage ${id} by ${user.email}`);
+
+    return updated;
+  }
+
+
   async getMyAssignedStages(user: User) {
     return this.prisma.projectStage.findMany({
       where: {
@@ -468,6 +700,73 @@ export class ProjectStageService {
             },
           },
         },
+      },
+    });
+  }
+
+  async startTimer(id: string, user: User) {
+    const stage = await this.prisma.projectStage.findUnique({
+      where: { id },
+      include: { proposal: { include: { projectRequest: true } } }
+    });
+
+    if (!stage) {
+      throw new NotFoundException('Stage not found');
+    }
+
+    // Check if user is the assigned manager OR a team member
+    const assignedManagerId = (stage.proposal?.projectRequest as any)?.assignedManagerId;
+    const isTeamMember = await this.isAssignedToProject(id, user);
+    
+    if (user.role !== UserRole.SUPER_ADMIN && user.role !== UserRole.ADMIN && assignedManagerId !== user.id && !isTeamMember) {
+      throw new ForbiddenException('Only the assigned manager, admin, or team members can start the timer');
+    }
+
+    if (stage.activeTimerStart) {
+      throw new BadRequestException('Timer is already running');
+    }
+
+    return this.prisma.projectStage.update({
+      where: { id },
+      data: {
+        activeTimerStart: new Date(),
+        timerUserId: user.id,
+        status: stage.status === StageStatus.NOT_STARTED ? StageStatus.IN_PROGRESS : stage.status,
+      },
+    });
+  }
+
+  async stopTimer(id: string, user: User) {
+    const stage = await this.prisma.projectStage.findUnique({
+      where: { id },
+      include: { proposal: { include: { projectRequest: true } } }
+    });
+
+    if (!stage) {
+      throw new NotFoundException('Stage not found');
+    }
+
+    if (!stage.activeTimerStart) {
+      throw new BadRequestException('Timer is not running');
+    }
+
+    // Check if user is the one who started it, manager, or team member
+    const assignedManagerId = (stage.proposal?.projectRequest as any)?.assignedManagerId;
+    const isTeamMember = await this.isAssignedToProject(id, user);
+
+    if (user.role !== UserRole.SUPER_ADMIN && user.role !== UserRole.ADMIN && stage.timerUserId !== user.id && assignedManagerId !== user.id && !isTeamMember) {
+       throw new ForbiddenException('Access denied to stop this timer');
+    }
+
+    const elapsedSeconds = Math.floor((new Date().getTime() - stage.activeTimerStart.getTime()) / 1000);
+    const newAccumulatedTime = (stage.accumulatedTime || 0) + elapsedSeconds;
+
+    return this.prisma.projectStage.update({
+      where: { id },
+      data: {
+        accumulatedTime: newAccumulatedTime,
+        activeTimerStart: null,
+        timerUserId: null,
       },
     });
   }

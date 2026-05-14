@@ -151,6 +151,23 @@ export class AmendmentController {
     return this.amendmentService.getAllAmendmentRequests(user, status);
   }
 
+  /**
+   * Get all amendment requests for a specific project
+   */
+  @Get('project/:projectId')
+  @Roles(
+    client.UserRole.SUPER_ADMIN,
+    client.UserRole.ADMIN,
+    client.UserRole.PROJECT_MANAGER,
+  )
+  getAmendmentsByProject(
+    @Param('projectId') projectId: string,
+    @CurrentUser() user: client.User,
+    @Query('status') status?: string,
+  ) {
+    return this.amendmentService.getAmendmentsByProject(projectId, user, status);
+  }
+
   // ============ Amendment Proposals ============
 
   /**

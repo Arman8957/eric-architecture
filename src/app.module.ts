@@ -2,6 +2,7 @@ import { Module } from '@nestjs/common';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { CacheModule } from '@nestjs/cache-manager';
 import { BullModule } from '@nestjs/bullmq';
+import { ScheduleModule } from '@nestjs/schedule';
 
 import configuration from '../src/config/configuratin';
 // import { envValidationSchema } from '../src/config/validation-joi.schema';
@@ -19,15 +20,23 @@ import { MediaModule } from './modules/media/media.module';
 import { ProposalModule } from './modules/project-manager/proposal/proposal.module';
 import { ProjectStageModule } from './modules/project-manager/project-stage/project-stage.module';
 import { ProjectAdminRequestModule } from './modules/project-manager/project-request/project-request.module';
+import { NotificationModule } from './modules/notification/notification.module';
+import { FinancialModule } from './modules/financial/financial.module';
+
+import { TeamModule } from './modules/project-manager/team/team.module';
+import { RefundModule } from './modules/refund/refund.module';
+import { PaymentModule } from './modules/payment/payment.module';
 
 @Module({
   imports: [
     ConfigModule.forRoot({
       isGlobal: true,
-      envFilePath: `.env.${process.env.NODE_ENV || 'development'}`,
+      envFilePath: [`.env.${process.env.NODE_ENV || 'development'}`, '.env'],
       load: [configuration],
    
     }),
+
+    ScheduleModule.forRoot(),
 
     CacheModule.registerAsync({
       isGlobal: true,
@@ -60,15 +69,18 @@ import { ProjectAdminRequestModule } from './modules/project-manager/project-req
     ProposalModule,
     ProjectStageModule,
     ProjectAdminRequestModule,
+    NotificationModule,
+    FinancialModule,
+    TeamModule,
+    RefundModule,
+    PaymentModule,
   ],
   providers: [
-    PrismaService,
     MailerService,
     FileOptimizerService,
     CloudinaryStrategy,
   ],
   exports: [
-    PrismaService,
     MailerService,
     FileOptimizerService,
     CloudinaryStrategy,

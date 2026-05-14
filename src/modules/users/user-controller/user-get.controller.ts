@@ -2,6 +2,9 @@
 import {
   Controller,
   Get,
+  Patch,
+  Delete,
+  Body,
   Query,
   Param,
   UseGuards,
@@ -33,6 +36,7 @@ export class UsersGetController {
     client.UserRole.ADMIN,
     client.UserRole.HIGHER_MANAGER,
     client.UserRole.PROJECT_MANAGER,
+    client.UserRole.FINANCE,
   )
   async listUsers(
     @Query('page') page = '1',
@@ -71,23 +75,6 @@ export class UsersGetController {
       message: 'Current user profile retrieved successfully',
       data: await this.usersService.getSafeUser(user.id),
     };
-  }
-  @Get(':id')
-  @UseGuards(JwtAuthGuard)
-  async getUserById(
-    @Param('id', ParseUUIDPipe) id: string,
-    @CurrentUser() currentUser: client.User,
-  ) {
-    const targetUser = await this.usersService.findById(id);
-
-    const canSeeFullDetails =
-      currentUser.id === targetUser.id ||
-      currentUser.role === client.UserRole.SUPER_ADMIN ||
-      currentUser.role === client.UserRole.ADMIN;
-
-    return canSeeFullDetails
-      ? targetUser
-      : this.usersService.getPublicUser(targetUser);
   }
 
   // ───────────────────────────────────────────────
@@ -136,6 +123,7 @@ export class UsersGetController {
     client.UserRole.ADMIN,
     client.UserRole.HIGHER_MANAGER,
     client.UserRole.PROJECT_MANAGER,
+    client.UserRole.FINANCE,
   )
   async getEmployees(): Promise<ApiResponse<SafeUser[]>> {
     const employees = await this.usersService.findByRole(
@@ -157,6 +145,7 @@ export class UsersGetController {
     client.UserRole.SUPER_ADMIN,
     client.UserRole.ADMIN,
     client.UserRole.PROJECT_MANAGER,
+    client.UserRole.FINANCE,
   )
   async getDrafters(): Promise<ApiResponse<SafeUser[]>> {
     const drafters = await this.usersService.findByRole(
@@ -188,4 +177,66 @@ export class UsersGetController {
       data: mediaManagers,
     };
   }
+
+  // ───────────────────────────────────────────────
+  // Client users with full financial details
+  // ───────────────────────────────────────────────
+  @Get('clients')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(
+    client.UserRole.SUPER_ADMIN,
+    client.UserRole.ADMIN,
+    client.UserRole.FINANCE,
+  )
+  async getClientUsers(): Promise<ApiResponse<any>> {
+    const data = await this.usersService.getClientUsersWithDetails();
+    return {
+      success: true,
+      message: data.length > 0 ? 'Client users retrieved successfully' : 'No client users found',
+      data,
+    };
+  }
+
+  // ───────────────────────────────────────────────
+  // Dynamic :id route MUST be last (catch-all)
+  // ───────────────────────────────────────────────
+  @Get(':id')
+  @UseGuards(JwtAuthGuard)
+  async getUserById(
+    @Param('id', ParseUUIDPipe) id: string,
+    @CurrentUser() currentUser: client.User,
+  ) {
+    const targetUser = await this.usersService.findById(id);
+
+    const canSeeFullDetails =
+      currentUser.id === targetUser.id ||
+      currentUser.role === client.UserRole.SUPER_ADMIN ||
+      currentUser.role === client.UserRole.ADMIN;
+
+    return canSeeFullDetails
+      ? targetUser
+      : this.usersService.getPublicUser(targetUser);
+  }
+
+  @Patch(':id')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(client.UserRole.SUPER_ADMIN, client.UserRole.ADMIN)
+  async update(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() dto: any,
+  ) {
+    const user = await this.usersService.update(id, dto);
+    return { success: true, message: 'User updated successfully', data: user };
+  }
+
+  @Delete(':id')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(client.UserRole.SUPER_ADMIN, client.UserRole.ADMIN)
+  async delete(
+    @Param('id', ParseUUIDPipe) id: string,
+  ) {
+    const result = await this.usersService.delete(id);
+    return result;
+  }
 }
+

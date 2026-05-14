@@ -16,6 +16,7 @@ import { MailerService } from 'src/utils/email/email.service';
 import { MailerModule } from 'src/utils/email/email.module';
 import { ProjectRequestModule } from '../users/user.module';
 import { ProjectRequestService } from '../users/user-service/project-request.service';
+import { NotificationModule } from '../notification/notification.module';
 
 @Module({
   imports: [
@@ -23,6 +24,7 @@ import { ProjectRequestService } from '../users/user-service/project-request.ser
     PassportModule,
     MailerModule,
     ProjectRequestModule,
+    NotificationModule,
     JwtModule.registerAsync({
       imports: [ConfigModule],
       useFactory: (config: ConfigService) => ({
@@ -32,7 +34,7 @@ import { ProjectRequestService } from '../users/user-service/project-request.ser
     }),
   ],
   controllers: [AuthController, GoogleController],
-  providers: [AuthService,MailerService,ProjectRequestService, JwtStrategy, JwtRefreshStrategy, GoogleStrategy],
+  providers: [AuthService, JwtStrategy, JwtRefreshStrategy, GoogleStrategy],
   exports: [AuthService],
 })
 export class AuthModule {}

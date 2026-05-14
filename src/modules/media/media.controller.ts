@@ -37,7 +37,7 @@ import { UserRole } from '@prisma/client';
 // @UseGuards(JwtAuthGuard, RolesGuard)
 @Controller('media')
 export class MediaController {
-  constructor(private readonly mediaService: MediaService) {}
+  constructor(private readonly mediaService: MediaService) { }
 
   @Post()
   @UseGuards(JwtAuthGuard, RolesGuard)
@@ -76,24 +76,28 @@ export class MediaController {
   )
   async uploadAssets(
     @Param('id') id: string,
-    @UploadedFiles(
-      new ParseFilePipeBuilder()
-        .addFileTypeValidator({
-          fileType: /(image\/|video\/|application\/pdf)/,
-        })
-        .build({
-          errorHttpStatusCode: HttpStatus.UNPROCESSABLE_ENTITY,
-          fileIsRequired: true,
-        }),
-    )
-    files: Express.Multer.File[],
+    @UploadedFiles() files: Express.Multer.File[],
     @CurrentUser() user: client.User,
   ) {
-    if (files.length === 0) {
+    if (!files || files.length === 0) {
       throw new HttpException(
         { status: 'error', message: 'At least one file is required' },
         HttpStatus.BAD_REQUEST,
       );
+    }
+
+    // Manual mime type validation since ParseFilePipe is being flaky
+    const allowedMimeTypes = /image\/(jpeg|png|webp|gif)|video\/mp4|application\/pdf/;
+    for (const file of files) {
+      if (!allowedMimeTypes.test(file.mimetype)) {
+        throw new HttpException(
+          {
+            status: 'error',
+            message: `Unsupported file type: ${file.mimetype}. Allowed types: images, mp4, and pdf.`,
+          },
+          HttpStatus.UNPROCESSABLE_ENTITY,
+        );
+      }
     }
 
     try {
@@ -146,43 +150,43 @@ export class MediaController {
   //     );
   //   }
   // }
-@Get()
-async findAll(
-  @Query() query: MediaQueryDto,
-  @CurrentUser() currentUser?: { id: string },
-) {
-  try {
-    const result = await this.mediaService.findAll(
-      {
-        type: query.type,
-        // status: query.status, 
-        featured:
-          query.featured === 'true'
-            ? true
-            : query.featured === 'false'
-              ? false
-              : undefined,
-        country: query.country,
-        category: query.category,
-        page: query.page,
-        limit: query.limit,
-      },
-      currentUser,
-    );
+  @Get()
+  async findAll(
+    @Query() query: MediaQueryDto,
+    @CurrentUser() currentUser?: { id: string },
+  ) {
+    try {
+      const result = await this.mediaService.findAll(
+        {
+          type: query.type,
+          // status: query.status, 
+          featured:
+            query.featured === 'true'
+              ? true
+              : query.featured === 'false'
+                ? false
+                : undefined,
+          country: query.country,
+          category: query.category,
+          page: query.page,
+          limit: query.limit,
+        },
+        currentUser,
+      );
 
-    return {
-      status: 'success',
-      message: `Found ${result.data.length} media items`,
-      data: result.data,
-      pagination: result.pagination,
-    };
-  } catch (error) {
-    throw new HttpException(
-      { status: 'error', message: 'Failed to fetch media items' },
-      HttpStatus.INTERNAL_SERVER_ERROR,
-    );
+      return {
+        status: 'success',
+        message: `Found ${result.data.length} media items`,
+        data: result.data,
+        pagination: result.pagination,
+      };
+    } catch (error) {
+      throw new HttpException(
+        { status: 'error', message: 'Failed to fetch media items' },
+        HttpStatus.INTERNAL_SERVER_ERROR,
+      );
+    }
   }
-}
   @Get('featured')
   async getFeatured() {
     try {
@@ -202,9 +206,17 @@ async findAll(
   }
 
   @Get(':slug')
-  async findOne(@Param('slug') slug: string) {
+  async findOne(
+    @Param('slug') slug: string,
+    @CurrentUser() user?: client.User,
+  ) {
     try {
-      const item = await this.mediaService.findBySlug(slug);
+      const item = await this.mediaService.findBySlug(
+        slug,
+        true,
+        user?.id,
+        user?.role,
+      );
 
       return {
         status: 'success',
@@ -400,16 +412,16 @@ async findAll(
     });
   }
 
-// @Get(':id/comments')
-// async getComments(
-//   @Param('id', ParseUUIDPipe) id: string,
-//   @Query('page') page = 1,
-//   @Query('limit') limit = 20,
-//   @Query('sort') sort: 'newest' | 'oldest' = 'newest',
-//   @CurrentUser() currentUser?: { id: string },
-// ) {
-//   return this.mediaService.getMediaComments(id, { page, limit, sort }, currentUser?.id);
-// }
+  // @Get(':id/comments')
+  // async getComments(
+  //   @Param('id', ParseUUIDPipe) id: string,
+  //   @Query('page') page = 1,
+  //   @Query('limit') limit = 20,
+  //   @Query('sort') sort: 'newest' | 'oldest' = 'newest',
+  //   @CurrentUser() currentUser?: { id: string },
+  // ) {
+  //   return this.mediaService.getMediaComments(id, { page, limit, sort }, currentUser?.id);
+  // }
 
   @Get(':id/comments')
   async getComments(

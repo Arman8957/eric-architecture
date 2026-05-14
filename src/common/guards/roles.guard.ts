@@ -37,7 +37,7 @@ export class RolesGuard implements CanActivate {
 
     if (!hasRole) {
       this.logger.warn(`Insufficient permissions. Required: ${requiredRoles}, Got: ${user.role}`);
-      throw new ForbiddenException('Insufficient permissions');
+      throw new ForbiddenException(`Insufficient permissions. Required: ${JSON.stringify(requiredRoles)}, Your role: ${user.role}`);
     }
 
     this.logger.log('Role check passed → access granted');

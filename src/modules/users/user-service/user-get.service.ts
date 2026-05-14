@@ -14,9 +14,11 @@ export class UsersGetService {
     name: true,
     role: true,
     avatar: true,
+    isActive: true,
     createdAt: true,
     lastLoginAt: true,
     emailVerified: true,
+    employeeProfile: true,
     // NEVER include: password, refreshToken, googleId, etc.
   } satisfies Prisma.UserSelect);
 
@@ -83,7 +85,7 @@ export class UsersGetService {
     };
   }
 
-  async findById(id: string): Promise<User> {
+  async findById(id: string): Promise<SafeUser> {
     const user = await this.prisma.user.findUnique({
       where: { id },
       select: this.baseSelect,
@@ -91,7 +93,7 @@ export class UsersGetService {
 
     if (!user) throw new NotFoundException('User not found');
 
-    return user as User;
+    return user as unknown as SafeUser;
   }
   async findByRole(role: UserRole): Promise<SafeUser[]> {
     return this.prisma.user.findMany({
@@ -112,5 +114,136 @@ export class UsersGetService {
       role: user.role,
       avatar: user.avatar,
     };
+  }
+
+  async update(id: string, data: Prisma.UserUpdateInput) {
+    const user = await this.prisma.user.findUnique({ where: { id } });
+    if (!user) throw new NotFoundException('User not found');
+
+    return this.prisma.user.update({
+      where: { id },
+      data,
+      select: this.baseSelect,
+    });
+  }
+
+  async delete(id: string) {
+    const user = await this.prisma.user.findUnique({ where: { id } });
+    if (!user) throw new NotFoundException('User not found');
+
+    await this.prisma.user.delete({ where: { id } });
+    return { success: true, message: 'User deleted successfully' };
+  }
+
+  /**
+   * Get all client (USER role) users with full details:
+   * projects, phases, payments, bank info
+   */
+  async getClientUsersWithDetails() {
+    const users = await this.prisma.user.findMany({
+      where: { role: 'USER' },
+      select: {
+        id: true,
+        email: true,
+        name: true,
+        avatar: true,
+        isActive: true,
+        createdAt: true,
+        lastLoginAt: true,
+        bankDetails: true,
+        projectRequests: {
+          select: {
+            id: true,
+            projectName: true,
+            status: true,
+            email: true,
+            phone: true,
+            stages: {
+              select: {
+                id: true,
+                name: true,
+                status: true,
+                progress: true,
+                order: true,
+              },
+              orderBy: { order: 'asc' },
+            },
+            proposals: {
+              select: {
+                id: true,
+                paymentMethod: true,
+                paymentType: true,
+                totalAmount: true,
+                status: true,
+                services: {
+                  select: { id: true, name: true, amount: true, order: true },
+                  orderBy: { order: 'asc' },
+                },
+              },
+              orderBy: { createdAt: 'desc' },
+              take: 1,
+            },
+          },
+          orderBy: { createdAt: 'desc' },
+        },
+        payments: {
+          select: {
+            id: true,
+            amount: true,
+            paymentType: true,
+            paymentStatus: true,
+            stageName: true,
+            createdAt: true,
+            projectRequestId: true,
+          },
+          orderBy: { createdAt: 'desc' },
+        },
+        assignedProjects: {
+          select: { id: true, projectName: true },
+        },
+      },
+      orderBy: { createdAt: 'desc' },
+    });
+
+    // Compute financial summaries per user
+    return users.map(user => {
+      const completedPayments = user.payments.filter(p => p.paymentStatus === 'COMPLETED');
+      const totalPaid = completedPayments.reduce((sum, p) => sum + Number(p.amount), 0);
+
+      // Calculate total owed from proposals
+      let totalOwed = 0;
+      for (const pr of user.projectRequests) {
+        const proposal = pr.proposals?.[0];
+        if (proposal) {
+          totalOwed += Number(proposal.totalAmount || 0);
+        }
+      }
+
+      // Get phone from first project request
+      const phone = user.projectRequests?.[0]?.phone || null;
+
+      // Currently running phases
+      const runningProjects = user.projectRequests.filter(pr =>
+        pr.stages.some(s => s.status === 'IN_PROGRESS'),
+      );
+      const runningPhases = user.projectRequests.flatMap(pr =>
+        pr.stages.filter(s => s.status === 'IN_PROGRESS').map(s => ({
+          projectName: pr.projectName,
+          phaseName: s.name,
+          progress: s.progress,
+        })),
+      );
+
+      return {
+        ...user,
+        phone,
+        totalPaid,
+        totalOwed,
+        leftToPay: Math.max(0, totalOwed - totalPaid),
+        projectCount: user.projectRequests.length,
+        runningProjectCount: runningProjects.length,
+        runningPhases,
+      };
+    });
   }
 }

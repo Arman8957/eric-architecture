@@ -30,6 +30,14 @@ export class QueryProjectRequestDto {
   @IsOptional()
   @IsEnum(['asc', 'desc'])
   order?: 'asc' | 'desc' = 'desc';
+
+  @IsOptional()
+  @Type(() => Boolean)
+  includeArchived?: boolean = false;
+
+  @IsOptional()
+  @Type(() => Boolean)
+  archivedOnly?: boolean = false;
 }
 
 export class GetMyMeetingsDto {

@@ -32,7 +32,7 @@ export class MediaService {
   constructor(
     private prisma: PrismaService,
     private cloudinary: CloudinaryStrategy,
-  ) {}
+  ) { }
 
   async create(dto: CreateMediaContentDto, userId: string, userRole: UserRole) {
     if (!this.allowedMediaRoles.has(userRole)) {
@@ -466,9 +466,15 @@ export class MediaService {
   }
 
   // In MediaService - findBySlug
-  async findBySlug(slug: string, incrementView = true, currentUserId?: string) {
-    const item = await this.prisma.mediaContent.findUnique({
-      where: { slug },
+  async findBySlug(slugOrId: string, incrementView = true, currentUserId?: string, userRole?: UserRole) {
+    // Try to find by slug or ID
+    const item = await this.prisma.mediaContent.findFirst({
+      where: {
+        OR: [
+          { slug: slugOrId },
+          { id: slugOrId }
+        ]
+      },
       include: {
         assets: { orderBy: { order: 'asc' } },
         tags: { include: { tag: true } },
@@ -477,7 +483,12 @@ export class MediaService {
     });
 
     if (!item) throw new NotFoundException('Content not found');
-    if (item.status !== MediaStatus.PUBLISHED) {
+
+    // Check if user is allowed to see the draft
+    const isPrivilegedRole = userRole && this.allowedMediaRoles.has(userRole);
+    const isOwner = currentUserId && item.createdById === currentUserId;
+
+    if (item.status !== MediaStatus.PUBLISHED && !isPrivilegedRole && !isOwner) {
       throw new BadRequestException('Content is not published');
     }
 
@@ -494,8 +505,8 @@ export class MediaService {
       Promise.resolve(item.commentCount ?? 0),
       currentUserId
         ? this.prisma.mediaLike.count({
-            where: { userId: currentUserId, mediaContentId: item.id },
-          })
+          where: { userId: currentUserId, mediaContentId: item.id },
+        })
         : Promise.resolve(0),
     ]);
 
@@ -584,8 +595,8 @@ export class MediaService {
 
       userId
         ? this.prisma.mediaLike.count({
-            where: { userId, mediaContentId: mediaId },
-          })
+          where: { userId, mediaContentId: mediaId },
+        })
         : 0,
     ]);
 
@@ -731,11 +742,19 @@ export class MediaService {
     return this.prisma.$transaction(async (tx) => {
       const media = await tx.mediaContent.findUnique({
         where: { id: mediaId },
-        select: { id: true, status: true },
+        select: { id: true, status: true, createdById: true },
       });
 
       if (!media) throw new NotFoundException('Media not found');
-      if (media.status !== MediaStatus.PUBLISHED) {
+
+      // Allow owner or admins to comment on drafts
+      const user = await this.prisma.user.findUnique({
+        where: { id: userId },
+        select: { role: true },
+      });
+      const isPrivileged = user ? this.allowedMediaRoles.has(user.role) : false;
+
+      if (media.status !== MediaStatus.PUBLISHED && !isPrivileged && media.createdById !== userId) {
         throw new BadRequestException('Cannot comment on unpublished content');
       }
 
@@ -756,7 +775,7 @@ export class MediaService {
           content: dto.content.trim(),
           userId,
           mediaContentId: mediaId,
-          parentId: dto.parentId,
+          parentId: dto.parentId || null,
         },
         include: {
           user: {

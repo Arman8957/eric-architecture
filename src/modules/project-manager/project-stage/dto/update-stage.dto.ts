@@ -1,5 +1,5 @@
 import { PartialType } from '@nestjs/mapped-types';
-import { IsEnum, IsInt, Min, Max, IsOptional } from 'class-validator';
+import { IsEnum, IsInt, Min, Max, IsOptional, IsDateString } from 'class-validator';
 import { CreateStageDto } from './create-stage.dto';
 import { StageStatus } from '@prisma/client';
 
@@ -18,4 +18,12 @@ export class UpdateStageDto extends PartialType(CreateStageDto) {
   @IsInt()
   @Min(0)
   completedTasks?: number;
+
+  @IsOptional()
+  @IsDateString()
+  internalDeadline?: string;
+
+  @IsOptional()
+  @IsDateString()
+  externalDeadline?: string;
 }
