@@ -96,6 +96,10 @@ export class CreateMediaContentDto {
   @Min(0)
   @IsOptional()
   featuredOrder?: number;
+
+  @IsEnum(MediaStatus)
+  @IsOptional()
+  status?: MediaStatus;
 }
 
 export class CreateMediaCommentDto {

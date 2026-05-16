@@ -53,7 +53,7 @@ export class MediaService {
         ...dto,
         slug,
         createdById: userId,
-        status: MediaStatus.DRAFT,
+        status: dto.status || MediaStatus.DRAFT,
         coordinates: dto.coordinates
           ? JSON.stringify(dto.coordinates)
           : undefined,
@@ -142,6 +142,17 @@ export class MediaService {
 
     if (!this.allowedMediaRoles.has(userRole) && media.createdById !== userId) {
       throw new ForbiddenException('Not authorized to update this content');
+    }
+
+    // Special handling for HOME_HERO isFeatured
+    if (media.contentType === MediaContentType.HOME_HERO && dto.isFeatured === true) {
+      await this.prisma.mediaContent.updateMany({
+        where: {
+          contentType: MediaContentType.HOME_HERO,
+          id: { not: id },
+        },
+        data: { isFeatured: false },
+      });
     }
 
     return this.prisma.mediaContent.update({
@@ -394,6 +405,8 @@ export class MediaService {
 
     if (query.status !== undefined) {
       where.status = query.status;
+    } else {
+      where.status = MediaStatus.PUBLISHED;
     }
 
     if (query.type) where.contentType = query.type;

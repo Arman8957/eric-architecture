@@ -35,9 +35,11 @@ export interface MercuryTransaction {
 @Injectable()
 export class MercuryService {
   private readonly logger = new Logger(MercuryService.name);
-  private readonly baseUrl = 'https://api.mercury.com/api/v1';
+  private readonly baseUrl: string;
 
-  constructor(private readonly config: ConfigService) {}
+  constructor(private readonly config: ConfigService) {
+    this.baseUrl = this.config.get<string>('MERCURY_BANK_LINK') || 'https://api.mercury.com/api/v1';
+  }
 
   onModuleInit() {
     const key = this.config.get<string>('MERCURY_API_KEY');

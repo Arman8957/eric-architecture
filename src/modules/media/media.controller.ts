@@ -33,6 +33,7 @@ import * as client from '@prisma/client';
 import { MediaRoles } from 'src/common/constant/roles.constant';
 import { JwtAuthGuard } from 'src/common/guards/auth.guard';
 import { UserRole } from '@prisma/client';
+import { JwtOptionalAuthGuard } from 'src/common/guards/optional-auth.guard';
 
 // @UseGuards(JwtAuthGuard, RolesGuard)
 @Controller('media')
@@ -159,7 +160,7 @@ export class MediaController {
       const result = await this.mediaService.findAll(
         {
           type: query.type,
-          // status: query.status, 
+          status: query.status,
           featured:
             query.featured === 'true'
               ? true
@@ -206,6 +207,7 @@ export class MediaController {
   }
 
   @Get(':slug')
+  @UseGuards(JwtOptionalAuthGuard)
   async findOne(
     @Param('slug') slug: string,
     @CurrentUser() user?: client.User,

@@ -16,7 +16,7 @@ export class MediaQueryDto {
 
   @IsEnum(MediaStatus)
   @IsOptional()
-  status?: MediaStatus = MediaStatus.PUBLISHED;
+  status?: MediaStatus;
 
   @IsBooleanString()
   @IsOptional()

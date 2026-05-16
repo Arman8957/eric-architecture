@@ -103,6 +103,7 @@ enum MediaContentType {
   PORTFOLIO
   ARTICLE
   NEWS
+  HOME_HERO
 }
 
 enum MediaStatus {
