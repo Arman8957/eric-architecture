@@ -700,6 +700,7 @@ model AmendmentRequest {
   @@index([status])
   @@index([requestedById])
   @@map("amendment_requests")
+  @@index([userId])
 }
 
 model ProposalService {
