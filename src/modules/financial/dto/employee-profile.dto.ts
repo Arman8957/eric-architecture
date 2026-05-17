@@ -3,14 +3,14 @@ import { Type } from 'class-transformer';
 
 export class EmployeeTaxDto {
   @IsString()
-  taxType: string; // FITWH, MED, SOC, CA, CASDI, OTHERS
+  taxType!: string; // FITWH, MED, SOC, CA, CASDI, OTHERS
 
   @IsString()
   @IsOptional()
   customName?: string; // custom name when taxType is OTHERS
 
   @IsNumber()
-  percentage: number;
+  percentage!: number;
 }
 
 export class UpdateEmployeeProfileDto {

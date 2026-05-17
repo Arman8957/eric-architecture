@@ -18,10 +18,10 @@ export enum StageStatus {
 
 export class CreateStageDto {
   @IsUUID()
-  proposalId: string;
+  proposalId!: string;
 
   @IsString()
-  name: string;
+  name!: string;
 
   @IsOptional()
   @IsString()

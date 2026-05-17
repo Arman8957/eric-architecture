@@ -8,17 +8,14 @@ import {
   UseGuards,
   Query,
 } from '@nestjs/common';
-import { AmendmentService } from './amendment.service';
-import {
-  CreateAmendmentRequestDto,
-  ReviewAmendmentDto,
-  CreateAmendmentProposalDto,
-} from './dto/amendment.dto';
+
 import { JwtAuthGuard } from 'src/common/guards/auth.guard';
 import { RolesGuard } from 'src/common/guards/roles.guard';
 import { Roles } from 'src/common/decorators/roles.decorator';
 import { CurrentUser } from 'src/common/decorators/current-user.decorator';
 import * as client from '@prisma/client';
+import { AmendmentService } from './amendment.service';
+import { CreateAmendmentProposalDto, CreateAmendmentRequestDto, ReviewAmendmentDto } from '../dto/amendment.dto';
 
 @Controller('proposals')
 @UseGuards(JwtAuthGuard, RolesGuard)

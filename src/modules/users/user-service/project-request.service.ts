@@ -12,7 +12,7 @@ import { CreateProjectRequestDto } from '../dto/project-request.dto';
 import { QueryProjectRequestDto } from '../dto/query-project-request.dto';
 import { UpdateProjectRequestDto } from '../dto/update-project-request.dto';
 import { NotificationService } from '../../notification/notification.service';
-
+import { Express } from 'express';
 import { PaymentService } from '../../payment/payment.service';
 
 @Injectable()
@@ -125,7 +125,8 @@ export class ProjectRequestService {
 
       return request;
     } catch (error) {
-      this.logger.error('Create project request failed', error.stack);
+      const err = error as Error;
+      this.logger.error('Create project request failed', err.stack);
       throw new BadRequestException('Failed to create project request');
     }
   }

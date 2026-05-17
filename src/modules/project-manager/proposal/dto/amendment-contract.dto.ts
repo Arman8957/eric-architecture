@@ -1,14 +1,15 @@
+import { Transform } from 'class-transformer';
 import { IsString, IsOptional, IsNumber, IsBoolean } from 'class-validator';
 
 export class CreateAmendmentContractDto {
     @IsString()
-    articleKey: string;
+    articleKey!: string;
 
     @IsString()
-    title: string;
+    title!: string;
 
     @IsString()
-    content: string;
+    content!: string;
 
     @IsOptional()
     @IsNumber()
@@ -31,4 +32,11 @@ export class UpdateAmendmentContractDto {
     @IsOptional()
     @IsBoolean()
     isActive?: boolean;
+}
+
+export class AmendmentContractQueryDto {
+  @IsOptional()
+  @Transform(({ value }) => value === 'true' || value === true)
+  @IsBoolean()
+  isActive?: boolean;
 }

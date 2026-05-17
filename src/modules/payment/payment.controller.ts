@@ -58,7 +58,8 @@ export class PaymentController {
       await this.paymentService.handleWebhookEvent(event);
       return { received: true };
     } catch (err) {
-      return { received: false, error: err.message };
+      const error = err as Error;
+      return { received: false, error: error.message };
     }
   }
 

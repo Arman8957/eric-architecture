@@ -3,7 +3,7 @@ import { Type } from 'class-transformer';
 
 export class TimecardEntryDto {
   @IsString()
-  category: string;
+  category!: string;
 
   @IsString()
   @IsOptional()
@@ -18,36 +18,36 @@ export class TimecardEntryDto {
   entryWeek?: number; // 1 or 2
 
   @IsNumber()
-  monday: number;
+  monday!: number;
 
   @IsNumber()
-  tuesday: number;
+  tuesday!: number;
 
   @IsNumber()
-  wednesday: number;
+  wednesday!: number;
 
   @IsNumber()
-  thursday: number;
+  thursday!: number;
 
   @IsNumber()
-  friday: number;
+  friday!: number;
 
   @IsNumber()
-  saturday: number;
+  saturday!: number;
 
   @IsNumber()
-  sunday: number;
+  sunday!: number;
 }
 
 export class TimecardBillableEntryDto {
   @IsString()
-  projectRequestId: string;
+  projectRequestId!: string;
 
   @IsString()
-  projectName: string;
+  projectName!: string;
 
   @IsString()
-  phaseName: string;
+  phaseName!: string;
 
   @IsString()
   @IsOptional()
@@ -59,31 +59,31 @@ export class TimecardBillableEntryDto {
 
   // Billable hours
   @IsNumber()
-  monday: number;
+  monday!: number;
 
   @IsNumber()
-  tuesday: number;
+  tuesday!: number;
 
   @IsNumber()
-  wednesday: number;
+  wednesday!: number;
 
   @IsNumber()
-  thursday: number;
+  thursday!: number;
 
   @IsNumber()
-  friday: number;
+  friday!: number;
 
   @IsNumber()
-  saturday: number;
+  saturday!: number;
 
   @IsNumber()
-  sunday: number;
+  sunday!: number;
 
 }
 
 export class CreateTimecardDto {
   @IsDateString()
-  weekStarting: string; // Start of bi-weekly period (Monday)
+  weekStarting!: string; // Start of bi-weekly period (Monday)
 
   @IsInt()
   @IsOptional()
@@ -104,7 +104,7 @@ export class UpdateTimecardDto {
   @IsArray()
   @ValidateNested({ each: true })
   @Type(() => TimecardEntryDto)
-  entries: TimecardEntryDto[];
+  entries!: TimecardEntryDto[];
 
   @IsArray()
   @IsOptional()

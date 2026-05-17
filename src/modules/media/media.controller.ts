@@ -38,7 +38,7 @@ import { JwtOptionalAuthGuard } from 'src/common/guards/optional-auth.guard';
 // @UseGuards(JwtAuthGuard, RolesGuard)
 @Controller('media')
 export class MediaController {
-  constructor(private readonly mediaService: MediaService) { }
+  constructor(private readonly mediaService: MediaService) {}
 
   @Post()
   @UseGuards(JwtAuthGuard, RolesGuard)
@@ -88,7 +88,8 @@ export class MediaController {
     }
 
     // Manual mime type validation since ParseFilePipe is being flaky
-    const allowedMimeTypes = /image\/(jpeg|png|webp|gif)|video\/mp4|application\/pdf/;
+    const allowedMimeTypes =
+      /image\/(jpeg|png|webp|gif)|video\/mp4|application\/pdf/;
     for (const file of files) {
       if (!allowedMimeTypes.test(file.mimetype)) {
         throw new HttpException(
@@ -327,7 +328,7 @@ export class MediaController {
 
   //==============extras
 
-  // @Get() 
+  // @Get()
   // async getPublishedMedia(
   //   @Query() query: MediaQueryDto,
   //   @CurrentUser() currentUser?: client.User,
@@ -351,7 +352,6 @@ export class MediaController {
   //     pagination: result.pagination,
   //   };
   // }
-
 
   @Get('admin/all-statuses')
   @UseGuards(JwtAuthGuard, RolesGuard)

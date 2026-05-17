@@ -2,16 +2,16 @@ import { IsString, IsNumber, IsEnum, IsOptional } from 'class-validator';
 
 export class CreateOverheadExpenseDto {
   @IsString()
-  name: string;
+  name!: string;
 
   @IsNumber()
-  amount: number;
+  amount!: number;
 
   @IsString()
-  frequency: string; // "monthly", "semi-annually", "yearly"
+  frequency!: string; // "monthly", "semi-annually", "yearly"
 
   @IsString()
-  category: string;
+  category!: string;
 }
 
 export class UpdateOverheadExpenseDto {

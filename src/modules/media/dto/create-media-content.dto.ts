@@ -14,10 +14,10 @@ import { MediaContentType, MediaStatus, ProjectCategory } from '@prisma/client';
 
 export class CreateMediaContentDto {
   @IsEnum(MediaContentType)
-  contentType: MediaContentType;
+  contentType!: MediaContentType;
 
   @IsString()
-  title: string;
+  title!: string;
 
   @IsString()
   @IsOptional()
@@ -28,7 +28,7 @@ export class CreateMediaContentDto {
   excerpt?: string;
 
   @IsString()
-  content: string; // rich text / markdown
+  content!: string; // rich text / markdown
 
   // Location fields (mainly WORLD_PROJECT)
   @IsString()
@@ -104,7 +104,7 @@ export class CreateMediaContentDto {
 
 export class CreateMediaCommentDto {
   @IsString()
-  content: string;
+  content!: string;
 
   @IsUUID()
   @IsOptional()

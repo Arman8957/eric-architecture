@@ -4,7 +4,7 @@ export class UpdateProgressDto {
   @IsInt()
   @Min(0)
   @Max(100)
-  progress: number;
+  progress!: number;
 
   @IsOptional()
   @IsInt()

@@ -3,11 +3,11 @@ import { IsString, IsNumber, IsOptional, IsEnum, IsNotEmpty } from 'class-valida
 export class CreateCheckoutDto {
   @IsString()
   @IsNotEmpty()
-  projectRequestId: string;
+  projectRequestId!: string;
 
   @IsString()
   @IsNotEmpty()
-  proposalId: string;
+  proposalId!: string;
 
   @IsString()
   @IsOptional()
@@ -18,13 +18,13 @@ export class CreateCheckoutDto {
   stageName?: string;
 
   @IsNumber()
-  amount: number;
+  amount!: number;
 
   @IsString()
   @IsNotEmpty()
-  paymentType: string; // "LUMP_SUM" or "INSTALLMENT"
+  paymentType!: string; // "LUMP_SUM" or "INSTALLMENT"
 
   @IsString()
   @IsNotEmpty()
-  projectName: string;
+  projectName!: string;
 }

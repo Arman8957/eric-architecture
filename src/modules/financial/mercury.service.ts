@@ -1,4 +1,8 @@
-import { Injectable, Logger, InternalServerErrorException } from '@nestjs/common';
+import {
+  Injectable,
+  Logger,
+  InternalServerErrorException,
+} from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 
 export interface MercuryAccount {
@@ -38,7 +42,9 @@ export class MercuryService {
   private readonly baseUrl: string;
 
   constructor(private readonly config: ConfigService) {
-    this.baseUrl = this.config.get<string>('MERCURY_BANK_LINK') || 'https://api.mercury.com/api/v1';
+    this.baseUrl =
+      this.config.get<string>('MERCURY_BANK_LINK') ||
+      'https://api.mercury.com/api/v1';
   }
 
   onModuleInit() {
@@ -46,7 +52,9 @@ export class MercuryService {
     if (key && key !== 'your-mercury-api-key-here') {
       this.logger.log(`Mercury API key loaded (${key.substring(0, 20)}...)`);
     } else {
-      this.logger.warn('Mercury API key is NOT configured or is still the placeholder');
+      this.logger.warn(
+        'Mercury API key is NOT configured or is still the placeholder',
+      );
     }
   }
 
@@ -54,12 +62,17 @@ export class MercuryService {
     const apiKey = this.config.get<string>('MERCURY_API_KEY');
     if (!apiKey) {
       this.logger.error('MERCURY_API_KEY is not configured');
-      throw new InternalServerErrorException('Mercury API key is not configured. Please add MERCURY_API_KEY to your environment variables.');
+      throw new InternalServerErrorException(
+        'Mercury API key is not configured. Please add MERCURY_API_KEY to your environment variables.',
+      );
     }
     return apiKey;
   }
 
-  private async mercuryFetch<T>(endpoint: string, params?: Record<string, string>): Promise<T> {
+  private async mercuryFetch<T>(
+    endpoint: string,
+    params?: Record<string, string>,
+  ): Promise<T> {
     const apiKey = this.getApiKey().trim();
     const url = new URL(`${this.baseUrl}${endpoint}`);
 
@@ -73,26 +86,28 @@ export class MercuryService {
 
     try {
       this.logger.debug(`Attempting Mercury API call with Bearer token...`);
-      
+
       let response = await fetch(url.toString(), {
         method: 'GET',
         headers: {
-          'Authorization': `Bearer ${apiKey}`,
+          Authorization: `Bearer ${apiKey}`,
           'Content-Type': 'application/json',
-          'Accept': 'application/json',
+          Accept: 'application/json',
         },
       });
 
       // If Bearer fails with 401, try Basic Auth as a fallback
       if (response.status === 401) {
-        this.logger.warn(`Bearer auth failed (401). Retrying with Basic Auth...`);
+        this.logger.warn(
+          `Bearer auth failed (401). Retrying with Basic Auth...`,
+        );
         const basicAuth = Buffer.from(`${apiKey}:`).toString('base64');
         response = await fetch(url.toString(), {
           method: 'GET',
           headers: {
-            'Authorization': `Basic ${basicAuth}`,
+            Authorization: `Basic ${basicAuth}`,
             'Content-Type': 'application/json',
-            'Accept': 'application/json',
+            Accept: 'application/json',
           },
         });
       }
@@ -100,14 +115,28 @@ export class MercuryService {
       if (!response.ok) {
         const errorBody = await response.text();
         this.logger.error(`Mercury API error ${response.status}: ${errorBody}`);
-        throw new InternalServerErrorException(`Mercury API returned ${response.status}: ${response.statusText}`);
+        throw new InternalServerErrorException(
+          `Mercury API returned ${response.status}: ${response.statusText}`,
+        );
       }
 
       return response.json() as Promise<T>;
-    } catch (error) {
-      if (error instanceof InternalServerErrorException) throw error;
-      this.logger.error(`Mercury API request failed: ${error.message}`);
-      throw new InternalServerErrorException('Failed to connect to Mercury API');
+    } catch (error: unknown) {
+      // Re-throw if it's already a NestJS exception
+      if (error instanceof InternalServerErrorException) {
+        throw error;
+      }
+
+      const err = error as Error;
+
+      this.logger.error(
+        `Mercury API request failed for ${endpoint}: ${err.message}`,
+        err.stack,
+      );
+
+      throw new InternalServerErrorException(
+        'Failed to connect to Mercury API',
+      );
     }
   }
 
@@ -116,10 +145,12 @@ export class MercuryService {
    * GET /accounts
    */
   async getAccounts(): Promise<{ accounts: MercuryAccount[] }> {
-    const data = await this.mercuryFetch<{ accounts: MercuryAccount[] }>('/accounts');
+    const data = await this.mercuryFetch<{ accounts: MercuryAccount[] }>(
+      '/accounts',
+    );
 
     // Mask account numbers for security (show only last 4 digits)
-    const maskedAccounts = data.accounts.map(account => ({
+    const maskedAccounts = data.accounts.map((account) => ({
       ...account,
       accountNumber: account.accountNumber
         ? `•••••••${account.accountNumber.slice(-4)}`
@@ -141,13 +172,13 @@ export class MercuryService {
     limit: number = 10,
     offset: number = 0,
   ): Promise<{ total: number; transactions: MercuryTransaction[] }> {
-    const data = await this.mercuryFetch<{ total: number; transactions: MercuryTransaction[] }>(
-      `/account/${accountId}/transactions`,
-      {
-        limit: limit.toString(),
-        offset: offset.toString(),
-      },
-    );
+    const data = await this.mercuryFetch<{
+      total: number;
+      transactions: MercuryTransaction[];
+    }>(`/account/${accountId}/transactions`, {
+      limit: limit.toString(),
+      offset: offset.toString(),
+    });
 
     return data;
   }

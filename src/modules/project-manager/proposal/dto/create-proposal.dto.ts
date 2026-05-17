@@ -10,13 +10,13 @@ import { ServiceType, ProjectCategory } from '@prisma/client';
 
 export class CreateProposalDto {
   @IsString()
-  projectRequestId: string;
+  projectRequestId!: string;
 
   @IsString()
-  name: string;
+  name!: string;
 
   @IsString()
-  description: string;
+  description!: string;
 
   @IsOptional()
   @IsString()
@@ -27,19 +27,19 @@ export class CreateProposalDto {
   streetAddress?: string;
 
   @IsString()
-  country: string;
+  country!: string;
 
   @IsString()
-  city: string;
+  city!: string;
 
   @IsString()
-  state: string;
+  state!: string;
 
   @IsString()
-  zip: string;
+  zip!: string;
 
   @IsEnum(ServiceType)
-  serviceType: ServiceType;
+  serviceType!: ServiceType;
 
   @IsOptional()
   @IsEnum(ProjectCategory)

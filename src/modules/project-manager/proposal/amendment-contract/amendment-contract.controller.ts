@@ -11,7 +11,7 @@ import {
 import {
     CreateAmendmentContractDto,
     UpdateAmendmentContractDto,
-} from './dto/amendment-contract.dto';
+} from '../dto/amendment-contract.dto';
 import { JwtAuthGuard } from 'src/common/guards/auth.guard';
 import { RolesGuard } from 'src/common/guards/roles.guard';
 import { Roles } from 'src/common/decorators/roles.decorator';

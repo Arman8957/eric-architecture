@@ -15,11 +15,8 @@ import {
 } from '@prisma/client';
 import { PrismaService } from 'src/prisma/prisma.service';
 import { MailerService } from 'src/utils/email/email.service';
-import {
-  CreateAmendmentRequestDto,
-  ReviewAmendmentDto,
-  CreateAmendmentProposalDto,
-} from './dto/amendment.dto';
+import { CreateAmendmentProposalDto, CreateAmendmentRequestDto, ReviewAmendmentDto } from '../dto/amendment.dto';
+
 
 @Injectable()
 export class AmendmentService {

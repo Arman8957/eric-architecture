@@ -3,12 +3,14 @@ import { ProposalService } from './proposal.service';
 import { ProposalController } from './proposal.controller';
 import { PrismaModule } from 'src/prisma/prisma.module';
 import { MailerModule } from 'src/utils/email/email.module';
-import { AmendmentController } from './amendment.controller';
-import { AmendmentService } from './amendment.service';
-import { MasterContractController } from './master-contract.controller';
-import { MasterContractService } from './master-contract.service';
-import { AmendmentContractController } from './amendment-contract.controller';
-import { AmendmentContractService } from './amendment-contract.service';
+
+
+import { MasterContractService } from './master-contract/master-contract.service';
+import { AmendmentContractController } from './amendment-contract/amendment-contract.controller';
+import { AmendmentContractService } from './amendment-contract/amendment-contract.service';
+import { AmendmentController } from './amendment/amendment.controller';
+import { AmendmentService } from './amendment/amendment.service';
+import { MasterContractController } from './master-contract/master-contract.controller';
 
 
 

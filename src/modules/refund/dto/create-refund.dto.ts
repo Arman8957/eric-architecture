@@ -4,15 +4,15 @@ import { Type } from 'class-transformer';
 export class BankDetailsDto {
   @IsString()
   @IsNotEmpty()
-  bankName: string;
+  bankName!: string;
 
   @IsString()
   @IsNotEmpty()
-  accountNumber: string;
+  accountNumber!: string;
 
   @IsString()
   @IsNotEmpty()
-  routingNumber: string;
+  routingNumber!: string;
 
   @IsString()
   @IsOptional()
@@ -26,26 +26,26 @@ export class BankDetailsDto {
 export class CreateRefundDto {
   @IsString()
   @IsNotEmpty()
-  projectRequestId: string;
+  projectRequestId!: string;
 
   @IsString()
   @IsNotEmpty()
-  stageId: string;
+  stageId!: string;
 
   @IsString()
   @IsNotEmpty()
-  stageName: string;
+  stageName!: string;
 
   @IsString()
   @IsNotEmpty()
-  refundCause: string;
+  refundCause!: string;
 
   @IsString()
   @IsNotEmpty()
-  refundDescription: string;
+  refundDescription!: string;
 
   @IsNumber()
-  amount: number;
+  amount!: number;
 
   @ValidateNested()
   @Type(() => BankDetailsDto)

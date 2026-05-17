@@ -7,7 +7,7 @@ import { PrismaService } from 'src/prisma/prisma.service';
 import {
     CreateAmendmentContractDto,
     UpdateAmendmentContractDto,
-} from './dto/amendment-contract.dto';
+} from '../dto/amendment-contract.dto';
 
 @Injectable()
 export class AmendmentContractService {

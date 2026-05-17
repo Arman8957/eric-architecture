@@ -16,31 +16,31 @@ export class CreateProjectRequestDto {
   @IsNotEmpty()
   @MinLength(2)
   @MaxLength(50)
-  clientFirstName: string;
+  clientFirstName!: string;
 
   @IsString()
   @IsNotEmpty()
   @MinLength(2)
   @MaxLength(50)
-  clientLastName: string;
+  clientLastName!: string;
 
   @IsEmail()
   @IsNotEmpty()
-  email: string;
+  email!: string;
 
   @IsString()
   @IsNotEmpty()
   @MinLength(3)
   @MaxLength(200)
-  projectName: string;
+  projectName!: string;
 
   @IsEnum(ServiceType)
   @IsNotEmpty()
-  serviceType: ServiceType;
+  serviceType!: ServiceType;
 
   @IsString()
   @IsNotEmpty()
-  paymentIntentId: string;
+  paymentIntentId!: string;
 
   // Optional fields
   @IsString()

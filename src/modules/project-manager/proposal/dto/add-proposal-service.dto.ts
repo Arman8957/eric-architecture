@@ -3,11 +3,11 @@ import { IsString, IsNumber, IsInt, IsOptional, Min, IsNotEmpty } from 'class-va
 export class AddProposalServiceDto {
   @IsString()
   @IsNotEmpty()
-  name: string;
+  name!: string;
 
   @IsNumber({}, { message: 'cost must be a valid number' })
   @Min(0, { message: 'cost cannot be negative' })
-  cost: number;
+  cost!: number;
 
   @IsInt()
   @IsOptional()

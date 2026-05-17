@@ -2,13 +2,13 @@ import { IsString, IsOptional, IsNumber, IsBoolean } from 'class-validator';
 
 export class CreateMasterContractDto {
     @IsString()
-    articleKey: string;
+    articleKey!: string;
 
     @IsString()
-    title: string;
+    title!: string;
 
     @IsString()
-    content: string;
+    content!: string;
 
     @IsOptional()
     @IsNumber()
@@ -41,5 +41,5 @@ export class SendProposalWithContractDto {
 
 export class ClientSignContractDto {
     @IsString()
-    clientSignature: string; // base64 canvas data
+    clientSignature!: string; // base64 canvas data
 }

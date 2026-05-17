@@ -8,17 +8,15 @@ import {
     Param,
     UseGuards,
 } from '@nestjs/common';
-import {
-    CreateMasterContractDto,
-    UpdateMasterContractDto,
-    ClientSignContractDto,
-} from './dto/master-contract.dto';
+
 import { JwtAuthGuard } from 'src/common/guards/auth.guard';
 import { RolesGuard } from 'src/common/guards/roles.guard';
 import { Roles } from 'src/common/decorators/roles.decorator';
 import { CurrentUser } from 'src/common/decorators/current-user.decorator';
 import * as client from '@prisma/client';
 import { MasterContractService } from './master-contract.service';
+import { ClientSignContractDto, CreateMasterContractDto, UpdateMasterContractDto } from '../dto/master-contract.dto';
+
 
 @Controller('master-contract')
 @UseGuards(JwtAuthGuard, RolesGuard)
