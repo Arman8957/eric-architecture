@@ -181,7 +181,7 @@ export class AuthController {
   @Public()
   @HttpCode(HttpStatus.OK)
   async login(
-    @Body() dto: LoginDto, // ✅ Use DTO instead of individual @Body params
+    @Body() dto: LoginDto,
     @Res({ passthrough: true }) res: express.Response,
   ) {
     const result = await this.authService.login(dto.email, dto.password);
