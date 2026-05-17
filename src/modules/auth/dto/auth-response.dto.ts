@@ -1,9 +1,9 @@
 import { UserRole } from '@prisma/client';
 
 export class AuthResponseDto {
-  accessToken: string;
-  refreshToken: string;
-  user: {
+  accessToken!: string;
+  refreshToken!: string;
+  user!: {
     id: string;
     email: string;
     name: string | null;

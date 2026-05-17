@@ -5,11 +5,11 @@ import { UserRole } from '@prisma/client';
 
 export class RegisterStaffDto {
   @IsEmail()
-  email: string;
+  email!: string;
 
   @IsString()
   @MinLength(8)
-  password: string;
+  password!: string;
 
   @IsString()
   @IsOptional()
@@ -18,7 +18,7 @@ export class RegisterStaffDto {
   @IsEnum(UserRole, {
     message: 'Invalid role. Allowed: ADMIN, FINANCE, HIGHER_MANAGER, DRAFTER, EMPLOYEE, USER',
   })
-  role: UserRole;
+  role!: UserRole;
 
   @IsString()
   @IsOptional()

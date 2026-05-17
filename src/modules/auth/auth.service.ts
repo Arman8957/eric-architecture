@@ -77,13 +77,12 @@ export class AuthService {
       data: { emailVerifyToken: token, emailVerifyExpiry: expiry },
     });
 
-    // const verifyUrl = `${frontendUrl}/verify-email`;
     await this.mailer.sendEmailVerification(
       user.email,
       token,
       user.name ?? 'User',
       // verifyUrl,
-      frontendUrl
+      frontendUrl,
     );
   }
 
@@ -115,7 +114,7 @@ export class AuthService {
     const user = await this.prisma.user.create({
       data: {
         email: normalizedEmail,
-        name: dto.name?.trim() ?? undefined, // ← Fixed null → undefined
+        name: dto.name?.trim() ?? undefined,
         password: hashed,
         role: UserRole.USER,
         emailVerified: false,
@@ -395,5 +394,5 @@ export class AuthService {
     return { message: 'Logged out successfully' };
   }
 
-  ////// all get api's
+
 }
