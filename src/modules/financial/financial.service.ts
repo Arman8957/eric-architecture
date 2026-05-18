@@ -393,7 +393,7 @@ export class FinancialService {
   // ═══════════════════════════════════════════════════
 
   async getActiveProjects() {
-    console.log('[DEBUG] FinancialService.getActiveProjects called');
+    this.logger.debug('getActiveProjects called');
     const projects = await this.prisma.projectRequest.findMany({
       where: {
         isArchived: false,
@@ -424,7 +424,7 @@ export class FinancialService {
       orderBy: { updatedAt: 'desc' },
     });
 
-    console.log(`[DEBUG] Found ${projects.length} potential projects`);
+    this.logger.debug(`Found ${projects.length} potential projects`);
 
     // Also fetch amendment proposals per project
     const amendmentProposals = await this.prisma.proposal.findMany({
@@ -819,8 +819,9 @@ export class FinancialService {
       profit: phases.reduce((sum, p) => sum + p.profit, 0),
       actualHours: phases.reduce((sum, p) => sum + p.actualHours, 0),
       nonBillableHours: phases.reduce((sum, p) => sum + p.nonBillableHours, 0),
+      profitMargin: 0,
     };
-    grandTotals['profitMargin'] = grandTotals.price > 0 ? (grandTotals.profit / grandTotals.price) * 100 : 0;
+    grandTotals.profitMargin = grandTotals.price > 0 ? (grandTotals.profit / grandTotals.price) * 100 : 0;
 
     const totalProjectCost = totalLaborCost + totalProjectOverhead;
     const profit = projectCost - totalProjectCost;
@@ -857,7 +858,7 @@ export class FinancialService {
 
   async getMyAssignedProjects(userId: string) {
     // Get projects assigned to this user as manager
-    console.log(`[DEBUG] FinancialService.getMyAssignedProjects called for user: ${userId}`);
+    this.logger.debug(`getMyAssignedProjects called for user: ${userId}`);
     const projectRequests = await this.prisma.projectRequest.findMany({
       where: {
         OR: [
@@ -880,7 +881,7 @@ export class FinancialService {
       },
     });
 
-    console.log(`[DEBUG] Found ${projectRequests.length} projects for user ${userId}`);
+    this.logger.debug(`Found ${projectRequests.length} projects for user ${userId}`);
 
     return projectRequests.map((pr) => ({
       id: pr.id,

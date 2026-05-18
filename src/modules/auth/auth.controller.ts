@@ -23,13 +23,12 @@ import { ConfigService } from '@nestjs/config';
 import express from 'express';
 import { AuthService } from './auth.service';
 import { RolesGuard } from '../../common/guards/roles.guard';
-import { JwtAuthGuard } from '../../common/guards/auth.guard'; // ← Correct guard
+import { JwtAuthGuard } from '../../common/guards/auth.guard';
 import { Roles } from '../../common/decorators/roles.decorator';
-import { Public } from '../../common/decorators/public.decorator'; // ← Fixed import
-// import { UserRole } from 'generated/prisma';
+import { Public } from '../../common/decorators/public.decorator';
 import * as client from '@prisma/client';
 import { RegisterUserDto } from './dto/register-user.dto';
-import { RegisterStaffDto } from './dto/register-staff.dto'; // ← Use RegisterStaffDto instead of RegisterAdminDto
+import { RegisterStaffDto } from './dto/register-staff.dto';
 import { VerifyEmailDto } from './dto/verify-email.dto';
 import { LoginDto } from './dto/login.dto';
 import { RegisterSuperAdminDto } from './dto/register-super-admin.dto';
@@ -83,46 +82,9 @@ export class AuthController {
     return this.authService.registerSuperAdmin(dto, frontendUrl);
   }
 
-  // @Post('register-super-admin')
-  // @Public() // Allows first-time registration without login
-  // @HttpCode(HttpStatus.CREATED)
-  // @UsePipes(new ValidationPipe({ whitelist: true, forbidNonWhitelisted: true }))
-  // async registerSuperAdmin(
-  //   @Body() dto: RegisterSuperAdminDto,
-  //   @Req() req: Request,
-  // ) {
-  //   try {
-  //     const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:3000';
-  //     const requestingUser = req.user; // optional, only if logged in
-  //     const result = await this.authService.registerSuperAdmin(
-  //       dto,
-  //       frontendUrl,
-  //       requestingUser,
-  //     );
 
-  //     return {
-  //       success: true,
-  //       message: result.message,
-  //       user: result.user,
-  //     };
-  //   } catch (error) {
-  //     // Handle known NestJS exceptions
-  //     if (
-  //       error instanceof ForbiddenException ||
-  //       error instanceof BadRequestException
-  //     ) {
-  //       throw error;
-  //     }
 
-  //     // Log unknown errors
-  //     console.error('registerSuperAdmin error:', error);
-
-  //     // Generic server error
-  //     throw new InternalServerErrorException('Internal server error');
-  //   }
-  // }
-
-  @Post('staff/register') // ← Renamed to /staff/register (cleaner than /admin/register)
+  @Post('staff/register')
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles(client.UserRole.SUPER_ADMIN, client.UserRole.ADMIN, client.UserRole.FINANCE)
   @HttpCode(HttpStatus.CREATED)
@@ -241,5 +203,5 @@ export class AuthController {
     });
   }
 
-  //// all get controllers
+
 }

@@ -43,7 +43,7 @@ export class CreateProposalDto {
 
   @IsOptional()
   @IsEnum(ProjectCategory)
-  projectCategory?: ProjectCategory; // ← ADD THIS
+  projectCategory?: ProjectCategory;
 
   @IsOptional()
   @IsString()

@@ -2,6 +2,7 @@ import { Injectable, Logger, NotFoundException, BadRequestException } from '@nes
 import { PrismaService } from 'src/prisma/prisma.service';
 import { NotificationService } from '../notification/notification.service';
 import { MailerService } from 'src/utils/email/email.service';
+import { EncryptionService } from 'src/common/encryption/encryption.service';
 import { CreateRefundDto } from './dto/create-refund.dto';
 import { User } from '@prisma/client';
 
@@ -13,35 +14,40 @@ export class RefundService {
     private prisma: PrismaService,
     private notificationService: NotificationService,
     private mailerService: MailerService,
+    private encryption: EncryptionService,
   ) {}
 
   /**
    * Create a refund request. Saves bank details if provided (first time).
+   * Bank account and routing numbers are encrypted at rest.
    */
   async createRefundRequest(dto: CreateRefundDto, user: User) {
-    // 1. Save or update bank details if provided
     if (dto.bankDetails) {
+      const encryptedAccountNumber = this.encryption.encrypt(dto.bankDetails.accountNumber);
+      const encryptedRoutingNumber = dto.bankDetails.routingNumber
+        ? this.encryption.encrypt(dto.bankDetails.routingNumber)
+        : '';
+
       await this.prisma.userBankDetails.upsert({
         where: { userId: user.id },
         create: {
           userId: user.id,
           bankName: dto.bankDetails.bankName,
-          accountNumber: dto.bankDetails.accountNumber,
-          routingNumber: dto.bankDetails.routingNumber,
+          accountNumber: encryptedAccountNumber,
+          routingNumber: encryptedRoutingNumber,
           branchName: dto.bankDetails.branchName,
           bankType: dto.bankDetails.bankType,
         },
         update: {
           bankName: dto.bankDetails.bankName,
-          accountNumber: dto.bankDetails.accountNumber,
-          routingNumber: dto.bankDetails.routingNumber,
+          accountNumber: encryptedAccountNumber,
+          routingNumber: encryptedRoutingNumber,
           branchName: dto.bankDetails.branchName,
           bankType: dto.bankDetails.bankType,
         },
       });
     }
 
-    // 2. Verify user has bank details
     const bankDetails = await this.prisma.userBankDetails.findUnique({
       where: { userId: user.id },
     });
@@ -50,7 +56,6 @@ export class RefundService {
       throw new BadRequestException('Bank details are required to request a refund');
     }
 
-    // 3. Get project request info
     const projectRequest = await this.prisma.projectRequest.findUnique({
       where: { id: dto.projectRequestId },
       include: { assignedManager: true },
@@ -60,7 +65,6 @@ export class RefundService {
       throw new NotFoundException('Project request not found');
     }
 
-    // 4. Create the refund request
     const refundRequest = await this.prisma.refundRequest.create({
       data: {
         userId: user.id,
@@ -78,7 +82,6 @@ export class RefundService {
       },
     });
 
-    // 5. Notify all FINANCE users
     const financeUsers = await this.prisma.user.findMany({
       where: {
         role: { in: ['FINANCE', 'SUPER_ADMIN', 'ADMIN'] },
@@ -98,7 +101,6 @@ export class RefundService {
       });
     }
 
-    // 6. Notify assigned project manager
     if (projectRequest.assignedManagerId) {
       await this.notificationService.createNotification({
         userId: projectRequest.assignedManagerId,
@@ -114,9 +116,6 @@ export class RefundService {
     return refundRequest;
   }
 
-  /**
-   * Get all refund requests (for finance managers / admins)
-   */
   async getAllRefundRequests() {
     return this.prisma.refundRequest.findMany({
       include: {
@@ -128,9 +127,6 @@ export class RefundService {
     });
   }
 
-  /**
-   * Get user's own refund requests
-   */
   async getMyRefundRequests(userId: string) {
     return this.prisma.refundRequest.findMany({
       where: { userId },
@@ -142,9 +138,6 @@ export class RefundService {
     });
   }
 
-  /**
-   * Approve a refund request
-   */
   async approveRefund(refundId: string, approver: User) {
     const refund = await this.prisma.refundRequest.findUnique({
       where: { id: refundId },
@@ -172,7 +165,6 @@ export class RefundService {
       },
     });
 
-    // Send email to user
     if (refund.user.email) {
       try {
         await this.mailerService.sendRefundAcceptedEmail(
@@ -190,7 +182,6 @@ export class RefundService {
       }
     }
 
-    // Notify user
     await this.notificationService.createNotification({
       userId: refund.userId,
       type: 'REFUND_APPROVED',
@@ -202,9 +193,6 @@ export class RefundService {
     return updated;
   }
 
-  /**
-   * Reject a refund request
-   */
   async rejectRefund(refundId: string, approver: User, rejectionReason?: string) {
     const refund = await this.prisma.refundRequest.findUnique({
       where: { id: refundId },
@@ -224,7 +212,6 @@ export class RefundService {
       },
     });
 
-    // Notify user
     await this.notificationService.createNotification({
       userId: refund.userId,
       type: 'REFUND_REJECTED',
@@ -237,11 +224,33 @@ export class RefundService {
   }
 
   /**
-   * Get user's bank details
+   * Get user's bank details with decrypted account/routing numbers.
    */
   async getUserBankDetails(userId: string) {
-    return this.prisma.userBankDetails.findUnique({
+    const details = await this.prisma.userBankDetails.findUnique({
       where: { userId },
     });
+
+    if (!details) return null;
+
+    return {
+      ...details,
+      accountNumber: this.safeDecrypt(details.accountNumber),
+      routingNumber: details.routingNumber
+        ? this.safeDecrypt(details.routingNumber)
+        : null,
+    };
+  }
+
+  private safeDecrypt(value: string): string {
+    try {
+      if (this.encryption.isEncrypted(value)) {
+        return this.encryption.decrypt(value);
+      }
+      return value;
+    } catch {
+      this.logger.warn('Failed to decrypt value, returning masked placeholder');
+      return '••••••••';
+    }
   }
 }

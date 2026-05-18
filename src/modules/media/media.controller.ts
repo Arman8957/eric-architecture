@@ -47,9 +47,6 @@ export class MediaController {
     @Body() dto: CreateMediaContentDto,
     @CurrentUser() user: client.User,
   ) {
-    console.log('[MediaController] create - Current user:', user);
-    console.log('[MediaController] create - User role:', user.role);
-
     try {
       const created = await this.mediaService.create(dto, user.id, user.role);
       return {
@@ -58,7 +55,6 @@ export class MediaController {
         data: created,
       };
     } catch (error) {
-      console.error('[MediaController] create - Error:', error);
       if (error instanceof HttpException) throw error;
       throw new HttpException(
         { status: 'error', message: 'Failed to create media content' },
@@ -126,32 +122,7 @@ export class MediaController {
     }
   }
 
-  // @Get()
-  // async findAll(@Query() query: MediaQueryDto) {
-  //   try {
-  //     const result = await this.mediaService.findAll({
-  //       type: query.type,
-  //       status: query.status,
-  //       featured: query.featured === 'true',
-  //       country: query.country,
-  //       category: query.category,
-  //       page: query.page ?? 1,
-  //       limit: query.limit ?? 12,
-  //     });
 
-  //     return {
-  //       status: 'success',
-  //       message: `Found ${result.data.length} media items`,
-  //       data: result.data,
-  //       pagination: result.pagination,
-  //     };
-  //   } catch (error) {
-  //     throw new HttpException(
-  //       { status: 'error', message: 'Failed to fetch media items' },
-  //       HttpStatus.INTERNAL_SERVER_ERROR,
-  //     );
-  //   }
-  // }
   @Get()
   async findAll(
     @Query() query: MediaQueryDto,
@@ -326,32 +297,7 @@ export class MediaController {
     return this.mediaService.getMediaLikesInfo(id, user?.id);
   }
 
-  //==============extras
 
-  // @Get()
-  // async getPublishedMedia(
-  //   @Query() query: MediaQueryDto,
-  //   @CurrentUser() currentUser?: client.User,
-  // ) {
-  //   const result = await this.mediaService.findAllPublic(
-  //     {
-  //       type: query.type,
-  //       featured: query.featured === 'true' ? true : false,
-  //       country: query.country,
-  //       category: query.category,
-  //       page: query.page ?? 1,
-  //       limit: query.limit ?? 12,
-  //     },
-  //     currentUser?.id,
-  //   );
-
-  //   return {
-  //     status: 'success',
-  //     message: `Found ${result.data.length} published media items`,
-  //     data: result.data,
-  //     pagination: result.pagination,
-  //   };
-  // }
 
   @Get('admin/all-statuses')
   @UseGuards(JwtAuthGuard, RolesGuard)
@@ -386,7 +332,7 @@ export class MediaController {
     };
   }
 
-  //==========extras===================
+
 
   // ────────────── Comments ──────────────
 
@@ -414,16 +360,7 @@ export class MediaController {
     });
   }
 
-  // @Get(':id/comments')
-  // async getComments(
-  //   @Param('id', ParseUUIDPipe) id: string,
-  //   @Query('page') page = 1,
-  //   @Query('limit') limit = 20,
-  //   @Query('sort') sort: 'newest' | 'oldest' = 'newest',
-  //   @CurrentUser() currentUser?: { id: string },
-  // ) {
-  //   return this.mediaService.getMediaComments(id, { page, limit, sort }, currentUser?.id);
-  // }
+
 
   @Get(':id/comments')
   async getComments(
@@ -446,25 +383,5 @@ export class MediaController {
     return this.mediaService.toggleCommentLike(commentId, user.id);
   }
 
-  //   @Delete(':id/comments/:commentId')
-  // @UseGuards(JwtAuthGuard)
-  // async deleteComment(
-  //   @Param('id', ParseUUIDPipe) mediaId: string,
-  //   @Param('commentId', ParseUUIDPipe) commentId: string,
-  //   @CurrentUser() user: User,
-  // ) {
-  //   return this.mediaService.deleteMediaComment(mediaId, commentId, user.id, user.role);
-  // }
 
-  // // Optional: Admin/Moderator force delete (no ownership check)
-  // @Delete(':id/comments/:commentId/admin')
-  // @UseGuards(JwtAuthGuard, RolesGuard)
-  // @Roles(UserRole.SUPER_ADMIN, UserRole.ADMIN, UserRole.MEDIA_MANAGER)
-  // async adminDeleteComment(
-  //   @Param('id', ParseUUIDPipe) mediaId: string,
-  //   @Param('commentId', ParseUUIDPipe) commentId: string,
-  //   @CurrentUser() user: User,
-  // ) {
-  //   return this.mediaService.deleteMediaComment(mediaId, commentId, user.id, user.role, true);
-  // }
 }

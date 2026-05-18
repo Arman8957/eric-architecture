@@ -176,7 +176,7 @@ export class MediaService {
     if (!media) throw new NotFoundException();
 
     if (
-      !this.allowedMediaRoles.has(userRole) && // ← FIXED HERE
+      !this.allowedMediaRoles.has(userRole) &&
       media.createdById !== userId
     ) {
       throw new ForbiddenException('Not authorized to delete');
@@ -637,7 +637,7 @@ export class MediaService {
     const skip = (page - 1) * limit;
 
     const where: any = {
-      status: MediaStatus.PUBLISHED, // ← fixed for public
+      status: MediaStatus.PUBLISHED,
     };
 
     if (query.type) where.contentType = query.type;
@@ -920,11 +920,11 @@ export class MediaService {
 
     const enrichedComments = comments.map((comment) => ({
       ...comment,
-      likeCount: comment._count.likes, // ← now safe
+      likeCount: comment._count.likes,
       userHasLiked: userLikedCommentIds.has(comment.id),
       replies: comment.replies.map((reply) => ({
         ...reply,
-        likeCount: reply._count?.likes ?? 0, // ← safe with ?.
+        likeCount: reply._count?.likes ?? 0,
         userHasLiked: userLikedCommentIds.has(reply.id),
       })),
     }));

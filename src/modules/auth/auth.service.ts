@@ -13,17 +13,13 @@ import { JwtService } from '@nestjs/jwt';
 import { PrismaService } from '../../prisma/prisma.service';
 import * as bcrypt from 'bcrypt';
 import * as crypto from 'crypto';
-// import { UserRole } from 'generated/prisma';
-
 import { UserRole, User, Prisma } from '@prisma/client';
-// import { UserRole } from 'generated/prisma'; // ← Use Prisma enum
 import { RegisterUserDto } from './dto/register-user.dto';
 import { RegisterStaffDto } from './dto/register-staff.dto';
 import { VerifyEmailDto } from './dto/verify-email.dto';
 import { AuthResponseDto } from './dto/auth-response.dto';
 import { MailerService } from 'src/utils/email/email.service';
 import { FindAllOptions } from './constant';
-// import { User } from 'generated/prisma'; // ← Prisma User type
 
 @Injectable()
 export class AuthService {
@@ -223,7 +219,7 @@ export class AuthService {
     const user = await this.prisma.user.create({
       data: {
         email: dto.email.toLowerCase(),
-        name: dto.name?.trim() ?? undefined, // ← Fixed
+        name: dto.name?.trim() ?? undefined,
         password: hashed,
         role: UserRole.SUPER_ADMIN,
         emailVerified: false,
@@ -373,7 +369,6 @@ export class AuthService {
   }
 
   async resendVerification(email: string, frontendUrl: string) {
-    // Add this method if missing
     const user = await this.prisma.user.findUnique({
       where: { email: email.toLowerCase() },
     });

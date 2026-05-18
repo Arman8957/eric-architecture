@@ -18,7 +18,7 @@ export class GoogleStrategy extends PassportStrategy(Strategy, 'google') {
       clientSecret: config.get<string>('GOOGLE_CLIENT_SECRET')!,
       callbackURL: config.get<string>('GOOGLE_CALLBACK_URL')!,
       scope: ['email', 'profile'],
-      passReqToCallback: false, // ← Explicitly set (default is false)
+      passReqToCallback: false,
     });
   }
 
@@ -43,7 +43,7 @@ export class GoogleStrategy extends PassportStrategy(Strategy, 'google') {
         name,
       });
 
-      done(null, user); // ← Correct: user is Prisma User object
+      done(null, user);
     } catch (error) {
       this.logger.error('Google OAuth validation failed:', error);
       done(error as Error, false);

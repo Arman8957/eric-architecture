@@ -5,8 +5,8 @@ import { BullModule } from '@nestjs/bullmq';
 import { ScheduleModule } from '@nestjs/schedule';
 
 import configuration from '../src/config/configuratin';
-// import { envValidationSchema } from '../src/config/validation-joi.schema';
 import { getCacheConfig } from './config/cache.config';
+import { EncryptionModule } from './common/encryption/encryption.module';
 
 import { AuthModule } from './modules/auth/auth.module';
 import { PrismaModule } from './prisma/prisma.module';
@@ -45,25 +45,11 @@ import { PaymentModule } from './modules/payment/payment.module';
       inject: [ConfigService],
     }),
 
-    // BullModule.forRootAsync({
-    //   imports: [ConfigModule],
-    //   useFactory: (config: ConfigService) => ({
-    //     connection: {
-    //       host: config.get<string>('REDIS_HOST'),
-    //       port: config.get<number>('REDIS_PORT'),
-    //       password: config.get<string>('REDIS_PASSWORD'),
-    //     },
-    //   }),
-    //   inject: [ConfigService],
-    // }),
-
-    // BullModule.registerQueue({
-    //   name: 'video-processing',
-    // }),
 
     AuthModule,
     PrismaModule,
     MailerModule,
+    EncryptionModule,
     ProjectRequestModule,
     MediaModule,
     ProposalModule,

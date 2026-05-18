@@ -14,7 +14,7 @@ import { JwtAuthGuard } from 'src/common/guards/auth.guard';
 import { RolesGuard } from 'src/common/guards/roles.guard';
 import { Roles } from 'src/common/decorators/roles.decorator';
 import { CurrentUser } from 'src/common/decorators/current-user.decorator';
-import * as client from '@prisma/client'; // ← import directly
+import * as client from '@prisma/client';
 import { UsersGetService } from '../user-service/user-get.service';
 import { SafeUser } from '../types/user.type';
 

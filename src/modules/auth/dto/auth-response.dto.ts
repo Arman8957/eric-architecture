@@ -7,7 +7,7 @@ export class AuthResponseDto {
     id: string;
     email: string;
     name: string | null;
-    role: UserRole; // ← Now matches user.role from Prisma exactly
+    role: UserRole;
     avatar?: string | null; // Optional for consistency
     isEmailVerified: boolean;
   };
