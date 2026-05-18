@@ -1,98 +1,121 @@
-<p align="center">
-  <a href="http://nestjs.com/" target="blank"><img src="https://nestjs.com/img/logo-small.svg" width="120" alt="Nest Logo" /></a>
-</p>
+# 🏛️ Architecture Simple — Backend System Manual
 
-[circleci-image]: https://img.shields.io/circleci/build/github/nestjs/nest/master?token=abc123def456
-[circleci-url]: https://circleci.com/gh/nestjs/nest
+A high-performance, strictly typed, and security-hardened NestJS microservice architecture powering a premier design and project management ecosystem.
 
-  <p align="center">A progressive <a href="http://nodejs.org" target="_blank">Node.js</a> framework for building efficient and scalable server-side applications.</p>
-    <p align="center">
-<a href="https://www.npmjs.com/~nestjscore" target="_blank"><img src="https://img.shields.io/npm/v/@nestjs/core.svg" alt="NPM Version" /></a>
-<a href="https://www.npmjs.com/~nestjscore" target="_blank"><img src="https://img.shields.io/npm/l/@nestjs/core.svg" alt="Package License" /></a>
-<a href="https://www.npmjs.com/~nestjscore" target="_blank"><img src="https://img.shields.io/npm/dm/@nestjs/common.svg" alt="NPM Downloads" /></a>
-<a href="https://circleci.com/gh/nestjs/nest" target="_blank"><img src="https://img.shields.io/circleci/build/github/nestjs/nest/master" alt="CircleCI" /></a>
-<a href="https://discord.gg/G7Qnnhy" target="_blank"><img src="https://img.shields.io/badge/discord-online-brightgreen.svg" alt="Discord"/></a>
-<a href="https://opencollective.com/nest#backer" target="_blank"><img src="https://opencollective.com/nest/backers/badge.svg" alt="Backers on Open Collective" /></a>
-<a href="https://opencollective.com/nest#sponsor" target="_blank"><img src="https://opencollective.com/nest/sponsors/badge.svg" alt="Sponsors on Open Collective" /></a>
-  <a href="https://paypal.me/kamilmysliwiec" target="_blank"><img src="https://img.shields.io/badge/Donate-PayPal-ff3f59.svg" alt="Donate us"/></a>
-    <a href="https://opencollective.com/nest#sponsor"  target="_blank"><img src="https://img.shields.io/badge/Support%20us-Open%20Collective-41B883.svg" alt="Support us"></a>
-  <a href="https://twitter.com/nestframework" target="_blank"><img src="https://img.shields.io/twitter/follow/nestframework.svg?style=social&label=Follow" alt="Follow us on Twitter"></a>
-</p>
-  <!--[![Backers on Open Collective](https://opencollective.com/nest/backers/badge.svg)](https://opencollective.com/nest#backer)
-  [![Sponsors on Open Collective](https://opencollective.com/nest/sponsors/badge.svg)](https://opencollective.com/nest#sponsor)-->
+---
 
-## Description
+## ⚡ Architecture Overview
 
-[Nest](https://github.com/nestjs/nest) framework TypeScript starter repository.
-
-## Project setup
-
-```bash
-$ npm install
+```mermaid
+graph TD
+    Client[Client Browser / Mobile] -->|HTTPS / WSS| Nginx[Nginx Proxy]
+    Nginx --> NestApp[NestJS Core Engine]
+    NestApp --> Prisma[Prisma ORM]
+    Prisma --> Postgres[(PostgreSQL Database)]
+    NestApp --> Redis[(Redis Cache Layer)]
+    NestApp --> Cloudinary[Cloudinary CDN]
+    NestApp --> Stripe[Stripe Payments]
+    NestApp --> Mercury[Mercury Banking API]
 ```
 
-## Compile and run the project
+This backend is built on **NestJS** with **Prisma ORM** connecting to a **PostgreSQL** database, backed by a global **Redis** caching mechanism. The codebase utilizes modern TypeScript strict standards (`noImplicitAny: true`), automated input validation, role-based access control, and industry-standard security practices.
 
+---
+
+## 📂 Core Module Catalog
+
+The backend is structured into domain-specific, decoupled modules under `src/modules/`. Here is the architecture of each system:
+
+### 1. `auth` (Authentication & Security)
+The security core of the application.
+* **Purpose**: Manages secure user session lifecycles, OAuth registrations, and cryptographic validations.
+* **Strategies**:
+  * **JWT Access Strategy**: Decodes and validates short-lived JSON Web Tokens for API requests.
+  * **JWT Refresh Strategy**: Uses cryptographically secure refresh tokens to renew active sessions.
+  * **Google OAuth Strategy**: Handles third-party registration/login flows.
+* **Guards**: `JwtAuthGuard` (session validation) and `RolesGuard` (strict role-based access permission).
+
+### 2. `users` (Identity & Member Profiles)
+Manages user accounts, active directories, and profile settings.
+* **Purpose**: Handles profile onboarding, employee directories, and permission adjustments.
+* **Roles System**:
+  * `SUPER_ADMIN`, `ADMIN` (Full administrative access)
+  * `HIGHER_MANAGER`, `PROJECT_MANAGER` (Project planning, proposal management, team delegation)
+  * `DRAFTER`, `EMPLOYEE` (Task completion and stage updates)
+  * `CLIENT` (Dashboard access, billing, and proposals)
+
+### 3. `project-manager` (Enterprise Management Engine)
+The central core of the company's design operations. Divided into four sub-services:
+* **`project-request`**: Handles customer design inquiries and converts lead forms into project opportunities.
+* **`proposal`**: Manages the drafting, service breakdown, pricing, and client e-signing of project contracts. When accepted, it automatically bootstraps a new project workspace.
+* **`project-stage`**: Manages milestones, stage status updates, task tracking, and milestone percentages.
+* **`team`**: Handles delegating architects, designers, and drafters to specific active projects.
+
+### 4. `refund` (Sensitive Financial Claims)
+Manages financial refund workflows and bank credentials.
+* **Purpose**: Allows clients to submit refund claims and manage routing/account details securely.
+* **Security & Cryptography**: Uses a global **AES-256-GCM authenticated encryption** system. Bank account and routing numbers are automatically encrypted at rest in the database and decrypted seamlessly on-the-fly upon authorized admin retrieval.
+
+### 5. `financial` (Budget Planning & Metrics)
+The business intelligence engine of the system.
+* **Purpose**: Calculates complex project finances, actual vs. target labor hours, overhead expenses, and project margins.
+* **Integrations**: Integrates directly with the **Mercury Banking API** for real-time financial tracking and disbursement data.
+
+### 6. `payment` (Stripe Billing Engine)
+Seamless payment processing gateway.
+* **Purpose**: Generates Stripe checkout sessions, handles invoices, and manages multi-stage client payments.
+* **Stripe Webhook Handler**: Securely validates and parses incoming Stripe payment event webhooks to automatically mark invoices as paid and transition project phases.
+
+### 7. `media` (Cloudinary Asset Delivery)
+Manages static media assets and interactive web features.
+* **Purpose**: Handles file upload pipelines, compresses assets, and hosts home page hero templates.
+* **CDN Strategy**: Powered by a custom **Cloudinary upload strategy** with optimized image/video processing pipelines.
+
+### 8. `notification` (Real-Time Communication)
+Global system notifications.
+* **Purpose**: Triggers real-time dashboard notifications and automated transactional HTML emails (via Nodemailer) for actions like refund status shifts, proposal signatures, and milestone approvals.
+
+---
+
+## 🔒 Crucial Security Policies
+
+### 1. Environment Variable Protection
+* **NEVER** commit `.env` files to git. `.gitignore` is pre-configured to ignore all local environment configurations.
+* **Secret Rotation**: All high-risk credentials (Stripe, Mercury, Neon DB, SMTP, JWT Secrets) have been rotated. Keep keys locked down in the server's vault.
+
+### 2. Encryption at Rest
+All bank credentials are encrypted using standard AES-256-GCM. 
+* Encryption key must be a **32-byte (64-character) hex string**.
+* If `ENCRYPTION_KEY` is not present, the system falls back to a development key and prints a security warning to the console. **Make sure this is set in production.**
+
+---
+
+## 🛠️ Development & Deployment Quickstart
+
+### Local Setup
+1. **Clone & Install**:
+   ```bash
+   npm install
+   ```
+2. **Setup Database**:
+   Configure `DATABASE_URL` in `.env` and push the schema:
+   ```bash
+   npx prisma db push
+   ```
+3. **Run Dev Server**:
+   ```bash
+   npm run start:dev
+   ```
+
+### Code Quality Commands
+* **Run Linter**: `npm run lint`
+* **Strict Type Check**: `npx tsc --noEmit`
+* **Build Production Bundle**: `npm run build`
+
+### Production Docker Deployment (VPS)
+Rebuild and run the system using Docker Compose:
 ```bash
-# development
-$ npm run start
-
-# watch mode
-$ npm run start:dev
-
-# production mode
-$ npm run start:prod
+# Force compile and rebuild
+docker compose down
+docker compose up --build -d
 ```
-
-## Run tests
-
-```bash
-# unit tests
-$ npm run test
-
-# e2e tests
-$ npm run test:e2e
-
-# test coverage
-$ npm run test:cov
-```
-
-## Deployment
-
-When you're ready to deploy your NestJS application to production, there are some key steps you can take to ensure it runs as efficiently as possible. Check out the [deployment documentation](https://docs.nestjs.com/deployment) for more information.
-
-If you are looking for a cloud-based platform to deploy your NestJS application, check out [Mau](https://mau.nestjs.com), our official platform for deploying NestJS applications on AWS. Mau makes deployment straightforward and fast, requiring just a few simple steps:
-
-```bash
-$ npm install -g @nestjs/mau
-$ mau deploy
-```
-
-With Mau, you can deploy your application in just a few clicks, allowing you to focus on building features rather than managing infrastructure.
-
-## Resources
-
-Check out a few resources that may come in handy when working with NestJS:
-
-- Visit the [NestJS Documentation](https://docs.nestjs.com) to learn more about the framework.
-- For questions and support, please visit our [Discord channel](https://discord.gg/G7Qnnhy).
-- To dive deeper and get more hands-on experience, check out our official video [courses](https://courses.nestjs.com/).
-- Deploy your application to AWS with the help of [NestJS Mau](https://mau.nestjs.com) in just a few clicks.
-- Visualize your application graph and interact with the NestJS application in real-time using [NestJS Devtools](https://devtools.nestjs.com).
-- Need help with your project (part-time to full-time)? Check out our official [enterprise support](https://enterprise.nestjs.com).
-- To stay in the loop and get updates, follow us on [X](https://x.com/nestframework) and [LinkedIn](https://linkedin.com/company/nestjs).
-- Looking for a job, or have a job to offer? Check out our official [Jobs board](https://jobs.nestjs.com).
-
-## Support
-
-Nest is an MIT-licensed open source project. It can grow thanks to the sponsors and support by the amazing backers. If you'd like to join them, please [read more here](https://docs.nestjs.com/support).
-
-## Stay in touch
-
-- Author - [Kamil Myśliwiec](https://twitter.com/kammysliwiec)
-- Website - [https://nestjs.com](https://nestjs.com/)
-- Twitter - [@nestframework](https://twitter.com/nestframework)
-
-## License
-
-Nest is [MIT licensed](https://github.com/nestjs/nest/blob/master/LICENSE).
