@@ -6,6 +6,8 @@ import {
   Logger,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { NotificationService } from 'src/modules/notification/notification.service';
+import { clientProjectLink } from 'src/common/notification-links';
 import {
   User,
   ProposalStatus,
@@ -56,6 +58,7 @@ export class ProposalService {
     private prisma: PrismaService,
     private config: ConfigService,
     private mailer: MailerService,
+    private notificationService: NotificationService,
   ) { }
 
   private canManage(user: User): boolean {
@@ -288,7 +291,9 @@ export class ProposalService {
           },
         });
 
-        let order = 0;
+        // services are already sorted by `order`; carry that value through so the
+        // stage order in project management matches the proposal exactly.
+        let fallbackOrder = 1;
         for (const service of updatedProposal.services) {
           await tx.projectStage.create({
             data: {
@@ -296,7 +301,7 @@ export class ProposalService {
               name: service.name,
               description: service.description || `Service: ${service.name}`,
               status: StageStatus.NOT_STARTED,
-              order: order++,
+              order: service.order || fallbackOrder++,
               totalTasks: 5, // Default task count, can be updated later
               completedTasks: 0,
               progress: 0,
@@ -616,6 +621,10 @@ export class ProposalService {
             status: true,
             clientFirstName: true,
             clientLastName: true,
+            // Drives the Location column on the All Proposals table.
+            projectCity: true,
+            projectState: true,
+            projectCountry: true,
           },
         },
         user: {
@@ -800,6 +809,9 @@ export class ProposalService {
     const proposals = await this.prisma.proposal.findMany({
       where: {
         OR: [{ userId: user.id }, { clientEmail: user.email }],
+        // A DRAFT lives only in the PM dashboard until it is sent, so it must
+        // not surface to the client or count toward what they owe.
+        status: { not: ProposalStatus.DRAFT },
       },
       include: {
         services: {
@@ -1141,7 +1153,8 @@ export class ProposalService {
         amount: dto.cost,
         rate: dto.cost,
         quantity: 1,
-        order: maxOrder + 1,
+        timelineWeeks: dto.timelineWeeks ?? null,
+        order: dto.order ?? maxOrder + 1,
       },
     });
 
@@ -1151,6 +1164,56 @@ export class ProposalService {
       success: true,
       message: `Service "${dto.name}" added successfully to proposal`,
       data: service,
+    };
+  }
+
+  /**
+   * Replace the display order of a proposal's services in one shot. The PM sets
+   * the order in the Scope of Services step and every downstream view (review,
+   * contract, project management) reads `order` ascending.
+   */
+  async reorderServices(
+    proposalId: string,
+    items: { id: string; order: number }[],
+    user: User,
+  ) {
+    if (!this.canManage(user)) {
+      throw new ForbiddenException('Access denied');
+    }
+
+    const proposal = await this.prisma.proposal.findUnique({
+      where: { id: proposalId },
+      include: { services: { select: { id: true } } },
+    });
+
+    if (!proposal) {
+      throw new NotFoundException('Proposal not found');
+    }
+
+    const ownedIds = new Set(proposal.services.map((s) => s.id));
+    const unknown = items.filter((i) => !ownedIds.has(i.id));
+    if (unknown.length > 0) {
+      throw new BadRequestException(
+        'One or more services do not belong to this proposal',
+      );
+    }
+
+    await this.prisma.$transaction(
+      items.map((item) =>
+        this.prisma.proposalService.update({
+          where: { id: item.id },
+          data: { order: item.order },
+        }),
+      ),
+    );
+
+    return {
+      success: true,
+      message: 'Service order updated',
+      data: await this.prisma.proposalService.findMany({
+        where: { proposalId },
+        orderBy: { order: 'asc' },
+      }),
     };
   }
 
@@ -1389,9 +1452,16 @@ export class ProposalService {
       throw new NotFoundException('Proposal not found');
     }
 
-    if (proposal.status !== ProposalStatus.DRAFT) {
-      throw new BadRequestException('Only DRAFT proposals can be sent');
+    // DRAFT is the normal path; SENT is allowed so a proposal whose email
+    // failed can be re-sent instead of being stranded. Anything the client has
+    // already acted on stays locked.
+    const RESENDABLE: ProposalStatus[] = [ProposalStatus.DRAFT, ProposalStatus.SENT];
+    if (!RESENDABLE.includes(proposal.status)) {
+      throw new BadRequestException(
+        `A proposal that is ${proposal.status} can no longer be sent`,
+      );
     }
+    const isResend = proposal.status === ProposalStatus.SENT;
 
     if (proposal.services.length === 0) {
       throw new BadRequestException('Proposal must have at least one service');
@@ -1482,46 +1552,89 @@ export class ProposalService {
     );
     const proposalUrl = `${frontendUrl}/proposals/${id}`;
 
-    await this.mailer.sendMail({
-      to: proposal.clientEmail,
-      subject: `Proposal Ready: ${proposal.projectName}`,
-      html: `
-        <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
-          <h2 style="color: #2563eb;">New Proposal Available</h2>
-          <p>Dear ${proposal.clientName || 'Client'},</p>
-          <p>Your proposal for "<strong>${proposal.projectName}</strong>" is ready for review.</p>
+    // Everything below is a side effect. The proposal is already marked SENT,
+    // so none of it may abort the request - a mailer outage used to surface as
+    // a 500 even though the send had succeeded.
+    let emailSent = false;
+    if (!proposal.clientEmail) {
+      this.logger.warn(
+        `Proposal ${proposal.proposalNumber} has no client email - skipping notification email`,
+      );
+    } else {
+      try {
+      await this.mailer.sendMail({
+        to: proposal.clientEmail,
+        subject: `Proposal Ready: ${proposal.projectName}`,
+        html: `
+          <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+            <h2 style="color: #2563eb;">New Proposal Available</h2>
+            <p>Dear ${proposal.clientName || 'Client'},</p>
+            <p>Your proposal for "<strong>${proposal.projectName}</strong>" is ready for review.</p>
           
-          <div style="background: #f3f4f6; padding: 20px; border-radius: 8px; margin: 20px 0;">
-            <p><strong>Proposal Number:</strong> ${proposal.proposalNumber}</p>
-            <p><strong>Project:</strong> ${proposal.projectName}</p>
-            <p><strong>Services Included:</strong> ${proposal.services.length}</p>
-            ${Number(proposal.totalAmount) > 0 ? `<p><strong>Total Amount:</strong> $${Number(proposal.totalAmount).toFixed(2)}</p>` : ''}
+            <div style="background: #f3f4f6; padding: 20px; border-radius: 8px; margin: 20px 0;">
+              <p><strong>Proposal Number:</strong> ${proposal.proposalNumber}</p>
+              <p><strong>Project:</strong> ${proposal.projectName}</p>
+              <p><strong>Services Included:</strong> ${proposal.services.length}</p>
+              ${Number(proposal.totalAmount) > 0 ? `<p><strong>Total Amount:</strong> $${Number(proposal.totalAmount).toFixed(2)}</p>` : ''}
+            </div>
+          
+            <p>Please review and sign the proposal by clicking the button below:</p>
+          
+            <div style="text-align: center; margin: 30px 0;">
+              <a href="${proposalUrl}" 
+                 style="background: #2563eb; color: white; padding: 12px 24px; 
+                        text-decoration: none; border-radius: 6px; display: inline-block;">
+                Review & Sign Proposal
+              </a>
+            </div>
+          
+            <p>If you have any questions, please don't hesitate to contact us.</p>
+          
+            <p>Best regards,<br>Your Architecture Team</p>
           </div>
-          
-          <p>Please review and sign the proposal by clicking the button below:</p>
-          
-          <div style="text-align: center; margin: 30px 0;">
-            <a href="${proposalUrl}" 
-               style="background: #2563eb; color: white; padding: 12px 24px; 
-                      text-decoration: none; border-radius: 6px; display: inline-block;">
-              Review & Sign Proposal
-            </a>
-          </div>
-          
-          <p>If you have any questions, please don't hesitate to contact us.</p>
-          
-          <p>Best regards,<br>Your Architecture Team</p>
-        </div>
-      `,
-      text: `Proposal for "${proposal.projectName}" is ready.\nReview & sign here: ${proposalUrl}`,
-    });
+        `,
+        text: `Proposal for "${proposal.projectName}" is ready.\nReview & sign here: ${proposalUrl}`,
+      });
+        emailSent = true;
+      } catch (error) {
+        this.logger.error(
+          `Failed to email proposal ${proposal.proposalNumber} to ${proposal.clientEmail}`,
+          error as any,
+        );
+      }
+    }
 
+    // In-app notification alongside the email, deep-linked so one click opens
+    // the contract for signing.
+    if (proposal.userId && proposal.projectRequestId) {
+      try {
+        await this.notificationService.createNotification({
+          userId: proposal.userId,
+          type: 'PROPOSAL_SENT',
+          title: 'Contract ready to sign',
+          message: `The proposal for "${proposal.projectName}" (${proposal.proposalNumber}) is ready for your review and signature.`,
+          link: clientProjectLink(proposal.projectRequestId, 'proposals', proposal.id),
+          projectRequestId: proposal.projectRequestId,
+        });
+      } catch (error) {
+        this.logger.error(
+          `Failed to notify client about proposal ${proposal.proposalNumber}`,
+          error as any,
+        );
+      }
+    }
 
     this.logger.log(
-      `Proposal ${proposal.proposalNumber} sent to ${proposal.clientEmail}`,
+      `Proposal ${proposal.proposalNumber} ${isResend ? 're-sent' : 'sent'} to ${proposal.clientEmail || 'no email on file'}`,
     );
 
-    return { message: 'Proposal sent to client successfully' };
+    return {
+      message: emailSent
+        ? `Proposal ${isResend ? 're-sent' : 'sent'} to client successfully`
+        : `Proposal ${isResend ? 're-sent' : 'sent'}, but the notification email could not be delivered`,
+      emailSent,
+      isResend,
+    };
   }
 
   async updateProposalStatus(

@@ -28,6 +28,7 @@ import {
   AddServiceWithApprovalDto,
   ApproveServiceDto,
 } from './dto/service-approval.dto';
+import { ReorderServicesDto } from './dto/reorder-services.dto';
 
 @Controller('proposals')
 @UseGuards(JwtAuthGuard, RolesGuard)
@@ -101,6 +102,20 @@ export class ProposalController {
     @CurrentUser() user: client.User,
   ) {
     return this.proposalService.addService(id, addProposalServiceDto, user);
+  }
+
+  @Patch(':id/services/reorder')
+  @Roles(
+    client.UserRole.SUPER_ADMIN,
+    client.UserRole.ADMIN,
+    client.UserRole.PROJECT_MANAGER,
+  )
+  reorderServices(
+    @Param('id') id: string,
+    @Body() dto: ReorderServicesDto,
+    @CurrentUser() user: client.User,
+  ) {
+    return this.proposalService.reorderServices(id, dto.items, user);
   }
 
   @Post(':id/send')

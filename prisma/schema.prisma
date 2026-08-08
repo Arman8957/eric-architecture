@@ -56,6 +56,25 @@ enum StageStatus {
   ON_HOLD
 }
 
+enum ContinentType {
+  ASIA
+  EUROPE
+  NORTH_AMERICA
+  SOUTH_AMERICA
+  AFRICA
+  AUSTRALIA
+}
+
+enum ClimateType {
+  ALPINE
+  CONTINENTAL
+  TROPICAL
+  DESERT
+  POLAR
+  MARINE
+  TEMPERATE
+}
+
 enum ProjectCategory {
   RESIDENTIAL
   COMMERCIAL
@@ -63,6 +82,10 @@ enum ProjectCategory {
   LANDSCAPE
   INTERIOR
   URBAN_PLANNING
+  MIXED_USE
+  TENANT_IMPROVEMENT
+  REMODEL_ADDITION
+  OTHER
 }
 
 enum AssetType {
@@ -96,6 +119,13 @@ enum RequestStatus {
   SCHEDULED
   COMPLETED
   CANCELLED
+}
+
+enum MeetingStatus {
+  PENDING_CLIENT_REQUEST // client proposed a time, awaiting PM response
+  PENDING_RESPONSE // PM proposed a time, awaiting client response
+  ACCEPTED // locked/confirmed
+  DECLINED // rejected, sender may re-propose
 }
 
 enum MediaContentType {
@@ -157,6 +187,27 @@ model User {
   googleId             String?            @unique
   avatar               String?
   role                 UserRole           @default(USER)
+
+  // ── Profile ────────────────────────────────────────────────────────────
+  // Maintained from Profile Settings. When a client starts a new project from
+  // the portal these prefill the Client Information step.
+  firstName     String?
+  middleInitial String?
+  lastName      String?
+  phoneNumber   String?
+  companyName   String?
+  bio           String?  @db.Text
+  streetAddress String?
+  city          String?
+  stateRegion   String?
+  zipCode       String?
+  country       String?
+
+  // ── Notification preferences ───────────────────────────────────────────
+  emailNotifications Boolean @default(true)
+  projectUpdates     Boolean @default(true)
+  securityAlerts     Boolean @default(true)
+
   isActive             Boolean            @default(true)
   lastLoginAt          DateTime?
   createdAt            DateTime           @default(now())
@@ -202,6 +253,7 @@ model User {
   refundRequests       RefundRequest[]
   approvedRefunds      RefundRequest[]    @relation("ApprovedRefunds")
   payments             Payment[]
+  createdAttachments   ProjectAttachment[]
 
   @@index([email])
   @@index([googleId])
@@ -220,7 +272,7 @@ model MeetingLink {
   sentByUserId String
   sentByUser   User   @relation("MeetingLinksSentBy", fields: [sentByUserId], references: [id])
 
-  meetingUrl  String
+  meetingUrl  String?
   title       String
   scheduledAt DateTime
   notes       String?
@@ -228,6 +280,13 @@ model MeetingLink {
   emailSentAt DateTime?
   createdAt   DateTime  @default(now())
   updatedAt   DateTime  @updatedAt
+
+  status MeetingStatus @default(PENDING_RESPONSE)
+
+  // Optional link to a specific project phase — null means this is the
+  // overall/initial meeting, non-null means a per-phase meeting.
+  stageId String?
+  stage   ProjectStage? @relation(fields: [stageId], references: [id])
 
   // Keep this one if you really need a third relation to User
   // (but most likely you can remove it — see alternatives below)
@@ -238,6 +297,8 @@ model MeetingLink {
   @@index([sentToUserId])
   @@index([sentByUserId])
   @@index([scheduledAt])
+  @@index([stageId])
+  @@index([status])
   @@map("meeting_links")
 }
 
@@ -266,6 +327,11 @@ model MediaContent {
   projectClient String?
   architect     String?
   photographer  String?
+
+  // world project specific fields
+  continent ContinentType?
+  climate   ClimateType?
+  
 
   // Portfolio specific
   category    ProjectCategory?
@@ -477,6 +543,8 @@ model ProjectRequest {
   state                       String?
   city                        String?
   streetAddress               String?
+  aptSuiteUnit                String?
+  zipCode                     String?
   additionalComments          String?
   // Project Details
   projectName                 String
@@ -485,6 +553,7 @@ model ProjectRequest {
   projectState                String?
   projectCity                 String?
   projectStreetAddress        String?
+  projectAptSuiteUnit         String?
   projectZipCode              String?
   serviceType                 ServiceType      @default(NEW_CONSTRUCTION)
   projectCategory             ProjectCategory?
@@ -533,8 +602,11 @@ model ProjectRequest {
   teams                Team[]             @relation("ProjectTeams")
   isProjectStarted     Boolean            @default(false)
   projectStartedAt     DateTime?
+  projectCompletedAt   DateTime?
+  totalDurationMonths  Float?
   refundRequests       RefundRequest[]
   payments             Payment[]
+  attachments          ProjectAttachment[]
 
   @@index([email])
   @@index([status])
@@ -544,6 +616,24 @@ model ProjectRequest {
   @@index([isArchived])
   @@index([assignedManagerId])
   @@map("project_requests")
+}
+
+model ProjectAttachment {
+  id               String         @id @default(uuid())
+  projectRequestId String
+  projectRequest   ProjectRequest @relation(fields: [projectRequestId], references: [id], onDelete: Cascade)
+
+  title String
+  url   String
+
+  createdById String
+  createdBy   User   @relation(fields: [createdById], references: [id])
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([projectRequestId])
+  @@map("project_attachments")
 }
 
 model Proposal {
@@ -665,8 +755,15 @@ model AmendmentRequest {
   // Request Details
   projectName String
   description String @db.Text
-  services    String @db.Text
-  urgency     String // "LOW", "MEDIUM", "HIGH", "URGENT"
+
+  // Client-supplied scope estimate for the requested extension
+  squareFootage   String? // numeric portion, e.g. "1200"
+  projectSizeUnit String? // "sqf" | "sqm"
+  budgetRange     String?
+
+  // Legacy intake fields — no longer collected from the client form
+  services String? @db.Text
+  urgency  String? // "LOW", "MEDIUM", "HIGH", "URGENT"
 
   // Status
   status AmendmentStatus @default(PENDING)
@@ -792,6 +889,12 @@ model ProjectStage {
   notes String? @db.Text
   driveLink String? // Optional Google Drive link for deliverables
 
+  // Phase progress meeting: once the PM completes the phase (and the client has
+  // paid it, on an installment plan) the client may book a walkthrough call.
+  // The PM can turn the requirement off per phase; the client can also opt out.
+  meetingRequired      Boolean @default(true)
+  clientBypassedMeeting Boolean @default(false)
+
   // Timer tracking for phase time
   activeTimerStart DateTime? // when timer was last started
   accumulatedTime  Int       @default(0) // total seconds accumulated
@@ -804,6 +907,7 @@ model ProjectStage {
   projectRequestId String?
 
   deadlineReminders DeadlineReminder[]
+  meetingLinks      MeetingLink[]
 
   @@index([proposalId])
   @@index([status])
@@ -1189,6 +1293,10 @@ model Timecard {
   rejectedAt    DateTime?
   rejectedBy    String?
   rejectionNote String?
+  // Accountants archive approved timecards once payroll has been processed.
+  isArchived    Boolean        @default(false)
+  archivedAt    DateTime?
+  archivedBy    String?
   entries         TimecardEntry[]
   billableEntries TimecardBillableEntry[]
   createdAt       DateTime       @default(now())
@@ -1199,6 +1307,7 @@ model Timecard {
   @@index([status])
   @@index([weekEnding])
   @@index([payPeriod, payYear])
+  @@index([isArchived])
   @@map("timecards")
 }
 
@@ -1322,6 +1431,11 @@ model RefundRequest {
   approvedAt        DateTime?
   rejectedAt        DateTime?
   rejectionReason   String?
+
+  // Set when the accountant confirms the money actually left the bank.
+  // Until then, approved refunds trigger a daily reminder notification.
+  refundProcessedAt DateTime?
+  refundProcessedBy String?
 
   createdAt         DateTime     @default(now())
   updatedAt         DateTime     @updatedAt

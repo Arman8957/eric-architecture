@@ -11,11 +11,70 @@ import { CreateOverheadExpenseDto, UpdateOverheadExpenseDto } from './dto/overhe
 import { CreateTimecardDto, UpdateTimecardDto, RejectTimecardDto } from './dto/timecard.dto';
 import { UpdateEmployeeProfileDto } from './dto/employee-profile.dto';
 import { Prisma, TimecardStatus, UserRole, ProposalStatus } from '@prisma/client';
+import { NotificationService } from '../notification/notification.service';
+
+const MS_PER_DAY = 1000 * 60 * 60 * 24;
+/** Average number of days per month - the constant used for all project-duration math. */
+const DAYS_PER_MONTH = 30.44;
+
+/**
+ * A denied timecard is kicked back to the employee rather than archived, so it
+ * stays editable and resubmittable alongside drafts.
+ */
+const EDITABLE_TIMECARD_STATUSES: TimecardStatus[] = [
+  TimecardStatus.DRAFT,
+  TimecardStatus.REJECTED,
+];
+
+/**
+ * What a single overhead expense costs per month. One-time and yearly costs
+ * are amortised across 12 months so every frequency is comparable.
+ */
+const monthlyEquivalentOf = (expense: { amount: any; frequency: string }) => {
+  const amount = Number(expense.amount) || 0;
+  switch (expense.frequency) {
+    case 'monthly':
+      return amount;
+    case 'semi-annually':
+      return amount / 6;
+    case 'yearly':
+    case 'one-time':
+      return amount / 12;
+    default:
+      return 0;
+  }
+};
+
+/** SiteSettings key holding the date the firm's first pay period starts. */
+const PAYROLL_START_DATE_KEY = 'PAYROLL_START_DATE';
+
+/** Employee fields the payroll table and tax breakdown need. */
+const PAYROLL_USER_SELECT = {
+  id: true,
+  name: true,
+  email: true,
+  role: true,
+  employeeProfile: {
+    select: {
+      hourlyRate: true,
+      salary: true,
+      state: true,
+      utilizationRate: true,
+      taxPercentage: true,
+      taxes: {
+        select: { id: true, taxType: true, customName: true, percentage: true },
+      },
+    },
+  },
+} as const;
 
 @Injectable()
 export class FinancialService {
   private readonly logger = new Logger(FinancialService.name);
-  constructor(private prisma: PrismaService) { }
+  constructor(
+    private prisma: PrismaService,
+    private notification: NotificationService,
+  ) { }
 
   // ═══════════════════════════════════════════════════
   // EMPLOYEE PROFILE
@@ -131,88 +190,128 @@ export class FinancialService {
   // FINANCIAL OVERVIEW
   // ═══════════════════════════════════════════════════
 
-  async getFinancialOverview() {
-    // 1. Calculate Labor (all employee salaries + tax)
-    const employees = await this.prisma.employeeProfile.findMany({
-      include: {
-        user: {
-          select: {
-            name: true,
-            role: true,
-            isActive: true,
-            timecards: {
-              where: { status: TimecardStatus.APPROVED },
-              orderBy: { weekEnding: 'desc' },
-              take: 1,
-            }
-          }
-        },
-        taxes: true,
-      },
-    });
+  /**
+   * Firm-wide financials.
+   *
+   * `scope` decides what is counted:
+   *   'all'  - every project ever, archived included, and every approved
+   *            timecard. The running total for the whole company.
+   *   'year' - only the given year. A project belongs to the year it was
+   *            *completed* in; one still running belongs to the year it
+   *            started. So a project started in 2026 and finished in 2027
+   *            counts toward 2027.
+   */
+  async getFinancialOverview(
+    scope: 'all' | 'year' = 'year',
+    year: number = new Date().getFullYear(),
+  ) {
+    const isYearScope = scope === 'year';
+    const yearStart = new Date(year, 0, 1);
+    const yearEnd = new Date(year, 11, 31, 23, 59, 59, 999);
 
-    let totalLaborCost = 0;
-    let totalSalaries = 0;
-    let totalTaxes = 0;
-
-    const employeeDetails = employees.map((emp: any) => {
-      // Automated Utilization Calculation
-      // Formula: (Billable / (Billable + Non-Billable)) * 100
-      // We look at the most recent approved non-empty timecard
-      const lastApprovedTimecard = emp.user?.timecards?.[0]; // Assuming ordered desc in findMany
-      let calculatedUtilization = emp.utilizationRate ? parseFloat(emp.utilizationRate) : 0;
-
-      if (lastApprovedTimecard) {
-        const billable = Number(lastApprovedTimecard.billableHours || 0);
-        const total = Number(lastApprovedTimecard.totalHours || 0);
-        if (total > 0) {
-          calculatedUtilization = (billable / total) * 100;
+    // A project counts toward a year by its completion date, falling back to
+    // when it started while it is still in flight.
+    const projectYearFilter: any = isYearScope
+      ? {
+          OR: [
+            { projectCompletedAt: { gte: yearStart, lte: yearEnd } },
+            {
+              projectCompletedAt: null,
+              OR: [
+                { projectStartedAt: { gte: yearStart, lte: yearEnd } },
+                { projectStartedAt: null, createdAt: { gte: yearStart, lte: yearEnd } },
+              ],
+            },
+          ],
         }
-      }
+      : {};
 
-      const salary = Number(emp.salary || 0);
-
-      // Calculate tax from new EmployeeTax model, fallback to old taxPercentage
-      let totalTaxPct = 0;
-      if (emp.taxes && emp.taxes.length > 0) {
-        totalTaxPct = emp.taxes.reduce((sum: number, t: any) => sum + Number(t.percentage || 0), 0);
-      } else {
-        totalTaxPct = Number(emp.taxPercentage || 0);
-      }
-
-      const taxAmount = salary * (totalTaxPct / 100);
-      const totalCost = salary + taxAmount;
-      totalSalaries += salary;
-      totalTaxes += taxAmount;
-      totalLaborCost += totalCost;
-      return {
-        id: emp.id,
-        userId: emp.userId,
-        name: emp.user?.name || 'Unknown',
-        role: emp.user?.role,
-        salary,
-        taxPercentage: totalTaxPct,
-        taxAmount,
-        totalCost,
-        utilizationRate: `${calculatedUtilization.toFixed(1)}%`,
-        hourlyRate: Number(emp.hourlyRate || 0),
-        state: emp.state,
-        taxes: emp.taxes || [],
-      };
+    // 1. Labor comes from APPROVED timecards - what the firm actually paid for
+    // hours worked - not from headline salaries on the employee profile.
+    const approvedTimecards = await this.prisma.timecard.findMany({
+      where: {
+        status: TimecardStatus.APPROVED,
+        ...(isYearScope ? { payYear: year } : {}),
+      },
+      include: { user: { select: PAYROLL_USER_SELECT } },
     });
+
+    const employees = await this.prisma.employeeProfile.findMany({
+      include: { user: { select: { id: true, name: true, role: true, isActive: true } }, taxes: true },
+    });
+
+    let totalSalaries = 0; // gross pay across approved timecards
+    let totalTaxes = 0;    // tax withheld from that gross
+    let firmBillableHours = 0;
+    let firmTotalHours = 0;
+
+    // Aggregate per employee so the breakdown shows one row per person.
+    const byEmployee = new Map<string, any>();
+
+    for (const timecard of approvedTimecards) {
+      const profile = timecard.user?.employeeProfile as any;
+      const hourlyRate = Number(profile?.hourlyRate || 0);
+      const hours = Number(timecard.totalHours || 0);
+      const gross = hours * hourlyRate;
+
+      const taxPct =
+        profile?.taxes?.length > 0
+          ? profile.taxes.reduce((sum: number, t: any) => sum + Number(t.percentage || 0), 0)
+          : Number(profile?.taxPercentage || 0);
+      const tax = gross * (taxPct / 100);
+
+      totalSalaries += gross;
+      totalTaxes += tax;
+      firmBillableHours += Number(timecard.billableHours || 0);
+      firmTotalHours += hours;
+
+      const key = timecard.userId;
+      const entry = byEmployee.get(key) || {
+        id: key,
+        userId: key,
+        name: timecard.user?.name || 'Unknown',
+        role: timecard.user?.role,
+        hourlyRate,
+        taxPercentage: taxPct,
+        grossPay: 0,
+        taxAmount: 0,
+        netPay: 0,
+        billableHours: 0,
+        totalHours: 0,
+      };
+      entry.grossPay += gross;
+      entry.taxAmount += tax;
+      entry.netPay = entry.grossPay - entry.taxAmount;
+      entry.billableHours += Number(timecard.billableHours || 0);
+      entry.totalHours += hours;
+      byEmployee.set(key, entry);
+    }
+
+    const employeeDetails = Array.from(byEmployee.values())
+      .map((e) => ({
+        ...e,
+        // Net pay is what the employee is owed - the bar in Employee Costs.
+        totalCost: e.netPay,
+        utilizationRate: `${(e.totalHours > 0 ? (e.billableHours / e.totalHours) * 100 : 0).toFixed(1)}%`,
+      }))
+      .sort((a, b) => b.netPay - a.netPay);
+
+    // Gross pay is the firm's labour cost; net is the employee's take-home.
+    const totalLaborCost = totalSalaries;
+    const firmUtilization =
+      firmTotalHours > 0 ? (firmBillableHours / firmTotalHours) * 100 : 0;
 
     // 2. Calculate Overhead (expenses + project overhead from non-billable hours)
+    // The monthly figure is the *monthly equivalent* of every expense, matching
+    // the Overhead Expenses Management modal. One-time costs are amortised over
+    // 12 months like yearly ones - previously they were excluded here, which is
+    // why this read lower than the modal's "Monthly Equivalent".
     const overheadExpenses = await this.prisma.overheadExpense.findMany();
-    let monthlyOverheadExpenses = 0;
-    let oneTimeOverheadExpenses = 0;
-    overheadExpenses.forEach((exp) => {
-      const amount = Number(exp.amount);
-      if (exp.frequency === 'monthly') monthlyOverheadExpenses += amount;
-      else if (exp.frequency === 'semi-annually') monthlyOverheadExpenses += amount / 6;
-      else if (exp.frequency === 'yearly') monthlyOverheadExpenses += amount / 12;
-      else if (exp.frequency === 'one-time') oneTimeOverheadExpenses += amount;
-    });
-    const annualOverheadExpenses = monthlyOverheadExpenses * 12 + oneTimeOverheadExpenses;
+    const monthlyOverheadExpenses = overheadExpenses.reduce(
+      (sum, exp) => sum + monthlyEquivalentOf(exp),
+      0,
+    );
+    const annualOverheadExpenses = monthlyOverheadExpenses * 12;
 
     // Get Firm Billing Rate for project overhead calculation
     const billingRateRes = await this.getBillingRate();
@@ -222,7 +321,8 @@ export class FinancialService {
     // Active = non-archived project requests with accepted proposals
     const activeProjectRequests = await this.prisma.projectRequest.findMany({
       where: {
-        isArchived: false,
+        // All Time keeps every project in the calculator, archived included.
+        ...(isYearScope ? { ...projectYearFilter } : {}),
         proposals: { some: { status: 'ACCEPTED' } },
       },
       include: {
@@ -306,7 +406,9 @@ export class FinancialService {
     const activeProposals = await this.prisma.proposal.findMany({
       where: {
         status: 'ACCEPTED',
-        projectRequest: { isArchived: false },
+        ...(isYearScope
+          ? { projectRequestId: { in: activeProjectIds } }
+          : {}),
       },
       select: { totalAmount: true, projectName: true, proposalType: true },
     });
@@ -325,7 +427,7 @@ export class FinancialService {
     const approvedRefunds = await this.prisma.refundRequest.findMany({
       where: {
         refundStatus: 'APPROVED',
-        projectRequest: { isArchived: false },
+        ...(isYearScope ? { projectRequestId: { in: activeProjectIds } } : {}),
       },
       select: { amount: true },
     });
@@ -340,23 +442,36 @@ export class FinancialService {
     const totalProfit = totalRevenue - totalOverhead - totalLaborCost;
 
     // 5. Expense breakdown by category
+    // Same monthly-equivalent basis as above, so the percentages here match the
+    // modal's Category Breakdown (one-time costs were previously dropped).
     const categoryBreakdown: Record<string, number> = {};
     overheadExpenses.forEach((exp) => {
-      const amount = Number(exp.amount);
-      let monthly = 0;
-      if (exp.frequency === 'monthly') monthly = amount;
-      else if (exp.frequency === 'semi-annually') monthly = amount / 6;
-      else if (exp.frequency === 'yearly') monthly = amount / 12;
-      categoryBreakdown[exp.category] = (categoryBreakdown[exp.category] || 0) + monthly;
+      categoryBreakdown[exp.category] =
+        (categoryBreakdown[exp.category] || 0) + monthlyEquivalentOf(exp);
+    });
+
+    // Completed projects inside the current scope.
+    const completedProjectCount = await this.prisma.projectRequest.count({
+      where: {
+        status: 'COMPLETED',
+        ...(isYearScope ? { ...projectYearFilter } : {}),
+      },
     });
 
     return {
+      scope: { mode: scope, year: isYearScope ? year : null },
       labor: {
         total: totalLaborCost,
         totalSalaries,
         totalTaxes,
+        totalNetPay: totalSalaries - totalTaxes,
+        // Headcount is every employee on the books, not only those who filed
+        // a timecard in this window.
         employeeCount: employees.length,
         employees: employeeDetails,
+        billableHours: firmBillableHours,
+        totalHours: firmTotalHours,
+        utilization: firmUtilization,
       },
       overhead: {
         total: totalOverhead,
@@ -372,7 +487,9 @@ export class FinancialService {
         originalRevenue,
         amendmentRevenue,
         totalRefunds,
-        activeProjectCount: activeProposals.length,
+        activeProjectCount: activeProjectRequests.length,
+        completedProjectCount,
+        proposalCount: activeProposals.length,
         amendmentCount: activeProposals.filter((p) => p.proposalType === 'AMENDMENT').length,
       },
       projectFinancials: {
@@ -403,10 +520,12 @@ export class FinancialService {
           where: { status: 'ACCEPTED' },
           select: {
             id: true,
+            proposalNumber: true,
             totalAmount: true,
             projectName: true,
             clientName: true,
           },
+          orderBy: { createdAt: 'asc' },
           take: 1,
         },
         stages: {
@@ -456,6 +575,13 @@ export class FinancialService {
         id: project.id,
         clientName,
         projectName: project.projectName,
+        // Project number shown in the tracking table (falls back to the short id
+        // when no contract has been accepted yet).
+        projectNumber: acceptedProposal?.proposalNumber || null,
+        status: project.status,
+        isProjectStarted: project.isProjectStarted,
+        projectStartedAt: project.projectStartedAt,
+        projectCompletedAt: project.projectCompletedAt,
         phases: project.stages,
         totalAmount: originalAmount + amendmentAmount,
         originalAmount,
@@ -839,6 +965,7 @@ export class FinancialService {
       remainingBudget,
       totalLaborCost,
       projectOverheadAllocation: totalProjectOverhead,
+      totalProjectBillableHours,
       totalProjectNonBillableHours,
       totalProjectCost,
       profit,
@@ -953,24 +1080,31 @@ export class FinancialService {
     });
   }
 
-  async getTimecardById(id: string) {
+  /**
+   * The payload carries the employee's pay rate, salary and tax lines, so it is
+   * limited to the timecard's owner and the roles that review payroll.
+   */
+  async getTimecardById(id: string, requester?: { id: string; role: UserRole }) {
     const timecard = await this.prisma.timecard.findUnique({
       where: { id },
       include: {
         entries: true,
         billableEntries: true,
-        user: {
-          select: {
-            name: true,
-            email: true,
-            employeeProfile: {
-              select: { hourlyRate: true },
-            },
-          },
-        },
+        user: { select: PAYROLL_USER_SELECT },
       },
     });
     if (!timecard) throw new NotFoundException('Timecard not found');
+
+    if (requester) {
+      const isReviewer = ([
+        UserRole.SUPER_ADMIN,
+        UserRole.ADMIN,
+        UserRole.FINANCE,
+      ] as UserRole[]).includes(requester.role);
+      if (!isReviewer && timecard.userId !== requester.id)
+        throw new ForbiddenException('Not your timecard');
+    }
+
     return timecard;
   }
 
@@ -979,8 +1113,10 @@ export class FinancialService {
     if (!timecard) throw new NotFoundException('Timecard not found');
     if (timecard.userId !== userId)
       throw new ForbiddenException('Not your timecard');
-    if (timecard.status !== TimecardStatus.DRAFT)
-      throw new BadRequestException('Can only edit draft timecards');
+    // REJECTED cards are kicked back to the employee to correct in place, so
+    // they stay editable without having to be rebuilt from scratch.
+    if (!EDITABLE_TIMECARD_STATUSES.includes(timecard.status))
+      throw new BadRequestException('Can only edit draft or rejected timecards');
 
     // Get user's hourly rate
     const profile = await this.prisma.employeeProfile.findUnique({
@@ -1077,14 +1213,18 @@ export class FinancialService {
     if (!timecard) throw new NotFoundException('Timecard not found');
     if (timecard.userId !== userId)
       throw new ForbiddenException('Not your timecard');
-    if (timecard.status !== TimecardStatus.DRAFT)
-      throw new BadRequestException('Can only submit draft timecards');
+    if (!EDITABLE_TIMECARD_STATUSES.includes(timecard.status))
+      throw new BadRequestException('Can only submit draft or rejected timecards');
 
     return this.prisma.timecard.update({
       where: { id },
       data: {
         status: TimecardStatus.SUBMITTED,
         submittedAt: new Date(),
+        // Clear the previous denial once the corrected card is resubmitted.
+        rejectedAt: null,
+        rejectedBy: null,
+        rejectionNote: null,
       },
       include: {
         entries: true,
@@ -1096,21 +1236,18 @@ export class FinancialService {
 
   async getPendingTimecards() {
     return this.prisma.timecard.findMany({
-      where: { status: TimecardStatus.SUBMITTED },
+      where: { status: TimecardStatus.SUBMITTED, isArchived: false },
       include: {
         entries: true,
         billableEntries: true,
-        user: {
-          select: {
-            name: true,
-            email: true,
-            role: true,
-            employeeProfile: { select: { hourlyRate: true } },
-          },
-        },
+        user: { select: PAYROLL_USER_SELECT },
       },
       orderBy: { submittedAt: 'desc' },
     });
+  }
+
+  private formatPeriodLabel(timecard: { payPeriod: number; payYear: number }) {
+    return `Period ${timecard.payPeriod}, ${timecard.payYear}`;
   }
 
   async approveTimecard(id: string, approvedByUserId: string) {
@@ -1119,7 +1256,7 @@ export class FinancialService {
     if (timecard.status !== TimecardStatus.SUBMITTED)
       throw new BadRequestException('Can only approve submitted timecards');
 
-    return this.prisma.timecard.update({
+    const updated = await this.prisma.timecard.update({
       where: { id },
       data: {
         status: TimecardStatus.APPROVED,
@@ -1132,6 +1269,16 @@ export class FinancialService {
         user: { select: { name: true, email: true } },
       },
     });
+
+    await this.notification.createNotification({
+      userId: timecard.userId,
+      type: 'TIMECARD_APPROVED',
+      title: 'Timecard approved',
+      message: `Your timecard for ${this.formatPeriodLabel(timecard)} has been approved.`,
+      link: '/dashboard/timecards',
+    });
+
+    return updated;
   }
 
   async rejectTimecard(id: string, rejectedByUserId: string, dto: RejectTimecardDto) {
@@ -1140,13 +1287,18 @@ export class FinancialService {
     if (timecard.status !== TimecardStatus.SUBMITTED)
       throw new BadRequestException('Can only reject submitted timecards');
 
-    return this.prisma.timecard.update({
+    // A denial has to explain itself - the employee corrects against this note.
+    const reason = dto.rejectionNote?.trim();
+    if (!reason)
+      throw new BadRequestException('A reason is required when denying a timecard');
+
+    const updated = await this.prisma.timecard.update({
       where: { id },
       data: {
         status: TimecardStatus.REJECTED,
         rejectedAt: new Date(),
         rejectedBy: rejectedByUserId,
-        rejectionNote: dto.rejectionNote || null,
+        rejectionNote: reason,
       },
       include: {
         entries: true,
@@ -1154,6 +1306,106 @@ export class FinancialService {
         user: { select: { name: true, email: true } },
       },
     });
+
+    await this.notification.createNotification({
+      userId: timecard.userId,
+      type: 'TIMECARD_REJECTED',
+      title: 'Timecard denied - action needed',
+      message: `Your timecard for ${this.formatPeriodLabel(timecard)} was denied: ${reason}. Correct it and resubmit.`,
+      link: '/dashboard/timecards',
+    });
+
+    return updated;
+  }
+
+  /**
+   * Archive approved timecards once payroll has been processed. Archived cards
+   * drop out of the payroll table unless explicitly requested.
+   */
+  async archiveTimecards(ids: string[], archivedByUserId: string) {
+    if (!ids?.length)
+      throw new BadRequestException('Select at least one timecard to archive');
+
+    const timecards = await this.prisma.timecard.findMany({
+      where: { id: { in: ids } },
+      select: { id: true, status: true },
+    });
+
+    const notApproved = timecards.filter(
+      (tc) => tc.status !== TimecardStatus.APPROVED,
+    );
+    if (notApproved.length)
+      throw new BadRequestException('Only approved timecards can be archived');
+
+    const result = await this.prisma.timecard.updateMany({
+      where: { id: { in: ids }, status: TimecardStatus.APPROVED },
+      data: {
+        isArchived: true,
+        archivedAt: new Date(),
+        archivedBy: archivedByUserId,
+      },
+    });
+
+    return { archived: result.count };
+  }
+
+  async unarchiveTimecards(ids: string[]) {
+    if (!ids?.length)
+      throw new BadRequestException('Select at least one timecard to restore');
+
+    const result = await this.prisma.timecard.updateMany({
+      where: { id: { in: ids } },
+      data: { isArchived: false, archivedAt: null, archivedBy: null },
+    });
+
+    return { restored: result.count };
+  }
+
+  // ═══════════════════════════════════════════════════
+  // PAYROLL CALENDAR
+  // ═══════════════════════════════════════════════════
+
+  /**
+   * The date the firm's very first bi-weekly pay period starts. Stored in
+   * SiteSettings so it can be corrected later; seeded on first read from the
+   * earliest SUPER_ADMIN account's creation date.
+   */
+  async getPayrollStartDate() {
+    const setting = await this.prisma.siteSettings.findUnique({
+      where: { key: PAYROLL_START_DATE_KEY },
+    });
+    if (setting?.value) {
+      return { payrollStartDate: new Date(setting.value).toISOString(), isSeeded: true };
+    }
+
+    const superAdmin = await this.prisma.user.findFirst({
+      where: { role: UserRole.SUPER_ADMIN },
+      orderBy: { createdAt: 'asc' },
+      select: { createdAt: true },
+    });
+    const seeded = superAdmin?.createdAt || new Date();
+
+    await this.prisma.siteSettings.upsert({
+      where: { key: PAYROLL_START_DATE_KEY },
+      update: {},
+      create: { key: PAYROLL_START_DATE_KEY, value: seeded.toISOString() },
+    });
+
+    return { payrollStartDate: seeded.toISOString(), isSeeded: false };
+  }
+
+  async setPayrollStartDate(date: string) {
+    const parsed = new Date(date);
+    if (Number.isNaN(parsed.getTime()))
+      throw new BadRequestException('Invalid payroll start date');
+
+    await this.prisma.siteSettings.upsert({
+      where: { key: PAYROLL_START_DATE_KEY },
+      update: { value: parsed.toISOString() },
+      create: { key: PAYROLL_START_DATE_KEY, value: parsed.toISOString() },
+    });
+
+    return { payrollStartDate: parsed.toISOString() };
   }
 
   async deleteTimecard(id: string, userId: string) {
@@ -1168,38 +1420,201 @@ export class FinancialService {
     return { message: 'Timecard deleted' };
   }
 
-  async getAllTimecards(status?: TimecardStatus) {
+  async getAllTimecards(status?: TimecardStatus, includeArchived = false) {
     return this.prisma.timecard.findMany({
-      where: status ? { status } : {},
+      where: {
+        ...(status ? { status } : {}),
+        ...(includeArchived ? {} : { isArchived: false }),
+      },
       include: {
         entries: true,
         billableEntries: true,
-        user: {
-          select: {
-            name: true,
-            email: true,
-            role: true,
-            employeeProfile: { select: { hourlyRate: true } },
-          },
-        },
+        user: { select: PAYROLL_USER_SELECT },
       },
       orderBy: { weekEnding: 'desc' },
     });
   }
 
-  async getFinancialHistory(projectId?: string) {
-    const months: { start: Date; end: Date; label: string; year: number; monthNum: number }[] = [];
+  /**
+   * Project timeline driving the financial chart and its stat cards.
+   *
+   *   Start Date  = when the project timer was pressed (projectStartedAt).
+   *                 Falls back to the project creation date when the timer has
+   *                 never been started, so the chart still has a window.
+   *   End Date    = when the final phase was marked complete
+   *                 (projectCompletedAt), or "now" while phases remain open.
+   *   Total Days  = End - Start, rounded UP to whole days.
+   *   Total Months = Total Days / 30.44   (average days per month)
+   */
+  private async getProjectTimeline(projectId: string) {
+    const project = await this.prisma.projectRequest.findUnique({
+      where: { id: projectId },
+      select: {
+        createdAt: true,
+        isProjectStarted: true,
+        projectStartedAt: true,
+        projectCompletedAt: true,
+      },
+    });
+    if (!project) return null;
+
+    const start = project.projectStartedAt || project.createdAt;
+    const end = project.projectCompletedAt || new Date();
+
+    const rawDays = (end.getTime() - start.getTime()) / MS_PER_DAY;
+    const totalDays = Math.max(1, Math.ceil(rawDays));
+    const totalMonths = totalDays / DAYS_PER_MONTH;
+
+    return {
+      start,
+      end,
+      totalDays,
+      totalMonths,
+      // Number of month buckets drawn on the chart's x-axis.
+      monthCount: Math.max(1, Math.ceil(totalMonths)),
+      isStarted: !!project.isProjectStarted,
+      isCompleted: !!project.projectCompletedAt,
+    };
+  }
+
+  /**
+   * Financial history for a single project.
+   *
+   * The x-axis spans the project's own months (not the last 12 calendar
+   * months), and every series is the project total spread evenly across
+   * Total Project Months so the chart always agrees with the stat cards:
+   *
+   *   Avg Monthly Revenue = Total Contract / Total Project Months
+   *   Avg Monthly Cost    = (Labor Cost + Project Overhead) / Total Project Months
+   *   Avg Monthly Profit  = Avg Monthly Revenue - Avg Monthly Cost
+   *   Avg Utilization     = Billable Hours / (Billable + Non-Billable Hours)
+   */
+  private async getProjectFinancialHistory(projectId: string) {
+    const timeline = await this.getProjectTimeline(projectId);
+    if (!timeline) return { history: [], summary: null };
+
+    let details: any = null;
+    try {
+      details = await this.getProjectFinancialDetails(projectId);
+    } catch {
+      // No accepted contract yet - fall through with zeroed totals.
+    }
+
+    const totalContract = Number(details?.projectCost || 0);
+    const laborCost = Number(details?.totalLaborCost || 0);
+    const projectOverhead = Number(details?.projectOverheadAllocation || 0);
+    const totalCost = laborCost + projectOverhead;
+
+    const billableHours = Number(details?.totalProjectBillableHours || 0);
+    const nonBillableHours = Number(details?.totalProjectNonBillableHours || 0);
+    const totalHours = billableHours + nonBillableHours;
+    const utilization = totalHours > 0 ? (billableHours / totalHours) * 100 : 0;
+
+    const avgMonthlyRevenue = totalContract / timeline.totalMonths;
+    const avgMonthlyCost = totalCost / timeline.totalMonths;
+    const avgMonthlyProfit = avgMonthlyRevenue - avgMonthlyCost;
+
+    // Label with the year too when the project spans more than one calendar year.
+    const spansYears =
+      timeline.start.getFullYear() !==
+      new Date(
+        timeline.start.getFullYear(),
+        timeline.start.getMonth() + timeline.monthCount - 1,
+        1,
+      ).getFullYear();
+
+    const history = Array.from({ length: timeline.monthCount }, (_, i) => {
+      const d = new Date(
+        timeline.start.getFullYear(),
+        timeline.start.getMonth() + i,
+        1,
+      );
+      const label = d.toLocaleString('default', { month: 'short' });
+      return {
+        month: spansYears ? `${label} '${String(d.getFullYear()).slice(-2)}` : label,
+        revenue: avgMonthlyRevenue,
+        laborCost: laborCost / timeline.totalMonths,
+        overheadCost: projectOverhead / timeline.totalMonths,
+        totalCost: avgMonthlyCost,
+        profit: avgMonthlyProfit,
+        utilization: Math.round(utilization),
+      };
+    });
+
+    return {
+      history,
+      summary: {
+        startDate: timeline.start.toISOString(),
+        endDate: timeline.end.toISOString(),
+        isStarted: timeline.isStarted,
+        isCompleted: timeline.isCompleted,
+        totalDays: timeline.totalDays,
+        totalMonths: timeline.totalMonths,
+        monthCount: timeline.monthCount,
+        totalContract,
+        laborCost,
+        projectOverhead,
+        totalCost,
+        billableHours,
+        nonBillableHours,
+        avgMonthlyRevenue,
+        avgMonthlyCost,
+        avgMonthlyProfit,
+        utilization,
+      },
+    };
+  }
+
+  /**
+   * Firm-wide history.
+   *
+   *   scope 'year' - Jan 1 to Dec 31 of that year.
+   *   scope 'all'  - from the month the first SUPER_ADMIN account was created
+   *                  through to the current month.
+   */
+  async getFinancialHistory(
+    projectId?: string,
+    scope: 'all' | 'year' = 'year',
+    year: number = new Date().getFullYear(),
+  ) {
+    if (projectId) {
+      return this.getProjectFinancialHistory(projectId);
+    }
+
     const now = new Date();
-    // Get last 12 months
-    for (let i = 11; i >= 0; i--) {
-      const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
-      months.push({
-        start: new Date(d.getFullYear(), d.getMonth(), 1),
-        end: new Date(d.getFullYear(), d.getMonth() + 1, 0, 23, 59, 59),
-        label: d.toLocaleString('default', { month: 'short' }),
-        year: d.getFullYear(),
-        monthNum: d.getMonth(),
+    let firstMonth: Date;
+    let lastMonth: Date;
+
+    if (scope === 'all') {
+      const firstAdmin = await this.prisma.user.findFirst({
+        where: { role: UserRole.SUPER_ADMIN },
+        orderBy: { createdAt: 'asc' },
+        select: { createdAt: true },
       });
+      const start = firstAdmin?.createdAt || new Date(now.getFullYear(), 0, 1);
+      firstMonth = new Date(start.getFullYear(), start.getMonth(), 1);
+      lastMonth = new Date(now.getFullYear(), now.getMonth(), 1);
+    } else {
+      firstMonth = new Date(year, 0, 1);
+      lastMonth = new Date(year, 11, 1);
+    }
+
+    const months: { start: Date; end: Date; label: string; year: number; monthNum: number }[] = [];
+    const spansYears = firstMonth.getFullYear() !== lastMonth.getFullYear();
+    const cursor = new Date(firstMonth);
+    // Guard against a runaway range if the seed date is ever wrong.
+    while (cursor <= lastMonth && months.length < 240) {
+      const label = cursor.toLocaleString('default', { month: 'short' });
+      months.push({
+        start: new Date(cursor.getFullYear(), cursor.getMonth(), 1),
+        end: new Date(cursor.getFullYear(), cursor.getMonth() + 1, 0, 23, 59, 59),
+        label: spansYears
+          ? `${label} '${String(cursor.getFullYear()).slice(-2)}`
+          : label,
+        year: cursor.getFullYear(),
+        monthNum: cursor.getMonth(),
+      });
+      cursor.setMonth(cursor.getMonth() + 1);
     }
 
     const history = await Promise.all(
@@ -1212,133 +1627,58 @@ export class FinancialService {
               gte: month.start,
               lte: month.end,
             },
-            ...(projectId && { projectRequestId: projectId }),
           },
         });
         const revenue = proposals.reduce((sum, p) => sum + Number(p.totalAmount || 0), 0);
 
-        // 2. Labor Costs
+        // 2. Labor Costs - all approved timecards (billable part)
         let laborCost = 0;
-        if (projectId) {
-          // Billable entries for THIS project
-          const billableEntries = await this.prisma.timecardBillableEntry.findMany({
-            where: {
-              projectRequestId: projectId,
-              timecard: {
-                status: TimecardStatus.APPROVED,
-                weekEnding: {
-                  gte: month.start,
-                  lte: month.end,
-                },
-              },
-            },
-            include: {
-              timecard: {
-                include: {
-                  user: {
-                    include: { employeeProfile: true },
-                  },
-                },
-              },
-            },
-          });
-
-          billableEntries.forEach((entry: any) => {
-            const hourlyRate = Number(entry.timecard.user.employeeProfile?.hourlyRate || 0);
-            laborCost += Number(entry.totalHours || 0) * hourlyRate;
-          });
-        } else {
-          // TOTAL Labor cost from all approved timecards (billable part)
-          const allTimecards = await this.prisma.timecard.findMany({
-            where: {
-              status: TimecardStatus.APPROVED,
-              weekEnding: {
-                gte: month.start,
-                lte: month.end,
-              },
-            },
-            include: {
-              user: {
-                include: { employeeProfile: true }
-              }
-            }
-          });
-
-          allTimecards.forEach(tc => {
-            const hourlyRate = Number(tc.user.employeeProfile?.hourlyRate || 0);
-            laborCost += Number(tc.billableHours || 0) * hourlyRate;
-          });
-        }
-
-        // 3. Overhead
-        let overheadCost = 0;
-        if (!projectId) {
-          // Global Overhead: Fixed Expenses + Non-billable employee time
-          const overheadExpenses = await this.prisma.overheadExpense.findMany();
-          overheadExpenses.forEach((exp) => {
-            const amount = Number(exp.amount);
-            if (exp.frequency === 'monthly') overheadCost += amount;
-            else if (exp.frequency === 'semi-annually') overheadCost += amount / 6;
-            else if (exp.frequency === 'yearly') overheadCost += amount / 12;
-          });
-
-          const allTimecardsOH = await this.prisma.timecard.findMany({
-            where: {
-              status: TimecardStatus.APPROVED,
-              weekEnding: {
-                gte: month.start,
-                lte: month.end,
-              },
-            },
-          });
-
-          allTimecardsOH.forEach(tc => {
-            const ohHours = Number(tc.totalHours || 0) - Number(tc.billableHours || 0);
-            if (ohHours > 0) {
-              // Approximate OH cost by subtracting billable cost from total cost
-              // tc.totalCost = totalHours * hourlyRate
-              const hourlyRate = Number(tc.totalHours) > 0 ? Number(tc.totalCost) / Number(tc.totalHours) : 0;
-              overheadCost += ohHours * hourlyRate;
-            }
-          });
-        } else {
-          // Project's share of overhead
-          const activeProjectCount = await this.prisma.proposal.count({
-            where: { status: ProposalStatus.ACCEPTED },
-          });
-          const overheadExpenses = await this.prisma.overheadExpense.findMany();
-          let totalMonthlyOverhead = 0;
-          overheadExpenses.forEach((exp) => {
-            const amount = Number(exp.amount);
-            if (exp.frequency === 'monthly') totalMonthlyOverhead += amount;
-            else if (exp.frequency === 'semi-annually') totalMonthlyOverhead += amount / 6;
-            else if (exp.frequency === 'yearly') totalMonthlyOverhead += amount / 12;
-          });
-          overheadCost = activeProjectCount > 0 ? totalMonthlyOverhead / activeProjectCount : 0;
-        }
-
-        const profit = revenue - laborCost - overheadCost;
-
-        // 4. Utilization
-        const allTimecardsUtil = await this.prisma.timecard.findMany({
+        const allTimecards = await this.prisma.timecard.findMany({
           where: {
             status: TimecardStatus.APPROVED,
             weekEnding: {
               gte: month.start,
               lte: month.end,
             },
-            ...(projectId && {
-              billableEntries: {
-                some: { projectRequestId: projectId }
-              }
-            })
           },
+          include: {
+            user: {
+              include: { employeeProfile: true }
+            }
+          }
         });
-        const monthBillable = allTimecardsUtil.reduce((sum, tc) => sum + Number(tc.billableHours || 0), 0);
-        // Total hours for all employees this month
-        const monthTotal = allTimecardsUtil.reduce((sum, tc) => sum + Number(tc.totalHours || 0), 0);
-        const monthUtilization = monthTotal > 0 ? (monthBillable / monthTotal) * 100 : 0;
-        const utilization = monthTotal > 0 ? (monthBillable / monthTotal) * 100 : 65; // fallback to something reasonable if no data
+
+        allTimecards.forEach(tc => {
+          const hourlyRate = Number(tc.user.employeeProfile?.hourlyRate || 0);
+          laborCost += Number(tc.billableHours || 0) * hourlyRate;
+        });
+
+        // 3. Overhead: Fixed Expenses + Non-billable employee time
+        let overheadCost = 0;
+        const overheadExpenses = await this.prisma.overheadExpense.findMany();
+        overheadExpenses.forEach((exp) => {
+          const amount = Number(exp.amount);
+          if (exp.frequency === 'monthly') overheadCost += amount;
+          else if (exp.frequency === 'semi-annually') overheadCost += amount / 6;
+          else if (exp.frequency === 'yearly') overheadCost += amount / 12;
+        });
+
+        allTimecards.forEach(tc => {
+          const ohHours = Number(tc.totalHours || 0) - Number(tc.billableHours || 0);
+          if (ohHours > 0) {
+            // Approximate OH cost by subtracting billable cost from total cost
+            // tc.totalCost = totalHours * hourlyRate
+            const hourlyRate = Number(tc.totalHours) > 0 ? Number(tc.totalCost) / Number(tc.totalHours) : 0;
+            overheadCost += ohHours * hourlyRate;
+          }
+        });
+
+        const profit = revenue - laborCost - overheadCost;
+
+        // 4. Utilization = billable hours / total hours for the month
+        const monthBillable = allTimecards.reduce((sum, tc) => sum + Number(tc.billableHours || 0), 0);
+        const monthTotal = allTimecards.reduce((sum, tc) => sum + Number(tc.totalHours || 0), 0);
+        const utilization = monthTotal > 0 ? (monthBillable / monthTotal) * 100 : 0;
 
         return {
           month: month.label,
@@ -1352,7 +1692,16 @@ export class FinancialService {
       }),
     );
 
-    return history;
+    return {
+      history,
+      summary: null,
+      range: {
+        mode: scope,
+        year: scope === 'year' ? year : null,
+        start: months[0]?.start?.toISOString() || null,
+        end: months[months.length - 1]?.end?.toISOString() || null,
+      },
+    };
   }
 
   // ═══════════════════════════════════════════════════
@@ -1381,25 +1730,11 @@ export class FinancialService {
 
   async getTimecardsByPayPeriod(year: number, payPeriod: number) {
     const timecards = await this.prisma.timecard.findMany({
-      where: { payYear: year, payPeriod },
+      where: { payYear: year, payPeriod, isArchived: false },
       include: {
         entries: true,
         billableEntries: true,
-        user: {
-          select: {
-            name: true,
-            email: true,
-            role: true,
-            employeeProfile: {
-              select: {
-                hourlyRate: true,
-                employeeId: true,
-                state: true,
-                taxes: true,
-              },
-            },
-          },
-        },
+        user: { select: PAYROLL_USER_SELECT },
       },
       orderBy: { createdAt: 'asc' },
     });
@@ -1416,6 +1751,67 @@ export class FinancialService {
    * Only projects whose last stage completion was before the current year are archived.
    * Pending/ongoing projects (with incomplete stages) remain untouched.
    */
+  /**
+   * Work anniversaries. Each morning, notify the Super Admin and Finance
+   * Manager about any employee whose start-date anniversary falls today, so a
+   * gift can be arranged. Only whole years >= 1 are announced.
+   */
+  @Cron(CronExpression.EVERY_DAY_AT_8AM)
+  async notifyWorkAnniversaries() {
+    const today = new Date();
+
+    const profiles = await this.prisma.employeeProfile.findMany({
+      where: { startingDate: { not: null } },
+      select: {
+        startingDate: true,
+        user: { select: { id: true, name: true, role: true } },
+      },
+    });
+
+    const celebrating = profiles.filter((p) => {
+      const start = p.startingDate as Date;
+      if (
+        start.getMonth() !== today.getMonth() ||
+        start.getDate() !== today.getDate()
+      )
+        return false;
+      return today.getFullYear() - start.getFullYear() >= 1;
+    });
+
+    if (celebrating.length === 0) return { notified: 0 };
+
+    const recipients = await this.prisma.user.findMany({
+      where: {
+        role: { in: [UserRole.SUPER_ADMIN, UserRole.FINANCE] },
+        isActive: true,
+      },
+      select: { id: true },
+    });
+
+    for (const profile of celebrating) {
+      const start = profile.startingDate as Date;
+      const years = today.getFullYear() - start.getFullYear();
+      const name = profile.user?.name || 'A team member';
+
+      await Promise.all(
+        recipients.map((recipient) =>
+          this.notification.createNotification({
+            userId: recipient.id,
+            type: 'WORK_ANNIVERSARY',
+            title: `${years}-year work anniversary`,
+            message: `${name} has been with the firm for ${years} year${years > 1 ? 's' : ''} today.`,
+            link: '/dashboard/employees',
+          }),
+        ),
+      );
+    }
+
+    this.logger.log(
+      `[Work Anniversary] Notified ${recipients.length} manager(s) about ${celebrating.length} anniversary(ies)`,
+    );
+    return { notified: celebrating.length };
+  }
+
   @Cron(CronExpression.EVERY_DAY_AT_MIDNIGHT)
   async autoArchiveCompletedProjects() {
     const currentYear = new Date().getFullYear();

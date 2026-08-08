@@ -3,6 +3,7 @@ import { ProposalService } from './proposal.service';
 import { ProposalController } from './proposal.controller';
 import { PrismaModule } from 'src/prisma/prisma.module';
 import { MailerModule } from 'src/utils/email/email.module';
+import { NotificationModule } from 'src/modules/notification/notification.module';
 
 
 import { MasterContractService } from './master-contract/master-contract.service';
@@ -15,7 +16,7 @@ import { MasterContractController } from './master-contract/master-contract.cont
 
 
 @Module({
-  imports: [PrismaModule, MailerModule],
+  imports: [PrismaModule, MailerModule, NotificationModule],
   controllers: [ProposalController, AmendmentController, MasterContractController, AmendmentContractController],
   providers: [ProposalService, AmendmentService, MasterContractService, AmendmentContractService],
   exports: [ProposalService, AmendmentService, MasterContractService, AmendmentContractService],

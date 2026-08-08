@@ -145,9 +145,13 @@ export class ProjectRequestController {
   }
 
   @Delete(':id')
-  @Roles(client.UserRole.SUPER_ADMIN, client.UserRole.ADMIN)
-  remove(@Param('id') id: string, @CurrentUser() user: client.User) {
-    return this.projectRequestService.deleteRequest(id, user);
+  @Roles(client.UserRole.SUPER_ADMIN)
+  remove(
+    @Param('id') id: string,
+    @Body('password') password: string,
+    @CurrentUser() user: client.User,
+  ) {
+    return this.projectRequestService.deleteRequest(id, password, user);
   }
 
   @Patch(':id/archive')
@@ -192,6 +196,15 @@ export class ProjectRequestController {
     return this.projectRequestService.sendMeetingLink(dto, user);
   }
 
+  @Patch('meetings/:id/respond')
+  async respondToMeeting(
+    @Param('id') id: string,
+    @Body('action') action: 'accept' | 'reject',
+    @CurrentUser() user: client.User,
+  ) {
+    return this.projectRequestService.respondToMeeting(id, action, user);
+  }
+
   // ========================================
   // USER ROUTES
   // ========================================
@@ -215,24 +228,102 @@ export class ProjectRequestController {
   @Post('request-meeting')
   @HttpCode(HttpStatus.CREATED)
   async requestMeeting(
-    @Body() body: { projectRequestId: string; scheduledAt: string; notes?: string },
+    @Body()
+    body: {
+      projectRequestId: string;
+      scheduledAt: string;
+      notes?: string;
+      stageId?: string;
+    },
     @CurrentUser() user: client.User,
   ) {
     return this.projectRequestService.requestMeeting(
       body.projectRequestId,
-      { scheduledAt: body.scheduledAt, notes: body.notes },
+      { scheduledAt: body.scheduledAt, notes: body.notes, stageId: body.stageId },
       user,
     );
   }
 
-  @Get(':id')
-  findOne(@Param('id') id: string, @CurrentUser() user: client.User) {
-    return this.projectRequestService.findOne(id, user);
+  @Get('schedule')
+  @Roles(
+    client.UserRole.SUPER_ADMIN,
+    client.UserRole.ADMIN,
+    client.UserRole.PROJECT_MANAGER,
+    client.UserRole.HIGHER_MANAGER,
+    client.UserRole.FINANCE,
+  )
+  async getMasterSchedule(
+    @CurrentUser() user: client.User,
+    @Query('managerId') managerId?: string,
+    @Query('from') from?: string,
+    @Query('to') to?: string,
+  ) {
+    return this.projectRequestService.getMasterSchedule(user, {
+      managerId,
+      from,
+      to,
+    });
+  }
+
+  @Patch('stages/:stageId/bypass-meeting')
+  @HttpCode(HttpStatus.OK)
+  async bypassPhaseMeeting(
+    @Param('stageId') stageId: string,
+    @Body('bypassed') bypassed: boolean,
+    @CurrentUser() user: client.User,
+  ) {
+    return this.projectRequestService.setPhaseMeetingBypass(
+      stageId,
+      bypassed !== false,
+      user,
+    );
+  }
+
+  @Patch('stages/:stageId/meeting-required')
+  @HttpCode(HttpStatus.OK)
+  @Roles(
+    client.UserRole.SUPER_ADMIN,
+    client.UserRole.ADMIN,
+    client.UserRole.PROJECT_MANAGER,
+  )
+  async setPhaseMeetingRequired(
+    @Param('stageId') stageId: string,
+    @Body('meetingRequired') meetingRequired: boolean,
+    @CurrentUser() user: client.User,
+  ) {
+    return this.projectRequestService.setPhaseMeetingRequired(
+      stageId,
+      meetingRequired !== false,
+      user,
+    );
+  }
+
+  @Post(':id/pay-consultation')
+  @HttpCode(HttpStatus.OK)
+  async payConsultation(
+    @Param('id') id: string,
+    @Body('paymentIntentId') paymentIntentId: string,
+    @CurrentUser() user: client.User,
+  ) {
+    return this.projectRequestService.attachConsultationPayment(id, paymentIntentId, user);
   }
 
   // ========================================
   // NEW INQUIRY ENDPOINTS
   // ========================================
+
+  @Get('check-email')
+  @Roles(
+    client.UserRole.SUPER_ADMIN,
+    client.UserRole.ADMIN,
+    client.UserRole.PROJECT_MANAGER,
+  )
+  async checkEmailExists(
+    @Query('email') email: string,
+    @CurrentUser() user: client.User,
+  ) {
+    return this.projectRequestService.checkEmailExists(email, user);
+  }
 
   @Post('new-inquiry')
   @Roles(
@@ -271,11 +362,16 @@ export class ProjectRequestController {
         budgetRange?: string;
         timeline?: string;
       };
-      password: string;
+      password?: string;
     },
     @CurrentUser() user: client.User,
   ) {
     return this.projectRequestService.createNewInquiry(body, user);
+  }
+
+  @Get(':id')
+  findOne(@Param('id') id: string, @CurrentUser() user: client.User) {
+    return this.projectRequestService.findOne(id, user);
   }
 
   @Get('new-inquiries/all')

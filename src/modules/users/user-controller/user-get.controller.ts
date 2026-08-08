@@ -9,7 +9,15 @@ import {
   Param,
   UseGuards,
   ParseUUIDPipe,
+  UseInterceptors,
+  UploadedFile,
 } from '@nestjs/common';
+import { FileInterceptor } from '@nestjs/platform-express';
+import { CloudinaryStrategy } from 'src/upload/strategies/cloudinary.strategy';
+import {
+  UpdateProfileDto,
+  UpdateNotificationPreferencesDto,
+} from '../dto/update-profile.dto';
 import { JwtAuthGuard } from 'src/common/guards/auth.guard';
 import { RolesGuard } from 'src/common/guards/roles.guard';
 import { Roles } from 'src/common/decorators/roles.decorator';
@@ -27,7 +35,10 @@ interface ApiResponse<T> {
 
 @Controller('users')
 export class UsersGetController {
-  constructor(private readonly usersService: UsersGetService) {}
+  constructor(
+    private readonly usersService: UsersGetService,
+    private readonly cloudinary: CloudinaryStrategy,
+  ) {}
 
   @Get()
   @UseGuards(JwtAuthGuard, RolesGuard)
@@ -103,9 +114,10 @@ export class UsersGetController {
     client.UserRole.PROJECT_MANAGER,
   )
   async getProjectManagers(): Promise<ApiResponse<SafeUser[]>> {
-    const managers = await this.usersService.findByRole(
+    const managers = await this.usersService.findByRole([
       client.UserRole.PROJECT_MANAGER,
-    );
+      client.UserRole.SUPER_ADMIN,
+    ]);
     return {
       success: true,
       message:
@@ -218,9 +230,60 @@ export class UsersGetController {
       : this.usersService.getPublicUser(targetUser);
   }
 
+  /**
+   * Self-service profile update. Declared before `:id` so the literal path
+   * wins — otherwise this falls through to the admin route below, whose
+   * ParseUUIDPipe rejects "profile" outright.
+   */
+  @Patch('profile')
+  @UseGuards(JwtAuthGuard)
+  @UseInterceptors(FileInterceptor('file'))
+  async updateOwnProfile(
+    @Body() dto: UpdateProfileDto,
+    @UploadedFile() file: Express.Multer.File | undefined,
+    @CurrentUser() currentUser: client.User,
+  ): Promise<ApiResponse<any>> {
+    let avatarUrl: string | undefined;
+
+    if (file) {
+      const uploaded = await this.cloudinary.upload(file, 'avatars');
+      avatarUrl = uploaded.url;
+    }
+
+    const user = await this.usersService.updateOwnProfile(
+      currentUser.id,
+      dto as unknown as Record<string, string | undefined>,
+      avatarUrl,
+    );
+
+    return { success: true, message: 'Profile updated successfully', data: user };
+  }
+
+  @Patch('profile/notifications')
+  @UseGuards(JwtAuthGuard)
+  async updateNotificationPreferences(
+    @Body() dto: UpdateNotificationPreferencesDto,
+    @CurrentUser() currentUser: client.User,
+  ): Promise<ApiResponse<any>> {
+    const user = await this.usersService.updateNotificationPreferences(
+      currentUser.id,
+      dto as unknown as Record<string, string | undefined>,
+    );
+
+    return {
+      success: true,
+      message: 'Notification preferences saved',
+      data: user,
+    };
+  }
+
   @Patch(':id')
   @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles(client.UserRole.SUPER_ADMIN, client.UserRole.ADMIN)
+  @Roles(
+    client.UserRole.SUPER_ADMIN,
+    client.UserRole.ADMIN,
+    client.UserRole.FINANCE,
+  )
   async update(
     @Param('id', ParseUUIDPipe) id: string,
     @Body() dto: any,
@@ -229,13 +292,23 @@ export class UsersGetController {
     return { success: true, message: 'User updated successfully', data: user };
   }
 
+  /**
+   * Deleting a team member is destructive, so the acting Super Admin / Finance
+   * Manager has to re-enter their own password to confirm.
+   */
   @Delete(':id')
   @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles(client.UserRole.SUPER_ADMIN, client.UserRole.ADMIN)
+  @Roles(client.UserRole.SUPER_ADMIN, client.UserRole.FINANCE)
   async delete(
     @Param('id', ParseUUIDPipe) id: string,
+    @CurrentUser() actor: { id: string },
+    @Body() body: { password?: string },
   ) {
-    const result = await this.usersService.delete(id);
+    const result = await this.usersService.deleteWithPasswordConfirmation(
+      id,
+      actor.id,
+      body?.password,
+    );
     return result;
   }
 }

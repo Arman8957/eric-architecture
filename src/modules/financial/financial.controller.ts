@@ -92,8 +92,14 @@ export class FinancialController {
   @Get('overview')
   @UseGuards(RolesGuard)
   @Roles(client.UserRole.SUPER_ADMIN, client.UserRole.ADMIN, client.UserRole.FINANCE)
-  async getFinancialOverview() {
-    const overview = await this.financialService.getFinancialOverview();
+  async getFinancialOverview(
+    @Query('scope') scope?: 'all' | 'year',
+    @Query('year') year?: string,
+  ) {
+    const overview = await this.financialService.getFinancialOverview(
+      scope === 'all' ? 'all' : 'year',
+      parseInt(year || '') || new Date().getFullYear(),
+    );
     return { success: true, data: overview };
   }
 
@@ -146,9 +152,56 @@ export class FinancialController {
   @Get('timecards/all')
   @UseGuards(RolesGuard)
   @Roles(client.UserRole.SUPER_ADMIN, client.UserRole.ADMIN, client.UserRole.FINANCE)
-  async getAllTimecards(@Query('status') status?: client.TimecardStatus) {
-    const timecards = await this.financialService.getAllTimecards(status);
+  async getAllTimecards(
+    @Query('status') status?: client.TimecardStatus,
+    @Query('includeArchived') includeArchived?: string,
+  ) {
+    const timecards = await this.financialService.getAllTimecards(
+      status,
+      includeArchived === 'true',
+    );
     return { success: true, data: timecards };
+  }
+
+  // ═══════════════════════════════════════════════════
+  // TIMECARD ARCHIVE
+  // ═══════════════════════════════════════════════════
+
+  @Post('timecards/archive')
+  @UseGuards(RolesGuard)
+  @Roles(client.UserRole.SUPER_ADMIN, client.UserRole.ADMIN, client.UserRole.FINANCE)
+  async archiveTimecards(
+    @CurrentUser() user: AuthUser,
+    @Body() body: { ids: string[] },
+  ) {
+    const result = await this.financialService.archiveTimecards(body?.ids, user.id);
+    return { success: true, message: 'Timecards archived', data: result };
+  }
+
+  @Post('timecards/unarchive')
+  @UseGuards(RolesGuard)
+  @Roles(client.UserRole.SUPER_ADMIN, client.UserRole.ADMIN, client.UserRole.FINANCE)
+  async unarchiveTimecards(@Body() body: { ids: string[] }) {
+    const result = await this.financialService.unarchiveTimecards(body?.ids);
+    return { success: true, message: 'Timecards restored', data: result };
+  }
+
+  // ═══════════════════════════════════════════════════
+  // PAYROLL CALENDAR
+  // ═══════════════════════════════════════════════════
+
+  @Get('payroll-start-date')
+  async getPayrollStartDate() {
+    const data = await this.financialService.getPayrollStartDate();
+    return { success: true, data };
+  }
+
+  @Patch('payroll-start-date')
+  @UseGuards(RolesGuard)
+  @Roles(client.UserRole.SUPER_ADMIN, client.UserRole.ADMIN, client.UserRole.FINANCE)
+  async setPayrollStartDate(@Body() body: { payrollStartDate: string }) {
+    const data = await this.financialService.setPayrollStartDate(body?.payrollStartDate);
+    return { success: true, message: 'Payroll start date updated', data };
   }
 
   // ═══════════════════════════════════════════════════
@@ -178,8 +231,8 @@ export class FinancialController {
   }
 
   @Get('timecards/:id')
-  async getTimecardById(@Param('id') id: string) {
-    const timecard = await this.financialService.getTimecardById(id);
+  async getTimecardById(@Param('id') id: string, @CurrentUser() user: AuthUser) {
+    const timecard = await this.financialService.getTimecardById(id, user);
     return { success: true, data: timecard };
   }
 
@@ -235,8 +288,16 @@ export class FinancialController {
   }
 
   @Get('history')
-  async getFinancialHistory(@Query('projectId') projectId?: string) {
-    const history = await this.financialService.getFinancialHistory(projectId);
+  async getFinancialHistory(
+    @Query('projectId') projectId?: string,
+    @Query('scope') scope?: 'all' | 'year',
+    @Query('year') year?: string,
+  ) {
+    const history = await this.financialService.getFinancialHistory(
+      projectId,
+      scope === 'all' ? 'all' : 'year',
+      parseInt(year || '') || new Date().getFullYear(),
+    );
     return { success: true, data: history };
   }
 

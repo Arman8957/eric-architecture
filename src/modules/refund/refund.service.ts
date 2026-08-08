@@ -1,4 +1,5 @@
 import { Injectable, Logger, NotFoundException, BadRequestException } from '@nestjs/common';
+import { Cron, CronExpression } from '@nestjs/schedule';
 import { PrismaService } from 'src/prisma/prisma.service';
 import { NotificationService } from '../notification/notification.service';
 import { MailerService } from 'src/utils/email/email.service';
@@ -90,20 +91,16 @@ export class RefundService {
       select: { id: true },
     });
 
-    for (const fUser of financeUsers) {
-      await this.notificationService.createNotification({
-        userId: fUser.id,
-        type: 'REFUND_REQUEST',
-        title: 'New Refund Request',
-        message: `${user.name || user.email} requested a refund for "${dto.stageName}" on project "${projectRequest.projectName}"`,
-        link: '/dashboard/refund-requests',
-        projectRequestId: dto.projectRequestId,
-      });
+    // The assigned manager is often also an ADMIN/SUPER_ADMIN, which used to
+    // produce two identical notifications - dedupe the recipients.
+    const recipientIds = new Set(financeUsers.map((f) => f.id));
+    if (projectRequest.assignedManagerId) {
+      recipientIds.add(projectRequest.assignedManagerId);
     }
 
-    if (projectRequest.assignedManagerId) {
+    for (const recipientId of recipientIds) {
       await this.notificationService.createNotification({
-        userId: projectRequest.assignedManagerId,
+        userId: recipientId,
         type: 'REFUND_REQUEST',
         title: 'New Refund Request',
         message: `${user.name || user.email} requested a refund for "${dto.stageName}" on project "${projectRequest.projectName}"`,
@@ -196,6 +193,10 @@ export class RefundService {
   async rejectRefund(refundId: string, approver: User, rejectionReason?: string) {
     const refund = await this.prisma.refundRequest.findUnique({
       where: { id: refundId },
+      include: {
+        user: { select: { id: true, name: true, email: true } },
+        projectRequest: { select: { id: true, projectName: true } },
+      },
     });
 
     if (!refund) throw new NotFoundException('Refund request not found');
@@ -212,6 +213,25 @@ export class RefundService {
       },
     });
 
+    // The client is told by email as well as in-app.
+    if (refund.user.email) {
+      try {
+        await this.mailerService.sendRefundRejectedEmail(
+          refund.user.email,
+          refund.user.name || 'Valued Client',
+          {
+            refundName: refund.refundName,
+            projectName: refund.projectRequest.projectName,
+            amount: Number(refund.amount),
+            stageName: refund.stageName,
+            rejectionReason,
+          },
+        );
+      } catch (err) {
+        this.logger.error('Failed to send refund rejected email', err);
+      }
+    }
+
     await this.notificationService.createNotification({
       userId: refund.userId,
       type: 'REFUND_REJECTED',
@@ -221,6 +241,117 @@ export class RefundService {
     });
 
     return updated;
+  }
+
+  /**
+   * Accountant confirms the approved refund has actually been paid out. This
+   * stops the daily reminder and flips the UI to "Refund Processed".
+   */
+  async markRefundProcessed(refundId: string, actor: User) {
+    const refund = await this.prisma.refundRequest.findUnique({
+      where: { id: refundId },
+    });
+
+    if (!refund) throw new NotFoundException('Refund request not found');
+    if (refund.refundStatus !== 'APPROVED') {
+      throw new BadRequestException('Only approved refunds can be marked processed');
+    }
+    if (refund.refundProcessedAt) {
+      throw new BadRequestException('This refund is already marked processed');
+    }
+
+    const updated = await this.prisma.refundRequest.update({
+      where: { id: refundId },
+      data: {
+        refundProcessedAt: new Date(),
+        refundProcessedBy: actor.id,
+      },
+    });
+
+    await this.notificationService.createNotification({
+      userId: refund.userId,
+      type: 'REFUND_PROCESSED',
+      title: 'Refund Processed',
+      message: `Your refund for "${refund.stageName}" has been processed and sent to your bank.`,
+      link: '/user-dashboard',
+    });
+
+    this.logger.log(`Refund ${refundId} marked processed by ${actor.id}`);
+    return updated;
+  }
+
+  /**
+   * Daily nudge: every approved-but-unpaid refund raises one notification per
+   * Super Admin / Finance Manager, repeating until Task Completed is clicked.
+   */
+  @Cron(CronExpression.EVERY_DAY_AT_9AM)
+  async remindPendingRefundPayouts() {
+    const outstanding = await this.prisma.refundRequest.findMany({
+      where: { refundStatus: 'APPROVED', refundProcessedAt: null },
+      include: {
+        user: { select: { name: true, email: true } },
+        projectRequest: { select: { projectName: true } },
+      },
+    });
+
+    if (outstanding.length === 0) return { reminded: 0 };
+
+    const recipients = await this.prisma.user.findMany({
+      where: {
+        role: { in: ['SUPER_ADMIN', 'FINANCE'] },
+        isActive: true,
+      },
+      select: { id: true },
+    });
+
+    for (const refund of outstanding) {
+      const clientName = refund.user.name || refund.user.email;
+      await Promise.all(
+        recipients.map((recipient) =>
+          this.notificationService.createNotification({
+            userId: recipient.id,
+            type: 'REFUND_PAYOUT_REMINDER',
+            title: 'Refund awaiting payout',
+            message: `${clientName}'s approved refund of $${Number(refund.amount).toLocaleString()} for "${refund.stageName}" on "${refund.projectRequest.projectName}" still needs processing.`,
+            link: '/dashboard/refund-requests',
+            projectRequestId: refund.projectRequestId,
+          }),
+        ),
+      );
+    }
+
+    this.logger.log(
+      `[Refund Reminder] ${outstanding.length} outstanding payout(s) sent to ${recipients.length} manager(s)`,
+    );
+    return { reminded: outstanding.length };
+  }
+
+  /**
+   * Bank details of the client behind a specific refund request, for the
+   * accountant actioning the payout.
+   */
+  async getBankDetailsForRefund(refundId: string) {
+    const refund = await this.prisma.refundRequest.findUnique({
+      where: { id: refundId },
+      select: {
+        userId: true,
+        amount: true,
+        stageName: true,
+        refundProcessedAt: true,
+        user: { select: { id: true, name: true, email: true } },
+        projectRequest: { select: { projectName: true } },
+      },
+    });
+    if (!refund) throw new NotFoundException('Refund request not found');
+
+    return {
+      client: refund.user,
+      projectName: refund.projectRequest.projectName,
+      stageName: refund.stageName,
+      amount: Number(refund.amount),
+      refundProcessedAt: refund.refundProcessedAt,
+      bankDetails: await this.getUserBankDetails(refund.userId),
+    };
   }
 
   /**

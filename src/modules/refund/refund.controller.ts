@@ -54,6 +54,26 @@ export class RefundController {
     return { success: true, data };
   }
 
+  /** Bank details of the client on a refund, so the payout can be actioned. */
+  @Get(':id/bank-details')
+  @UseGuards(RolesGuard)
+  @Roles(client.UserRole.SUPER_ADMIN, client.UserRole.FINANCE)
+  async getRefundBankDetails(@Param('id') id: string) {
+    const data = await this.refundService.getBankDetailsForRefund(id);
+    return { success: true, data };
+  }
+
+  @Patch(':id/processed')
+  @UseGuards(RolesGuard)
+  @Roles(client.UserRole.SUPER_ADMIN, client.UserRole.FINANCE)
+  async markRefundProcessed(
+    @Param('id') id: string,
+    @CurrentUser() user: client.User,
+  ) {
+    const result = await this.refundService.markRefundProcessed(id, user);
+    return { success: true, message: 'Refund marked as processed', data: result };
+  }
+
   @Patch(':id/approve')
   @UseGuards(RolesGuard)
   @Roles(

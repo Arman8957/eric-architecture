@@ -12,7 +12,6 @@ import { GoogleStrategy } from './google/google.strategy';
 import { PrismaModule } from '../../prisma/prisma.module';
 import { GoogleController } from './google/google.controller';
 import { JwtStrategy } from './jwt/jwt.strategy';
-import { MailerService } from 'src/utils/email/email.service';
 import { MailerModule } from 'src/utils/email/email.module';
 import { ProjectRequestModule } from '../users/user.module';
 import { ProjectRequestService } from '../users/user-service/project-request.service';

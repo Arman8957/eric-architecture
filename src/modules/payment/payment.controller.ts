@@ -96,6 +96,7 @@ export class PaymentController {
     client.UserRole.SUPER_ADMIN,
     client.UserRole.ADMIN,
     client.UserRole.FINANCE,
+    client.UserRole.PROJECT_MANAGER,
   )
   async getProjectPayments(
     @Param('projectRequestId') projectRequestId: string,

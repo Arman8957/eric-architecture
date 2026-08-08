@@ -17,4 +17,10 @@ export class AddProposalServiceDto {
   @IsString()
   @IsOptional()
   description?: string;
+
+  // Display position chosen by the PM. Omitted -> appended to the end.
+  @IsInt()
+  @IsOptional()
+  @Min(1)
+  order?: number;
 }

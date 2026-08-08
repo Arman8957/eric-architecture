@@ -3,8 +3,15 @@ import { PrismaService } from 'src/prisma/prisma.service';
 import { StripeService } from './stripe.service';
 import { NotificationService } from '../notification/notification.service';
 import { CreateCheckoutDto } from './dto/create-checkout.dto';
-import { User, PaymentType, PaymentStatus } from '@prisma/client';
+import {
+  User,
+  PaymentType,
+  PaymentStatus,
+  ProposalStatus,
+  ProposalType,
+} from '@prisma/client';
 import { ConfigService } from '@nestjs/config';
+import { clientProjectLink } from 'src/common/notification-links';
 
 @Injectable()
 export class PaymentService {
@@ -26,6 +33,29 @@ export class PaymentService {
     const paymentType = dto.paymentType === 'LUMP_SUM'
       ? PaymentType.LUMP_SUM
       : PaymentType.INSTALLMENT;
+
+    // A proposal the client never received must not be payable, regardless of
+    // what the caller supplies.
+    const proposal = await this.prisma.proposal.findUnique({
+      where: { id: dto.proposalId },
+      select: { id: true, status: true, projectRequestId: true },
+    });
+
+    if (!proposal) {
+      throw new NotFoundException('Proposal not found');
+    }
+
+    if (proposal.projectRequestId !== dto.projectRequestId) {
+      throw new BadRequestException(
+        'Proposal does not belong to this project request',
+      );
+    }
+
+    if (proposal.status === ProposalStatus.DRAFT) {
+      throw new BadRequestException(
+        'This proposal has not been sent to the client yet and cannot be paid',
+      );
+    }
 
     // Create the payment record first
     const payment = await this.prisma.payment.create({
@@ -119,7 +149,10 @@ export class PaymentService {
         message: payment.stageName
           ? `Your payment of $${payment.amount} for "${payment.stageName}" has been confirmed.`
           : `Your lump sum payment of $${payment.amount} has been confirmed.`,
-        link: '/user-dashboard',
+        link: payment.projectRequestId
+          ? clientProjectLink(payment.projectRequestId, 'meetings')
+          : '/user-dashboard',
+        projectRequestId: payment.projectRequestId || undefined,
       });
 
       this.logger.log(`Webhook: Payment ${paymentId} marked as COMPLETED successfully`);
@@ -202,9 +235,16 @@ export class PaymentService {
     // Now filter for COMPLETED ones for calculations, but keep raw list for debugging
     const completedPayments = payments.filter(p => p.paymentStatus === 'COMPLETED');
 
-    // Get the proposal to check payment type
+    // Get the proposal to check payment type.
+    // Only an ACCEPTED base proposal creates a payment obligation — a DRAFT that
+    // was never sent must never drive the client's amount due. Amendments are
+    // billed separately below, so they are excluded here.
     const proposal = await this.prisma.proposal.findFirst({
-      where: { projectRequestId },
+      where: {
+        projectRequestId,
+        status: ProposalStatus.ACCEPTED,
+        proposalType: ProposalType.NORMAL,
+      },
       orderBy: { createdAt: 'desc' },
       select: {
         id: true,
@@ -238,9 +278,10 @@ export class PaymentService {
 
     const isLumpSumPaid = completedPayments.some(p => p.paymentType === 'LUMP_SUM');
 
-    // Build a map of paid stages
+    // Build a map of paid stages. Only COMPLETED payments count — a checkout
+    // session that was started and abandoned must not unlock a phase.
     const paidStageIds = new Set(
-      payments
+      completedPayments
         .filter(p => p.paymentType === 'INSTALLMENT' && p.stageId)
         .map(p => p.stageId),
     );
@@ -278,12 +319,20 @@ export class PaymentService {
     });
 
     // ─── Amendment Proposals Payment Status ────────────────────────────
-    // Find all accepted amendment proposals for this project
+    // Every amendment the client has actually received is surfaced, not just
+    // the accepted ones — otherwise an amendment awaiting signature is simply
+    // invisible and the client has no idea why they cannot pay it.
     const amendmentProposals = await this.prisma.proposal.findMany({
       where: {
         projectRequestId,
         proposalType: 'AMENDMENT',
-        status: 'ACCEPTED',
+        status: {
+          in: [
+            ProposalStatus.SENT,
+            ProposalStatus.VIEWED,
+            ProposalStatus.ACCEPTED,
+          ],
+        },
       },
       select: {
         id: true,
@@ -291,6 +340,9 @@ export class PaymentService {
         title: true,
         projectName: true,
         totalAmount: true,
+        status: true,
+        paymentMethod: true,
+        paymentType: true,
         services: {
           select: { id: true, name: true, amount: true, order: true },
           orderBy: { order: 'asc' },
@@ -302,10 +354,35 @@ export class PaymentService {
     // Build amendment payment status
     const amendmentPayments = amendmentProposals.map((ap) => {
       const amountDue = Number(ap.totalAmount);
-      // Check if there's a completed payment for this amendment proposal
-      const isPaid = completedPayments.some(
+      const amendmentIsLumpSum =
+        ap.paymentMethod === 'lumpSum' ||
+        ap.paymentMethod === 'LUMP_SUM' ||
+        ap.paymentType === PaymentType.LUMP_SUM;
+
+      const paymentsForAmendment = completedPayments.filter(
         (p) => p.proposalId === ap.id,
       );
+      const paidStageIdsForAmendment = new Set(
+        paymentsForAmendment.map((p) => p.stageId).filter(Boolean),
+      );
+
+      // Lump sum: one payment clears it. By-phase: each service is billed as
+      // its own installment, mirroring how the base proposal works.
+      const servicePayments = ap.services.map((s) => ({
+        serviceId: s.id,
+        name: s.name,
+        amount: Number(s.amount),
+        paid: amendmentIsLumpSum
+          ? paymentsForAmendment.length > 0
+          : paidStageIdsForAmendment.has(s.id),
+      }));
+
+      const isPaid = amendmentIsLumpSum
+        ? paymentsForAmendment.length > 0
+        : servicePayments.length > 0 && servicePayments.every((s) => s.paid);
+
+      const awaitingSignature = ap.status !== ProposalStatus.ACCEPTED;
+
       return {
         proposalId: ap.id,
         proposalNumber: ap.proposalNumber,
@@ -313,7 +390,12 @@ export class PaymentService {
         projectName: ap.projectName,
         amount: amountDue,
         paid: isPaid,
-        services: ap.services,
+        status: ap.status,
+        // The client must sign the amendment contract before it becomes payable.
+        awaitingSignature,
+        canPay: !awaitingSignature && !isPaid,
+        paymentMethod: amendmentIsLumpSum ? 'LUMP_SUM' : 'INSTALLMENT',
+        services: servicePayments,
       };
     });
 
@@ -359,10 +441,22 @@ export class PaymentService {
   }
 
   /**
-   * Create a PaymentIntent for the $250 consultation fee
+   * Read the current admin-adjustable consultation fee (USD), falling back
+   * to $250 if no rate has been saved yet.
+   */
+  private async getConsultationFeeUsd(): Promise<number> {
+    const setting = await this.prisma.siteSettings.findUnique({
+      where: { key: 'consultation_fee_usd' },
+    });
+    const parsed = setting ? parseFloat(setting.value) : NaN;
+    return Number.isFinite(parsed) && parsed > 0 ? parsed : 250;
+  }
+
+  /**
+   * Create a PaymentIntent for the consultation fee
    */
   async createConsultationIntent(user: User) {
-    const amount = 250;
+    const amount = await this.getConsultationFeeUsd();
     const { clientSecret, id } = await this.stripeService.createPaymentIntent({
       amount,
       metadata: {
@@ -390,7 +484,8 @@ export class PaymentService {
         throw new BadRequestException('Payment has not succeeded yet');
       }
 
-      if (intent.amount !== 25000) { // $250 in cents
+      const expectedFeeUsd = await this.getConsultationFeeUsd();
+      if (intent.amount !== Math.round(expectedFeeUsd * 100)) {
         throw new BadRequestException('Incorrect payment amount');
       }
 

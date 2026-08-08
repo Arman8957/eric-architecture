@@ -1,4 +1,10 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import {
+  Injectable,
+  NotFoundException,
+  BadRequestException,
+  ForbiddenException,
+} from '@nestjs/common';
+import * as bcrypt from 'bcrypt';
 import { Prisma, User, UserRole } from '@prisma/client';
 import { FindAllOptions } from 'src/modules/auth/constant';
 import { PrismaService } from 'src/prisma/prisma.service';
@@ -19,8 +25,107 @@ export class UsersGetService {
     lastLoginAt: true,
     emailVerified: true,
     employeeProfile: true,
+    // Profile fields — safe to expose to the owning user and staff.
+    firstName: true,
+    middleInitial: true,
+    lastName: true,
+    phoneNumber: true,
+    companyName: true,
+    bio: true,
+    streetAddress: true,
+    city: true,
+    stateRegion: true,
+    zipCode: true,
+    country: true,
+    emailNotifications: true,
+    projectUpdates: true,
+    securityAlerts: true,
     // NEVER include: password, refreshToken, googleId, etc.
   } satisfies Prisma.UserSelect);
+
+  /**
+   * Self-service profile update. Any authenticated user may edit their own
+   * record — this is deliberately not the admin `update(id, dto)` path, which
+   * requires a UUID param and elevated role.
+   */
+  async updateOwnProfile(
+    userId: string,
+    dto: Record<string, string | undefined>,
+    avatarUrl?: string,
+  ) {
+    const editable = [
+      'name',
+      'firstName',
+      'middleInitial',
+      'lastName',
+      'phoneNumber',
+      'companyName',
+      'bio',
+      'streetAddress',
+      'city',
+      'stateRegion',
+      'zipCode',
+      'country',
+    ] as const;
+
+    const data: Prisma.UserUpdateInput = {};
+    for (const key of editable) {
+      const value = dto[key];
+      // An omitted field is left alone; an explicitly blank one is cleared.
+      if (value !== undefined) {
+        (data as Record<string, unknown>)[key] = value.trim() || null;
+      }
+    }
+
+    if (avatarUrl) {
+      data.avatar = avatarUrl;
+    }
+
+    // Keep the display name in step with the parts when they are supplied.
+    if (dto.firstName !== undefined || dto.lastName !== undefined) {
+      const existing = await this.prisma.user.findUnique({
+        where: { id: userId },
+        select: { firstName: true, lastName: true },
+      });
+      const first = dto.firstName ?? existing?.firstName ?? '';
+      const last = dto.lastName ?? existing?.lastName ?? '';
+      const combined = [first, last].filter(Boolean).join(' ').trim();
+      if (combined) data.name = combined;
+    }
+
+    const user = await this.prisma.user.update({
+      where: { id: userId },
+      data,
+      select: this.baseSelect,
+    });
+
+    return user;
+  }
+
+  async updateNotificationPreferences(
+    userId: string,
+    prefs: Record<string, string | boolean | undefined>,
+  ) {
+    const toBool = (v: string | boolean | undefined) =>
+      typeof v === 'boolean' ? v : v === 'true';
+
+    const data: Prisma.UserUpdateInput = {};
+    for (const key of [
+      'emailNotifications',
+      'projectUpdates',
+      'securityAlerts',
+    ] as const) {
+      if (prefs[key] !== undefined) {
+        (data as Record<string, unknown>)[key] = toBool(prefs[key]);
+      }
+    }
+
+    return this.prisma.user.update({
+      where: { id: userId },
+      data,
+      select: this.baseSelect,
+    });
+  }
 
 
   async listUsers({ page, take, roleFilter, search, cursor }: FindAllOptions) {
@@ -95,9 +200,9 @@ export class UsersGetService {
 
     return user as unknown as SafeUser;
   }
-  async findByRole(role: UserRole): Promise<SafeUser[]> {
+  async findByRole(role: UserRole | UserRole[]): Promise<SafeUser[]> {
     return this.prisma.user.findMany({
-      where: { role },
+      where: { role: Array.isArray(role) ? { in: role } : role },
       select: this.baseSelect,
       orderBy: { name: 'asc' },
     }) as Promise<SafeUser[]>;
@@ -136,6 +241,61 @@ export class UsersGetService {
   }
 
   /**
+   * Delete a team member, gated on the acting admin re-entering their own
+   * password.
+   *
+   * Most of the User relations (proposals, refunds, project requests) are not
+   * cascading, so a hard delete on anyone with history fails at the database
+   * level. Those accounts are deactivated instead, which preserves the audit
+   * trail and stops them logging in.
+   */
+  async deleteWithPasswordConfirmation(
+    id: string,
+    actorId: string,
+    password?: string,
+  ) {
+    if (!password?.trim())
+      throw new BadRequestException('Enter your password to confirm');
+
+    if (id === actorId)
+      throw new BadRequestException('You cannot delete your own account');
+
+    const actor = await this.prisma.user.findUnique({
+      where: { id: actorId },
+      select: { password: true },
+    });
+    if (!actor?.password)
+      throw new ForbiddenException('Your account has no password set');
+
+    const matches = await bcrypt.compare(password, actor.password);
+    if (!matches) throw new ForbiddenException('Incorrect password');
+
+    const user = await this.prisma.user.findUnique({ where: { id } });
+    if (!user) throw new NotFoundException('User not found');
+
+    try {
+      await this.prisma.user.delete({ where: { id } });
+      return { success: true, message: 'Team member deleted', deactivated: false };
+    } catch (error) {
+      const isForeignKeyBlock =
+        error instanceof Prisma.PrismaClientKnownRequestError &&
+        error.code === 'P2003';
+      if (!isForeignKeyBlock) throw error;
+
+      await this.prisma.user.update({
+        where: { id },
+        data: { isActive: false },
+      });
+      return {
+        success: true,
+        message:
+          'This member has project history, so their account was deactivated instead of deleted.',
+        deactivated: true,
+      };
+    }
+  }
+
+  /**
    * Get all client (USER role) users with full details:
    * projects, phases, payments, bank info
    */
@@ -150,6 +310,18 @@ export class UsersGetService {
         isActive: true,
         createdAt: true,
         lastLoginAt: true,
+        // Profile detail for the "View Client Details" card
+        firstName: true,
+        middleInitial: true,
+        lastName: true,
+        phoneNumber: true,
+        companyName: true,
+        bio: true,
+        streetAddress: true,
+        city: true,
+        stateRegion: true,
+        zipCode: true,
+        country: true,
         bankDetails: true,
         projectRequests: {
           select: {
@@ -168,9 +340,14 @@ export class UsersGetService {
               },
               orderBy: { order: 'asc' },
             },
+            // Every signed contract counts toward the balance - the original
+            // and each accepted amendment - not just the newest one.
             proposals: {
+              where: { status: 'ACCEPTED' },
               select: {
                 id: true,
+                proposalNumber: true,
+                proposalType: true,
                 paymentMethod: true,
                 paymentType: true,
                 totalAmount: true,
@@ -180,8 +357,7 @@ export class UsersGetService {
                   orderBy: { order: 'asc' },
                 },
               },
-              orderBy: { createdAt: 'desc' },
-              take: 1,
+              orderBy: { createdAt: 'asc' },
             },
           },
           orderBy: { createdAt: 'desc' },
@@ -210,39 +386,48 @@ export class UsersGetService {
       const completedPayments = user.payments.filter(p => p.paymentStatus === 'COMPLETED');
       const totalPaid = completedPayments.reduce((sum, p) => sum + Number(p.amount), 0);
 
-      // Calculate total owed from proposals
-      let totalOwed = 0;
-      for (const pr of user.projectRequests) {
-        const proposal = pr.proposals?.[0];
-        if (proposal) {
-          totalOwed += Number(proposal.totalAmount || 0);
-        }
-      }
-
-      // Get phone from first project request
-      const phone = user.projectRequests?.[0]?.phone || null;
-
-      // Currently running phases
-      const runningProjects = user.projectRequests.filter(pr =>
-        pr.stages.some(s => s.status === 'IN_PROGRESS'),
+      // Total contracted across EVERY signed contract on every project
+      // (originals plus accepted amendments).
+      const totalOwed = user.projectRequests.reduce(
+        (sum, pr) =>
+          sum +
+          pr.proposals.reduce((s, p) => s + Number(p.totalAmount || 0), 0),
+        0,
       );
-      const runningPhases = user.projectRequests.flatMap(pr =>
-        pr.stages.filter(s => s.status === 'IN_PROGRESS').map(s => ({
-          projectName: pr.projectName,
-          phaseName: s.name,
-          progress: s.progress,
-        })),
-      );
+
+      // Get phone from the profile, falling back to the first project request
+      const phone = user.phoneNumber || user.projectRequests?.[0]?.phone || null;
+
+      // Work is tracked per project, not per phase.
+      const runningProjects = user.projectRequests
+        .filter((pr) => pr.stages.some((s) => s.status === 'IN_PROGRESS'))
+        .map((pr) => {
+          const completed = pr.stages.filter((s) => s.status === 'COMPLETED').length;
+          const total = pr.stages.length;
+          return {
+            id: pr.id,
+            projectName: pr.projectName,
+            status: pr.status,
+            completedPhases: completed,
+            totalPhases: total,
+            progress: total > 0 ? Math.round((completed / total) * 100) : 0,
+            // The phase currently being worked, for context.
+            currentPhase:
+              pr.stages.find((s) => s.status === 'IN_PROGRESS')?.name || null,
+          };
+        });
 
       return {
         ...user,
         phone,
         totalPaid,
         totalOwed,
+        // Balance = everything contracted across signed contracts, less what
+        // has actually been paid.
         leftToPay: Math.max(0, totalOwed - totalPaid),
         projectCount: user.projectRequests.length,
         runningProjectCount: runningProjects.length,
-        runningPhases,
+        runningProjects,
       };
     });
   }

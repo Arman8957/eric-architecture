@@ -31,4 +31,8 @@ export class CreateMeetingLinkDto {
   @IsOptional()
   @MaxLength(1000)
   notes?: string;
+
+  @IsString()
+  @IsOptional()
+  stageId?: string;
 }

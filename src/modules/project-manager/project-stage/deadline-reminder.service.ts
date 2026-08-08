@@ -2,6 +2,7 @@ import { Injectable, Logger } from '@nestjs/common';
 import { Cron, CronExpression } from '@nestjs/schedule';
 import { PrismaService } from 'src/prisma/prisma.service';
 import { NotificationService } from 'src/modules/notification/notification.service';
+import { staffProjectLink } from 'src/common/notification-links';
 
 @Injectable()
 export class DeadlineReminderService {
@@ -170,7 +171,10 @@ export class DeadlineReminderService {
           type: 'DEADLINE_REMINDER',
           title,
           message,
-          link: '/dashboard',
+          link: staffProjectLink(
+            reminder.stage.proposal?.projectRequest?.id || '',
+            'management',
+          ),
           projectRequestId:
             reminder.stage.proposal?.projectRequest?.id || undefined,
         });

@@ -53,6 +53,15 @@ async function bootstrap() {
   });
 
   const configService = app.get(ConfigService);
+  const isProduction = process.env.NODE_ENV === 'production';
+
+  // Behind a reverse proxy (nginx, Render, Railway, Fly…) Express sees the
+  // proxy's address as req.ip unless it is told to trust the X-Forwarded-For
+  // header. Without this the rate limiter buckets every visitor together and
+  // its 127.0.0.1 skip matches everyone, disabling it entirely.
+  if (isProduction) {
+    app.set('trust proxy', 1);
+  }
 
   // Security Headers
   app.use(
@@ -103,18 +112,35 @@ async function bootstrap() {
       max: 100,
       standardHeaders: true,
       legacyHeaders: false,
-      skip: (req) => req.ip === '127.0.0.1',
+      // Only bypass the limiter for local development. In production a
+      // loopback address usually means a misconfigured proxy, not a trusted
+      // caller, so it must not be a free pass.
+      skip: (req) => !isProduction && req.ip === '127.0.0.1',
     }),
   );
 
   // CORS + Versioning + Validation
+  //
+  // FRONTEND_URL accepts a comma-separated list so the client and dashboard
+  // apps can be served from different domains. A single value still works.
+  const configuredOrigins = (configService.get<string>('FRONTEND_URL') ?? '')
+    .split(',')
+    .map((origin) => origin.trim())
+    .filter(Boolean);
+
+  const allowedOrigins = configuredOrigins.length
+    ? configuredOrigins
+    : [
+        'http://localhost:3001',
+        'http://localhost:5173',
+        'http://localhost:5174',
+        'http://127.0.0.1:5173',
+      ];
+
+  Logger.log(`CORS allowed origins: ${allowedOrigins.join(', ')}`, 'Bootstrap');
+
   app.enableCors({
-    origin: configService.get('FRONTEND_URL', [
-      'http://localhost:3001',
-      'http://localhost:5173',
-      'http://localhost:5174',
-      'http://127.0.0.1:5173',
-    ]),
+    origin: allowedOrigins,
     credentials: true,
   });
 
@@ -161,44 +187,49 @@ async function bootstrap() {
     });
   });
 
-  // Start Server with auto port increment on conflict
-  let port = configService.get<number>('PORT', 3000);
-  const maxRetries = 10;
-  let attempt = 0;
+  const configuredPort = configService.get<number>('PORT', 3000);
 
-  while (attempt < maxRetries) {
+  const announce = (port: number) => {
+    Logger.log(`🚀 Server running on port ${port}`, 'Bootstrap');
+    Logger.log(
+      `📁 Environment: ${process.env.NODE_ENV || 'development'}`,
+      'Bootstrap',
+    );
+    Logger.log(`🌐 URL: http://localhost:${port}`, 'Bootstrap');
+
+    if (!isProduction) {
+      Logger.log(`📚 Swagger: http://localhost:${port}/docs`, 'Bootstrap');
+    }
+  };
+
+  if (isProduction) {
+    // Bind the configured port or fail loudly. Silently moving to another port
+    // would leave the reverse proxy pointing at nothing, turning a clear
+    // startup failure into an opaque 502.
+    await app.listen(configuredPort, '0.0.0.0');
+    announce(configuredPort);
+    return;
+  }
+
+  // Development convenience: step forward if the port is already taken.
+  const maxRetries = 10;
+  let port = configuredPort;
+
+  for (let attempt = 0; attempt < maxRetries; attempt++) {
     try {
       await app.listen(port, '0.0.0.0');
-      Logger.log(`🚀 Server running on port ${port}`, 'Bootstrap');
-      Logger.log(
-        `📁 Environment: ${process.env.NODE_ENV || 'development'}`,
-        'Bootstrap',
-      );
-      Logger.log(`🌐 URL: http://localhost:${port}`, 'Bootstrap');
-
-      if (process.env.NODE_ENV !== 'production') {
-        Logger.log(`📚 Swagger: http://localhost:${port}/docs`, 'Bootstrap');
-      }
-      break;
-    } catch (error: any) {
-      if (error.code === 'EADDRINUSE') {
-        Logger.warn(
-          `Port ${port} is occupied, trying ${port + 1}...`,
-          'Bootstrap',
-        );
-        port++;
-        attempt++;
-      } else {
+      announce(port);
+      return;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'EADDRINUSE') {
         throw error;
       }
+      Logger.warn(`Port ${port} is occupied, trying ${port + 1}...`, 'Bootstrap');
+      port++;
     }
   }
 
-  if (attempt === maxRetries) {
-    throw new Error(
-      `Could not find available port after ${maxRetries} attempts`,
-    );
-  }
+  throw new Error(`Could not find available port after ${maxRetries} attempts`);
 }
 
 bootstrap().catch((err) => {

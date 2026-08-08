@@ -7,7 +7,7 @@ import {
   Logger,
 } from '@nestjs/common';
 
-import { UserRole, User, StageStatus, Prisma } from '@prisma/client';
+import { UserRole, User, StageStatus, RequestStatus, ProposalStatus, Prisma } from '@prisma/client';
 import { PrismaService } from 'src/prisma/prisma.service';
 import { MailerService } from 'src/utils/email/email.service';
 import { NotificationService } from 'src/modules/notification/notification.service';
@@ -16,6 +16,7 @@ import { CreateStageDto } from './dto/create-stage.dto';
 import { UpdateStageDto } from './dto/update-stage.dto';
 import { UpdateProgressDto } from './dto/update-progress.dto';
 import { CompleteStageDto } from './dto/complete-stage.dto';
+import { clientProjectLink } from 'src/common/notification-links';
 
 @Injectable()
 export class ProjectStageService {
@@ -297,7 +298,10 @@ export class ProjectStageService {
               type: 'EXTERNAL_DEADLINE_CHANGED',
               title: `Deadline Changed: ${updated.name}`,
               message: `External deadline for "${updated.name}" changed from ${oldDateStr} to ${newDateStr} in project "${projectName}".`,
-              link: '/dashboard',
+              link: clientProjectLink(
+                (updated.proposal?.projectRequest as any)?.id || '',
+                'details',
+              ),
               projectRequestId: (updated.proposal?.projectRequest as any)?.id || null,
             });
 
@@ -432,7 +436,74 @@ export class ProjectStageService {
       `Stage "${stage.name}" completed for proposal ${stage.proposalId}`,
     );
 
+    // Best-effort: auto-complete the parent project if every phase across
+    // every accepted proposal is now done. Never let a failure here block
+    // the stage-completion response above.
+    if (stage.proposal) {
+      try {
+        await this.maybeAutoCompleteProject(stage.proposal.projectRequestId);
+      } catch (error) {
+        this.logger.error(
+          `Failed auto-complete check for project ${stage.proposal.projectRequestId}`,
+          error,
+        );
+      }
+    }
+
     return updated;
+  }
+
+  /**
+   * If every ProjectStage across every ACCEPTED proposal for this project
+   * is COMPLETED, mark the project itself COMPLETED and capture the
+   * project's total duration (used later by the financial tab).
+   */
+  private async maybeAutoCompleteProject(projectRequestId: string) {
+    const acceptedProposals = await this.prisma.proposal.findMany({
+      where: { projectRequestId, status: ProposalStatus.ACCEPTED },
+      include: { projectStages: true },
+    });
+
+    const allStages = acceptedProposals.flatMap((p) => p.projectStages);
+    if (allStages.length === 0) return;
+
+    const allComplete = allStages.every(
+      (s) => s.status === StageStatus.COMPLETED,
+    );
+    if (!allComplete) return;
+
+    const projectRequest = await this.prisma.projectRequest.findUnique({
+      where: { id: projectRequestId },
+      select: { status: true, projectStartedAt: true },
+    });
+
+    if (!projectRequest || projectRequest.status === RequestStatus.COMPLETED) {
+      return;
+    }
+
+    const completedAt = new Date();
+    let totalDurationMonths: number | null = null;
+
+    if (projectRequest.projectStartedAt) {
+      totalDurationMonths =
+        (completedAt.getTime() - projectRequest.projectStartedAt.getTime()) /
+        (1000 * 60 * 60 * 24 * 30.44);
+    } else {
+      this.logger.warn(
+        `Project ${projectRequestId} auto-completed with no projectStartedAt set`,
+      );
+    }
+
+    await this.prisma.projectRequest.update({
+      where: { id: projectRequestId },
+      data: {
+        status: RequestStatus.COMPLETED,
+        projectCompletedAt: completedAt,
+        totalDurationMonths,
+      },
+    });
+
+    this.logger.log(`Project ${projectRequestId} auto-completed (all phases done)`);
   }
 
 
@@ -499,7 +570,7 @@ export class ProjectStageService {
             type: 'PAYMENT_REMINDER',
             title: 'Payment Required',
             message: `"${stage.name}" is completed. Please pay for "${nextStage.name}" to proceed.`,
-            link: '/user-dashboard',
+            link: clientProjectLink(proposal.projectRequestId, 'meetings'),
             projectRequestId: proposal.projectRequestId,
           });
         }

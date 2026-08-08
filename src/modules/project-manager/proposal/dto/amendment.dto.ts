@@ -9,12 +9,30 @@ export class CreateAmendmentRequestDto {
   @MaxLength(2000)
   description!: string;
 
+  // Client's scope estimate for the requested extension.
+  @IsOptional()
+  @IsString()
+  @MaxLength(50)
+  squareFootage?: string;
+
+  @IsOptional()
+  @IsEnum(['sqf', 'sqm'])
+  projectSizeUnit?: 'sqf' | 'sqm';
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(100)
+  budgetRange?: string;
+
+  // Legacy intake fields, kept so older clients keep working.
+  @IsOptional()
   @IsString()
   @MaxLength(2000)
-  services!: string;
+  services?: string;
 
+  @IsOptional()
   @IsEnum(['LOW', 'MEDIUM', 'HIGH', 'URGENT'])
-  urgency!: string;
+  urgency?: string;
 }
 
 export class ReviewAmendmentDto {
@@ -47,8 +65,10 @@ export class CreateAmendmentProposalDto {
   @IsString()
   expectedTimeline?: string;
 
+  // How the client settles this amendment: per completed phase, or all at once.
   @IsOptional()
-  taxRate?: number;
+  @IsEnum(['PHASE_COMPLETION', 'LUMP_SUM'])
+  paymentType?: 'PHASE_COMPLETION' | 'LUMP_SUM';
 
   @IsOptional()
   @IsString()

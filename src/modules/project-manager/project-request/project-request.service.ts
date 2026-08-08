@@ -3,8 +3,10 @@ import {
   NotFoundException,
   ForbiddenException,
   BadRequestException,
+  UnauthorizedException,
   Logger,
 } from '@nestjs/common';
+import * as bcrypt from 'bcrypt';
 
 import {
   RequestStatus,
@@ -13,6 +15,8 @@ import {
   Prisma,
   ProjectRequest,
   ServiceType,
+  MeetingStatus,
+  ProposalStatus,
 } from '@prisma/client';
 import { PrismaService } from 'src/prisma/prisma.service';
 import { MailerService } from 'src/utils/email/email.service';
@@ -20,6 +24,8 @@ import { GetMyMeetingsDto, QueryProjectRequestDto } from './dto/query-project-re
 import { UpdateRequestStatusDto } from './dto/update-request-status.dto';
 import { CreateMeetingLinkDto } from './dto/create-meeting-link.dto';
 import { NotificationService } from 'src/modules/notification/notification.service';
+import { staffProjectLink } from 'src/common/notification-links';
+import { PaymentService } from 'src/modules/payment/payment.service';
 
 @Injectable()
 export class ProjectRequestService {
@@ -41,6 +47,7 @@ export class ProjectRequestService {
     private prisma: PrismaService,
     private mailer: MailerService,
     private notificationService: NotificationService,
+    private paymentService: PaymentService,
   ) { }
 
   private canManageRequests(user: User): boolean {
@@ -57,6 +64,93 @@ export class ProjectRequestService {
 
   private isAdminOrManager(user: User): boolean {
     return user.role === UserRole.SUPER_ADMIN || user.role === UserRole.ADMIN || user.role === UserRole.PROJECT_MANAGER;
+  }
+
+  /**
+   * The stage ids whose deliverables a client has actually paid for.
+   *
+   * LUMP_SUM proposals unlock every phase at once, on the single payment.
+   * INSTALLMENT proposals unlock one phase at a time, each on its own payment.
+   * A project with no accepted proposal yet unlocks nothing.
+   *
+   * Only COMPLETED payments count — a checkout session that was started but
+   * never paid must not open the folder.
+   */
+  private async unlockedStageIds(
+    projectRequestIds: string[],
+  ): Promise<Set<string>> {
+    const unlocked = new Set<string>();
+    if (projectRequestIds.length === 0) return unlocked;
+
+    const [proposals, payments, stages] = await Promise.all([
+      this.prisma.proposal.findMany({
+        where: {
+          projectRequestId: { in: projectRequestIds },
+          status: 'ACCEPTED',
+          proposalType: 'NORMAL',
+        },
+        select: {
+          projectRequestId: true,
+          paymentMethod: true,
+          paymentType: true,
+        },
+        orderBy: { createdAt: 'desc' },
+      }),
+      this.prisma.payment.findMany({
+        where: {
+          projectRequestId: { in: projectRequestIds },
+          paymentStatus: 'COMPLETED',
+        },
+        select: {
+          projectRequestId: true,
+          stageId: true,
+          paymentType: true,
+        },
+      }),
+      this.prisma.projectStage.findMany({
+        where: { projectRequestId: { in: projectRequestIds } },
+        select: { id: true, projectRequestId: true },
+      }),
+    ]);
+
+    // projectRequestId -> billed as one lump sum. Newest accepted proposal wins.
+    const isLumpSumByProject = new Map<string, boolean>();
+    for (const proposal of proposals) {
+      if (!proposal.projectRequestId) continue;
+      if (isLumpSumByProject.has(proposal.projectRequestId)) continue;
+      isLumpSumByProject.set(
+        proposal.projectRequestId,
+        proposal.paymentMethod === 'lumpSum' ||
+          proposal.paymentMethod === 'LUMP_SUM' ||
+          proposal.paymentType === 'LUMP_SUM',
+      );
+    }
+
+    const lumpSumPaidProjects = new Set(
+      payments
+        .filter((p) => p.paymentType === 'LUMP_SUM' && p.projectRequestId)
+        .map((p) => p.projectRequestId as string),
+    );
+    const paidStageIds = new Set(
+      payments
+        .filter((p) => p.paymentType === 'INSTALLMENT' && p.stageId)
+        .map((p) => p.stageId as string),
+    );
+
+    for (const stage of stages) {
+      if (!stage.projectRequestId) continue;
+
+      const isLumpSum = isLumpSumByProject.get(stage.projectRequestId);
+      if (isLumpSum === undefined) continue;
+
+      const paid = isLumpSum
+        ? lumpSumPaidProjects.has(stage.projectRequestId)
+        : paidStageIds.has(stage.id);
+
+      if (paid) unlocked.add(stage.id);
+    }
+
+    return unlocked;
   }
 
   private async isAssignedToProject(projectRequestId: string, user: User): Promise<boolean> {
@@ -504,7 +598,7 @@ export class ProjectRequestService {
         type: 'PROJECT_ASSIGNED_TO_TEAM',
         title: `Project Assigned: ${updated.projectName}`,
         message: `Your team has been assigned to the project "${updated.projectName}".`,
-        link: `/dashboard/projects/${updated.id}`,
+        link: staffProjectLink(updated.id, 'management'),
         projectRequestId: updated.id,
       });
 
@@ -756,9 +850,21 @@ export class ProjectRequestService {
     };
   }
 
-  async deleteRequest(id: string, user: User) {
-    if (!this.canManageRequests(user)) {
+  async deleteRequest(id: string, password: string, user: User) {
+    if (user.role !== UserRole.SUPER_ADMIN) {
       throw new ForbiddenException('Access denied');
+    }
+
+    if (!password) {
+      throw new UnauthorizedException('Password is required to delete a project');
+    }
+
+    const fullUser = await this.prisma.user.findUnique({
+      where: { id: user.id },
+    });
+
+    if (!fullUser?.password || !(await bcrypt.compare(password, fullUser.password))) {
+      throw new UnauthorizedException('Incorrect password');
     }
 
     const request = await this.prisma.projectRequest.findUnique({
@@ -769,23 +875,40 @@ export class ProjectRequestService {
       throw new NotFoundException('Request not found');
     }
 
-    // Permanent delete if already archived or if user is super admin
-    if (request.isArchived || user.role === UserRole.SUPER_ADMIN) {
-      await this.prisma.projectRequest.delete({
-        where: { id },
-      });
-      this.logger.log(`Request ${id} permanently deleted by ${user.email}`);
-      return { message: 'Project permanently deleted successfully' };
-    }
-
-    await this.prisma.projectRequest.update({
-      where: { id },
-      data: { deletedAt: new Date() },
+    // Money that actually changed hands is not ours to erase. Archiving keeps
+    // the project out of the way without destroying the payment history.
+    const settledPayments = await this.prisma.payment.count({
+      where: { projectRequestId: id, paymentStatus: 'COMPLETED' },
     });
 
-    this.logger.log(`Request ${id} soft deleted by ${user.email}`);
+    if (settledPayments > 0) {
+      throw new BadRequestException(
+        `This project has ${settledPayments} completed payment(s) and cannot be deleted. Archive it instead to keep the financial record intact.`,
+      );
+    }
 
-    return { message: 'Project moved to trash successfully' };
+    // Most rows pointing at a project request use Prisma's default referential
+    // action (Restrict), so the delete fails with P2003 unless the dependents go
+    // first — proposals_projectRequestId_fkey is the one that trips in practice.
+    // Order matters: payments hold a required FK to the proposal, so they have
+    // to clear before it.
+    await this.prisma.$transaction(async (tx) => {
+      await tx.refundRequest.deleteMany({ where: { projectRequestId: id } });
+      await tx.payment.deleteMany({ where: { projectRequestId: id } });
+      await tx.meetingLink.deleteMany({ where: { projectRequestId: id } });
+      // Stages hang off the request by an optional FK, so they would be
+      // orphaned rather than removed. Their deadline reminders cascade.
+      await tx.projectStage.deleteMany({ where: { projectRequestId: id } });
+      // Services, credits and amendment requests cascade from the proposal.
+      await tx.proposal.deleteMany({ where: { projectRequestId: id } });
+      // Not a real FK — just an id column that would otherwise dangle.
+      await tx.notification.deleteMany({ where: { projectRequestId: id } });
+
+      await tx.projectRequest.delete({ where: { id } });
+    });
+
+    this.logger.log(`Request ${id} permanently deleted by ${user.email}`);
+    return { message: 'Project permanently deleted successfully' };
   }
 
   async archiveRequest(id: string, user: User) {
@@ -962,6 +1085,18 @@ export class ProjectRequestService {
       this.prisma.projectRequest.count({ where }),
     ]);
 
+    // A client only gets a phase's deliverables folder URL once that phase is
+    // paid for. Stripping it here rather than in the UI is the point — a hidden
+    // button still ships the link in the response body. Staff see everything.
+    if (user.role === UserRole.USER) {
+      const unlocked = await this.unlockedStageIds(requests.map((r) => r.id));
+      for (const request of requests) {
+        for (const stage of request.stages) {
+          if (!unlocked.has(stage.id)) stage.driveLink = null;
+        }
+      }
+    }
+
     return {
       data: requests,
       meta: {
@@ -1004,6 +1139,45 @@ export class ProjectRequestService {
       );
     }
 
+    // 3b. Phase-scoped meetings: only allowed post-acceptance, and gated on
+    // payment for INSTALLMENT proposals (LUMP_SUM proposals are unrestricted).
+    if (dto.stageId) {
+      const stage = await this.prisma.projectStage.findUnique({
+        where: { id: dto.stageId },
+        include: { proposal: true },
+      });
+
+      if (!stage || !stage.proposal || stage.proposal.projectRequestId !== dto.projectRequestId) {
+        throw new NotFoundException('Project stage not found for this project');
+      }
+
+      if (stage.proposal.status !== 'ACCEPTED') {
+        throw new ForbiddenException(
+          'This phase cannot be scheduled until its contract has been accepted.',
+        );
+      }
+
+      const isInstallment =
+        stage.proposal.paymentType === 'INSTALLMENT' ||
+        stage.proposal.paymentMethod === 'INSTALLMENT' ||
+        stage.proposal.paymentMethod === 'installments';
+
+      if (isInstallment) {
+        const completedPayment = await this.prisma.payment.findFirst({
+          where: {
+            stageId: dto.stageId,
+            paymentStatus: 'COMPLETED',
+          },
+        });
+
+        if (!completedPayment) {
+          throw new ForbiddenException(
+            'Client must complete payment for this phase before a meeting can be scheduled.',
+          );
+        }
+      }
+    }
+
     // 4. Create meeting link record
     const meetingLink = await this.prisma.meetingLink.create({
       data: {
@@ -1015,6 +1189,8 @@ export class ProjectRequestService {
         scheduledAt: new Date(dto.scheduledAt),
         notes: dto.notes || null,
         emailSent: false,
+        status: 'PENDING_RESPONSE',
+        stageId: dto.stageId || null,
       },
       include: {
         sentByUser: { select: { id: true, name: true, email: true, role: true } },
@@ -1067,6 +1243,78 @@ export class ProjectRequestService {
     };
   }
 
+  /**
+   * Accept or reject a pending meeting — whoever DIDN'T send/propose it is
+   * the one allowed to respond: staff respond to PENDING_CLIENT_REQUEST
+   * (client-proposed dates), the owning client responds to PENDING_RESPONSE
+   * (PM-proposed dates/links). Rejecting doesn't mutate the row further —
+   * the sender re-proposes via a fresh sendMeetingLink/requestMeeting call.
+   */
+  async respondToMeeting(
+    meetingId: string,
+    action: 'accept' | 'reject',
+    user: User,
+  ) {
+    const meeting = await this.prisma.meetingLink.findUnique({
+      where: { id: meetingId },
+      include: { projectRequest: true },
+    });
+
+    if (!meeting) {
+      throw new NotFoundException('Meeting not found');
+    }
+
+    if (meeting.status === 'PENDING_CLIENT_REQUEST') {
+      if (!this.canManageRequests(user)) {
+        throw new ForbiddenException('Only staff can respond to a client meeting request');
+      }
+    } else if (meeting.status === 'PENDING_RESPONSE') {
+      if (meeting.projectRequest.userId !== user.id) {
+        throw new ForbiddenException('Only the project client can respond to this meeting');
+      }
+    } else {
+      throw new BadRequestException('This meeting has already been responded to');
+    }
+
+    const newStatus: MeetingStatus = action === 'accept' ? 'ACCEPTED' : 'DECLINED';
+
+    const updated = await this.prisma.meetingLink.update({
+      where: { id: meetingId },
+      data: { status: newStatus },
+      include: {
+        sentByUser: { select: { id: true, name: true, email: true, role: true } },
+        sentToUser: { select: { id: true, name: true, email: true } },
+        projectRequest: { select: { id: true, projectName: true, status: true } },
+      },
+    });
+
+    // Notify whoever sent/proposed the meeting — the "other side" of
+    // whichever direction just responded.
+    try {
+      await this.notificationService.createNotification({
+        userId: meeting.sentByUserId,
+        type: action === 'accept' ? 'MEETING_ACCEPTED' : 'MEETING_DECLINED',
+        title: action === 'accept' ? 'Meeting Confirmed' : 'Meeting Declined',
+        message:
+          action === 'accept'
+            ? `"${meeting.title}" for ${meeting.projectRequest.projectName} has been confirmed.`
+            : `"${meeting.title}" for ${meeting.projectRequest.projectName} was declined. Please propose a new time.`,
+        link: `/dashboard?project=${meeting.projectRequestId}`,
+        projectRequestId: meeting.projectRequestId,
+      });
+    } catch (error) {
+      this.logger.error(`Failed to notify meeting response for ${meetingId}`, error);
+    }
+
+    this.logger.log(`Meeting ${meetingId} ${newStatus.toLowerCase()} by ${user.email}`);
+
+    return {
+      success: true,
+      message: action === 'accept' ? 'Meeting accepted' : 'Meeting declined',
+      data: updated,
+    };
+  }
+
   // async getMyMeetings(userId: string) {
   // //   const meetings = await this.prisma.meetingLink.findMany({
   // //     where: { sentToUserId: userId },
@@ -1093,12 +1341,14 @@ export class ProjectRequestService {
     success: true;
     data: Array<{
       id: string;
-      meetingUrl: string;
+      meetingUrl: string | null;
       title: string;
       scheduledAt: Date;
       notes?: string | null;
       emailSent: boolean;
       createdAt: Date;
+      status: MeetingStatus;
+      stageId: string | null;
       projectRequest: {
         id: string;
         projectName: string;
@@ -1160,6 +1410,8 @@ export class ProjectRequestService {
         notes: true,
         emailSent: true,
         createdAt: true,
+        status: true,
+        stageId: true,
         projectRequest: {
           select: {
             id: true,
@@ -1234,6 +1486,35 @@ export class ProjectRequestService {
   // NEW INQUIRY METHODS
   // ========================================
 
+  async checkEmailExists(email: string, staffUser: User) {
+    if (!this.canManageRequests(staffUser)) {
+      throw new ForbiddenException('Access denied');
+    }
+
+    if (!email) {
+      throw new BadRequestException('Email is required');
+    }
+
+    const normalizedEmail = email.toLowerCase().trim();
+    const user = await this.prisma.user.findUnique({
+      where: { email: normalizedEmail },
+      select: { role: true, emailVerified: true, password: true },
+    });
+
+    const hasPassword = !!user?.password;
+
+    return {
+      exists: !!user,
+      emailVerified: user?.emailVerified ?? false,
+      role: user?.role ?? null,
+      hasPassword,
+      // The PM is only asked for a password when there is no account yet, or
+      // the account exists but has no credentials to log in with. An account
+      // that already has a password is never overwritten, verified or not.
+      needsPassword: !user || !hasPassword,
+    };
+  }
+
   async createNewInquiry(
     body: {
       clientInfo: {
@@ -1264,7 +1545,7 @@ export class ProjectRequestService {
         budgetRange?: string;
         timeline?: string;
       };
-      password: string;
+      password?: string;
     },
     staffUser: User,
   ) {
@@ -1274,12 +1555,8 @@ export class ProjectRequestService {
 
     const { clientInfo, projectInfo, password } = body;
 
-    if (!clientInfo.email || !password) {
-      throw new BadRequestException('Email and password are required');
-    }
-
-    if (password.length < 6) {
-      throw new BadRequestException('Password must be at least 6 characters');
+    if (!clientInfo.email) {
+      throw new BadRequestException('Email is required');
     }
 
     // Map service type string to enum
@@ -1306,7 +1583,6 @@ export class ProjectRequestService {
     };
 
     const bcrypt = await import('bcrypt');
-    const hashedPassword = await bcrypt.hash(password, 12);
     const normalizedEmail = clientInfo.email.toLowerCase().trim();
 
     // Use a transaction to create user + project request atomically
@@ -1316,9 +1592,36 @@ export class ProjectRequestService {
         where: { email: normalizedEmail },
       });
 
+      let passwordSet = false;
+
       if (clientUser) {
-        // User exists - update password and verify status if it's a regular USER
-        if (clientUser.role === 'USER') {
+        if (clientUser.role !== 'USER') {
+          throw new BadRequestException(
+            'An account with this email already exists as a staff user. Cannot create a client inquiry for it.',
+          );
+        }
+
+        if (clientUser.password) {
+          // Existing client who already has their own credentials — never
+          // touch their password. Only make sure the account can actually be
+          // logged into, since a staff member is vouching for the email here.
+          if (!clientUser.emailVerified) {
+            clientUser = await tx.user.update({
+              where: { id: clientUser.id },
+              data: { emailVerified: true },
+            });
+            this.logger.log(`User ${normalizedEmail} already had a password but was unverified, verified without password change`);
+          } else {
+            this.logger.log(`User ${normalizedEmail} already exists and is verified, linking inquiry without password change`);
+          }
+        } else {
+          // Account exists but has no password to log in with — set one.
+          if (!password || password.length < 6) {
+            throw new BadRequestException(
+              'This email has an account with no password set. A password of at least 6 characters is required to activate it.',
+            );
+          }
+          const hashedPassword = await bcrypt.hash(password, 12);
           clientUser = await tx.user.update({
             where: { id: clientUser.id },
             data: {
@@ -1326,12 +1629,15 @@ export class ProjectRequestService {
               emailVerified: true,
             },
           });
-          this.logger.log(`User ${normalizedEmail} already exists, updated password and verified status`);
-        } else {
-          this.logger.log(`User ${normalizedEmail} already exists with role ${clientUser.role}, linking inquiry without password update`);
+          passwordSet = true;
+          this.logger.log(`User ${normalizedEmail} already existed without a password, activated with new password`);
         }
       } else {
         // 2. Create user account with password
+        if (!password || password.length < 6) {
+          throw new BadRequestException('Password must be at least 6 characters');
+        }
+        const hashedPassword = await bcrypt.hash(password, 12);
         clientUser = await tx.user.create({
           data: {
             email: normalizedEmail,
@@ -1341,6 +1647,7 @@ export class ProjectRequestService {
             emailVerified: true, // auto-verified since PM creates the account
           },
         });
+        passwordSet = true;
         this.logger.log(`Created new user account for ${normalizedEmail}`);
       }
 
@@ -1385,7 +1692,7 @@ export class ProjectRequestService {
         },
       });
 
-      return { clientUser, projectRequest };
+      return { clientUser, projectRequest, passwordSet };
     }, {
       timeout: 10000
     });
@@ -1394,14 +1701,14 @@ export class ProjectRequestService {
       `New inquiry created by ${staffUser.email} for ${normalizedEmail} - Project: ${projectInfo.projectName}`,
     );
 
-    // 4. Send welcome email 
+    // 4. Send welcome email
     try {
       await this.mailer.sendNewInquiryWelcomeEmail(
         result.clientUser.email,
         `${clientInfo.firstName} ${clientInfo.lastName}`,
         {
           projectName: projectInfo.projectName,
-          password: password,
+          password: result.passwordSet ? password : undefined,
         },
       );
     } catch (error) {
@@ -1410,7 +1717,9 @@ export class ProjectRequestService {
 
     return {
       success: true,
-      message: 'New inquiry created successfully. Client account has been set up.',
+      message: result.passwordSet
+        ? 'New inquiry created successfully. Client account has been set up.'
+        : "New inquiry created successfully and linked to the client's existing account.",
       data: result.projectRequest,
       clientEmail: result.clientUser.email,
     };
@@ -1515,7 +1824,7 @@ export class ProjectRequestService {
 
   async requestMeeting(
     projectRequestId: string,
-    dto: { scheduledAt: string; notes?: string },
+    dto: { scheduledAt: string; notes?: string; stageId?: string },
     user: User,
   ) {
     // 1. Find the project request and verify ownership
@@ -1527,6 +1836,68 @@ export class ProjectRequestService {
       throw new NotFoundException('Project request not found or not owned by you');
     }
 
+    if (!projectRequest.consultationPaymentId) {
+      throw new ForbiddenException(
+        'Please pay the consultation fee before requesting a meeting.',
+      );
+    }
+
+    // 1b. A phase progress meeting has extra preconditions: the phase must be
+    // finished, and on an installment plan the client must have paid for it.
+    let stage: { id: string; name: string; status: string } | null = null;
+    if (dto.stageId) {
+      stage = await this.prisma.projectStage.findFirst({
+        where: { id: dto.stageId, projectRequestId },
+        select: { id: true, name: true, status: true },
+      });
+
+      if (!stage) {
+        throw new NotFoundException('Phase not found for this project');
+      }
+
+      if (stage.status !== 'COMPLETED') {
+        throw new BadRequestException(
+          'This phase is not complete yet, so a progress meeting cannot be booked.',
+        );
+      }
+
+      const acceptedProposal = await this.prisma.proposal.findFirst({
+        where: {
+          projectRequestId,
+          status: ProposalStatus.ACCEPTED,
+        },
+        select: { id: true, paymentMethod: true, paymentType: true },
+      });
+
+      if (!acceptedProposal) {
+        throw new BadRequestException(
+          'Phase meetings become available once your contract is approved.',
+        );
+      }
+
+      const isLumpSum =
+        acceptedProposal.paymentMethod === 'lumpSum' ||
+        acceptedProposal.paymentMethod === 'LUMP_SUM' ||
+        acceptedProposal.paymentType === 'LUMP_SUM';
+
+      if (!isLumpSum) {
+        const paidForStage = await this.prisma.payment.findFirst({
+          where: {
+            projectRequestId,
+            stageId: dto.stageId,
+            paymentStatus: 'COMPLETED',
+          },
+          select: { id: true },
+        });
+
+        if (!paidForStage) {
+          throw new BadRequestException(
+            'Please complete the payment for this phase before booking its meeting.',
+          );
+        }
+      }
+    }
+
     // 2. Find managers to notify
     const managers = await this.prisma.user.findMany({
       where: {
@@ -1536,15 +1907,18 @@ export class ProjectRequestService {
       select: { id: true, email: true, name: true },
     });
 
-    // 3. Create a MeetingLink as a "REQUEST" placeholder
-    // This allows it to show up in the project's meetingLinks list
+    // 3. Create a MeetingLink as a client request, awaiting PM response
     await this.prisma.meetingLink.create({
       data: {
         projectRequestId: projectRequestId,
         sentByUserId: user.id,
         sentToUserId: user.id, // placeholder - the client themselves
-        meetingUrl: 'https://pending.request', // special flag for requested meetings
-        title: 'Meeting Requested by Client',
+        stageId: dto.stageId || null,
+        meetingUrl: null,
+        status: 'PENDING_CLIENT_REQUEST',
+        title: stage
+          ? `${stage.name} — Progress Meeting Requested`
+          : 'Meeting Requested by Client',
         scheduledAt: new Date(dto.scheduledAt),
         notes: dto.notes || 'No additional notes provided.',
       },
@@ -1557,7 +1931,9 @@ export class ProjectRequestService {
       type: 'MEETING_REQUEST',
       title: 'New Meeting Request',
       message: `${clientName} has requested a meeting for project "${projectRequest.projectName}" on ${new Date(dto.scheduledAt).toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })}`,
-      link: `/dashboard?project=${projectRequestId}`,
+      // Opens the project on the Meeting Request tab.
+      link: staffProjectLink(projectRequestId, 'meeting'),
+      projectRequestId,
     }));
 
     await this.prisma.notification.createMany({
@@ -1609,6 +1985,202 @@ export class ProjectRequestService {
     return {
       success: true,
       message: 'Meeting request sent successfully. The project manager will be in touch.',
+    };
+  }
+
+  /**
+   * Every meeting across all projects, for the Master Schedule calendar.
+   * Super Admin / Admin see everything and may filter to one manager; a PM only
+   * ever sees the projects assigned to them.
+   */
+  async getMasterSchedule(
+    user: User,
+    opts: { managerId?: string; from?: string; to?: string },
+  ) {
+    if (!this.canManageRequests(user)) {
+      throw new ForbiddenException('Access denied');
+    }
+
+    const isPrivileged =
+      user.role === UserRole.SUPER_ADMIN || user.role === UserRole.ADMIN;
+
+    // A PM is locked to their own schedule regardless of what they ask for.
+    const managerFilter = isPrivileged ? opts.managerId : user.id;
+
+    const where: Prisma.MeetingLinkWhereInput = {
+      ...(opts.from || opts.to
+        ? {
+            scheduledAt: {
+              ...(opts.from ? { gte: new Date(opts.from) } : {}),
+              ...(opts.to ? { lte: new Date(opts.to) } : {}),
+            },
+          }
+        : {}),
+      ...(managerFilter
+        ? { projectRequest: { assignedManagerId: managerFilter } }
+        : {}),
+    };
+
+    const meetings = await this.prisma.meetingLink.findMany({
+      where,
+      orderBy: { scheduledAt: 'asc' },
+      select: {
+        id: true,
+        title: true,
+        scheduledAt: true,
+        notes: true,
+        status: true,
+        meetingUrl: true,
+        stageId: true,
+        projectRequest: {
+          select: {
+            id: true,
+            projectName: true,
+            clientFirstName: true,
+            clientLastName: true,
+            assignedManagerId: true,
+            assignedManager: { select: { id: true, name: true, email: true } },
+          },
+        },
+      },
+    });
+
+    return {
+      success: true,
+      message: 'Master schedule retrieved',
+      data: meetings.map((m) => ({
+        id: m.id,
+        title: m.title,
+        scheduledAt: m.scheduledAt,
+        notes: m.notes,
+        status: m.status,
+        meetingUrl: m.meetingUrl,
+        stageId: m.stageId,
+        projectRequestId: m.projectRequest?.id ?? null,
+        projectName: m.projectRequest?.projectName ?? 'Unassigned project',
+        clientName: [
+          m.projectRequest?.clientFirstName,
+          m.projectRequest?.clientLastName,
+        ]
+          .filter(Boolean)
+          .join(' '),
+        managerId: m.projectRequest?.assignedManagerId ?? null,
+        managerName: m.projectRequest?.assignedManager?.name ?? null,
+      })),
+    };
+  }
+
+  /**
+   * Client opts out of (or back into) the progress meeting for a phase.
+   * This never affects what they owe — an installment is still due.
+   */
+  async setPhaseMeetingBypass(stageId: string, bypassed: boolean, user: User) {
+    const stage = await this.prisma.projectStage.findUnique({
+      where: { id: stageId },
+      select: {
+        id: true,
+        projectRequestId: true,
+        projectRequest: { select: { userId: true } },
+      },
+    });
+
+    if (!stage) {
+      throw new NotFoundException('Phase not found');
+    }
+
+    const isOwner = stage.projectRequest?.userId === user.id;
+    if (!isOwner && !this.canManageRequests(user)) {
+      throw new ForbiddenException('You cannot change this phase');
+    }
+
+    await this.prisma.projectStage.update({
+      where: { id: stageId },
+      data: { clientBypassedMeeting: bypassed },
+    });
+
+    return {
+      success: true,
+      message: bypassed
+        ? 'Meeting skipped for this phase.'
+        : 'Meeting re-enabled for this phase.',
+    };
+  }
+
+  /**
+   * PM includes or excludes the progress meeting requirement for a phase.
+   */
+  async setPhaseMeetingRequired(
+    stageId: string,
+    meetingRequired: boolean,
+    user: User,
+  ) {
+    if (!this.canManageRequests(user)) {
+      throw new ForbiddenException('Only staff can change meeting requirements');
+    }
+
+    const stage = await this.prisma.projectStage.findUnique({
+      where: { id: stageId },
+      select: { id: true },
+    });
+
+    if (!stage) {
+      throw new NotFoundException('Phase not found');
+    }
+
+    await this.prisma.projectStage.update({
+      where: { id: stageId },
+      data: { meetingRequired },
+    });
+
+    return {
+      success: true,
+      message: meetingRequired
+        ? 'Progress meeting is now required for this phase.'
+        : 'Progress meeting is no longer required for this phase.',
+    };
+  }
+
+  /**
+   * Lets a client pay the consultation fee for a project that was created
+   * on their behalf by a PM/Admin (createNewInquiry), after the fact —
+   * required before they can request a meeting (see requestMeeting above).
+   */
+  async attachConsultationPayment(
+    projectRequestId: string,
+    paymentIntentId: string,
+    user: User,
+  ) {
+    const projectRequest = await this.prisma.projectRequest.findFirst({
+      where: { id: projectRequestId, userId: user.id, deletedAt: null },
+    });
+
+    if (!projectRequest) {
+      throw new NotFoundException('Project request not found or not owned by you');
+    }
+
+    if (projectRequest.consultationPaymentId) {
+      return {
+        success: true,
+        message: 'Consultation fee already paid.',
+        data: projectRequest,
+      };
+    }
+
+    await this.paymentService.verifyConsultationPayment(paymentIntentId, user.id);
+
+    const updated = await this.prisma.projectRequest.update({
+      where: { id: projectRequestId },
+      data: { consultationPaymentId: paymentIntentId },
+    });
+
+    this.logger.log(
+      `Consultation fee attached to project ${projectRequestId} by ${user.email}`,
+    );
+
+    return {
+      success: true,
+      message: 'Consultation fee payment confirmed.',
+      data: updated,
     };
   }
 }

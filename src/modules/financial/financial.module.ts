@@ -4,9 +4,10 @@ import { FinancialController } from './financial.controller';
 import { FinancialService } from './financial.service';
 import { MercuryService } from './mercury.service';
 import { PrismaModule } from '../../prisma/prisma.module';
+import { NotificationModule } from '../notification/notification.module';
 
 @Module({
-  imports: [PrismaModule, ConfigModule],
+  imports: [PrismaModule, ConfigModule, NotificationModule],
   controllers: [FinancialController],
   providers: [FinancialService, MercuryService],
   exports: [FinancialService, MercuryService],

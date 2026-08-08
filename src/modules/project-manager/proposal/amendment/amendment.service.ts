@@ -11,6 +11,7 @@ import {
   ProposalStatus,
   AmendmentStatus,
   ProposalType,
+  PaymentType,
   Prisma,
 } from '@prisma/client';
 import { PrismaService } from 'src/prisma/prisma.service';
@@ -102,8 +103,11 @@ async createAmendmentRequest(
       proposalId,
       projectName: dto.projectName.trim(),
       description: dto.description.trim(),
-      services: dto.services.trim(),
-      urgency: dto.urgency,
+      squareFootage: dto.squareFootage?.trim() || null,
+      projectSizeUnit: dto.projectSizeUnit || null,
+      budgetRange: dto.budgetRange?.trim() || null,
+      services: dto.services?.trim() || null,
+      urgency: dto.urgency || null,
       requestedById: user.id,
       status: AmendmentStatus.PENDING,
     },
@@ -371,12 +375,18 @@ async createAmendmentRequest(
 
     const parentProposal = amendment.proposal;
 
-    // Generate proposal number
-    const year = new Date().getFullYear();
-    const count = await this.prisma.proposal.count({
-      where: { proposalNumber: { startsWith: `PROP-${year}-` } },
+    // An amendment carries its parent contract's number with an AMD suffix
+    // showing which amendment it is: PROP-2026-0007-AMD-001, -AMD-002, ...
+    // Existing amendments keep whatever number they were issued with.
+    const amendmentCount = await this.prisma.proposal.count({
+      where: {
+        parentProposalId: parentProposal.id,
+        proposalType: ProposalType.AMENDMENT,
+      },
     });
-    const proposalNumber = `PROP-${year}-${String(count + 1).padStart(4, '0')}-AMD`;
+    const proposalNumber = `${parentProposal.proposalNumber}-AMD-${String(
+      amendmentCount + 1,
+    ).padStart(3, '0')}`;
 
     // Create amendment proposal
     const amendmentProposal = await this.prisma.proposal.create({
@@ -400,8 +410,21 @@ async createAmendmentRequest(
         clientEmail: parentProposal.clientEmail,
         clientPhone: parentProposal.clientPhone,
         clientCompany: parentProposal.clientCompany,
-        taxRate: dto.taxRate ? new Prisma.Decimal(dto.taxRate) : parentProposal.taxRate,
-        paymentMethod: dto.paymentMethod,
+        // "Pay by phase completion" is stored as INSTALLMENT; the proposal
+        // wizard and payment status both key off paymentType/paymentMethod.
+        paymentType:
+          dto.paymentType === 'PHASE_COMPLETION'
+            ? PaymentType.INSTALLMENT
+            : dto.paymentType === 'LUMP_SUM'
+              ? PaymentType.LUMP_SUM
+              : parentProposal.paymentType,
+        paymentMethod:
+          dto.paymentMethod ??
+          (dto.paymentType === 'PHASE_COMPLETION'
+            ? 'INSTALLMENT'
+            : dto.paymentType === 'LUMP_SUM'
+              ? 'LUMP_SUM'
+              : undefined),
         paymentTerms: dto.paymentTerms,
         notes: dto.notes?.trim(),
         termsAndConditions: dto.termsAndConditions?.trim(),

@@ -11,6 +11,10 @@ import {
   IsUUID,
 } from 'class-validator';
 import { MediaContentType, MediaStatus, ProjectCategory } from '@prisma/client';
+import {
+  ContinentType,
+  ClimateType,
+} from '@prisma/client';
 
 export class CreateMediaContentDto {
   @IsEnum(MediaContentType)
@@ -68,6 +72,15 @@ export class CreateMediaContentDto {
   @IsString()
   @IsOptional()
   photographer?: string;
+
+  //world project specific
+  @IsEnum(ContinentType)
+  @IsOptional()
+  continent?: ContinentType;
+
+  @IsEnum(ClimateType)
+  @IsOptional()
+  climate?: ClimateType;
 
   // Portfolio specific
   @IsEnum(ProjectCategory)

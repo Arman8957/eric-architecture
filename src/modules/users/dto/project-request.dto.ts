@@ -7,7 +7,9 @@ import {
   MaxLength,
   MinLength,
   IsNotEmpty,
+  IsOptional,
 } from 'class-validator';
+import { Transform } from 'class-transformer';
 import { ServiceType, ProjectCategory } from '@prisma/client';
 
 export class CreateProjectRequestDto {
@@ -44,6 +46,7 @@ export class CreateProjectRequestDto {
 
   // Optional fields
   @IsString()
+  @IsOptional()
   @MaxLength(50)
   clientMiddleName?: string;
 
@@ -72,9 +75,25 @@ export class CreateProjectRequestDto {
   streetAddress?: string;
 
   @IsString()
+  @MaxLength(100)
+  aptSuiteUnit?: string;
+
+  @IsString()
+  @MaxLength(20)
+  zipCode?: string;
+
+  @IsString()
   additionalComments?: string;
 
+  // Multipart sends booleans as strings. enableImplicitConversion runs Boolean("false")
+  // before this transform, so read the untouched value off `obj` rather than `value`.
+  @Transform(({ obj }) => {
+    const raw = obj?.projectLocationSameAsClient;
+    if (raw === undefined || raw === null || raw === '') return undefined;
+    return raw === true || raw === 'true';
+  })
   @IsBoolean()
+  @IsOptional()
   projectLocationSameAsClient?: boolean;
 
   @IsString()
@@ -94,6 +113,10 @@ export class CreateProjectRequestDto {
   projectStreetAddress?: string;
 
   @IsString()
+  @MaxLength(100)
+  projectAptSuiteUnit?: string;
+
+  @IsString()
   @MaxLength(20)
   projectZipCode?: string;
 
@@ -104,16 +127,23 @@ export class CreateProjectRequestDto {
   @MaxLength(100)
   projectSize?: string;
 
+
+  @IsString()
+  @IsOptional()
+  projectTimeline?: string;
+
   @IsString()
   @MaxLength(100)
   budgetRange?: string;
 
+  @IsOptional()
   @IsString()
   preferredArchitecturalStyle?: string;
 
   @IsString()
   siteConstraints?: string;
 
+  @IsOptional()
   @IsString()
   sustainabilityGoals?: string;
 
@@ -131,4 +161,5 @@ export class CreateProjectRequestDto {
 
   @IsString()
   additionalNotes?: string;
+
 }

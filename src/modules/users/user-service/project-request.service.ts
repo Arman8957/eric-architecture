@@ -58,12 +58,16 @@ export class ProjectRequestService {
             projectState: dto.state,
             projectCity: dto.city,
             projectStreetAddress: dto.streetAddress,
+            projectAptSuiteUnit: dto.aptSuiteUnit,
+            projectZipCode: dto.zipCode?.trim(),
           }
         : {
             projectCountry: dto.projectCountry,
             projectState: dto.projectState,
             projectCity: dto.projectCity,
             projectStreetAddress: dto.projectStreetAddress,
+            projectAptSuiteUnit: dto.projectAptSuiteUnit,
+            projectZipCode: dto.projectZipCode?.trim(),
           };
 
       const request = await this.prisma.projectRequest.create({
@@ -78,11 +82,12 @@ export class ProjectRequestService {
           state: dto.state?.trim(),
           city: dto.city?.trim(),
           streetAddress: dto.streetAddress?.trim(),
+          aptSuiteUnit: dto.aptSuiteUnit?.trim(),
+          zipCode: dto.zipCode?.trim(),
           additionalComments: dto.additionalComments?.trim(),
           projectName: dto.projectName.trim(),
           projectLocationSameAsClient: dto.projectLocationSameAsClient ?? false,
           ...projectData,
-          projectZipCode: dto.projectZipCode?.trim(),
           serviceType: dto.serviceType,
           projectCategory: dto.projectCategory,
           projectSize: dto.projectSize?.trim(),
