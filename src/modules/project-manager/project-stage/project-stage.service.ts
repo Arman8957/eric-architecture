@@ -372,6 +372,19 @@ export class ProjectStageService {
     if (status === StageStatus.COMPLETED && stage.status !== StageStatus.COMPLETED) {
       await this.notifyStageCompleted(updated);
       await this.deadlineReminderService.cancelAllRemindersForStage(id);
+
+      // Dragging progress to 100 finishes a phase just as "Complete" does, so
+      // it has to run the same project-wide completion check.
+      if (stage.proposal?.projectRequestId) {
+        try {
+          await this.maybeAutoCompleteProject(stage.proposal.projectRequestId);
+        } catch (error) {
+          this.logger.error(
+            `Failed auto-complete check for project ${stage.proposal.projectRequestId}`,
+            error,
+          );
+        }
+      }
     }
 
     return updated;
@@ -576,14 +589,11 @@ export class ProjectStageService {
         }
       }
 
-      // 3. If all stages are completed, update project request to COMPLETED
-      if (completedCount === totalCount && totalCount > 0 && proposal.projectRequestId) {
-        await this.prisma.projectRequest.update({
-          where: { id: proposal.projectRequestId },
-          data: { status: 'COMPLETED', updatedAt: new Date() },
-        });
-        this.logger.log(`Project request ${proposal.projectRequestId} marked as COMPLETED because all stages are finished.`);
-      }
+      // Completing a project is deliberately NOT decided here. `proposal` is a
+      // single contract, and a project can hold several — the original plus an
+      // amendment per approved change request. Finishing the amendment's one
+      // phase does not finish the project. maybeAutoCompleteProject() owns that
+      // call and weighs every phase of every accepted proposal.
     } catch (error) {
       this.logger.error(
         `Failed to handle stage completion tasks for stage ${stage.id}`,

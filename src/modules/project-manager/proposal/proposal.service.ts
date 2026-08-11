@@ -19,8 +19,10 @@ import {
   ProjectCategory,
   ServiceApprovalStatus,
   ProposalType,
+  AmendmentStatus,
 } from '@prisma/client';
 import { PrismaService } from 'src/prisma/prisma.service';
+import { TX_OPTIONS } from 'src/common/prisma-transaction';
 import { MailerService } from 'src/utils/email/email.service';
 import { CreateProposalDto } from './dto/create-proposal.dto';
 import { UpdateProposalDto } from './dto/update-proposal.dto';
@@ -88,6 +90,30 @@ export class ProposalService {
       );
       // If you want to force a linked user → uncomment:
       // throw new BadRequestException('Cannot create proposal: no registered client user linked to this request');
+    }
+
+    // The wizard's Project step is re-submitted whenever the PM steps back to
+    // it, so an untouched DRAFT from an earlier pass is reused instead of
+    // littering the project with empty proposals. Only a draft this same user
+    // created for this same request, with nothing in it yet, ever qualifies.
+    const reusableDraft = await this.prisma.proposal.findFirst({
+      where: {
+        projectRequestId: dto.projectRequestId,
+        createdById: user.id,
+        status: ProposalStatus.DRAFT,
+        proposalType: ProposalType.NORMAL,
+        services: { none: {} },
+      },
+      orderBy: { createdAt: 'desc' },
+      select: { id: true, proposalNumber: true },
+    });
+
+    if (reusableDraft) {
+      this.logger.log(
+        `Reusing empty draft ${reusableDraft.proposalNumber} for request ${dto.projectRequestId}`,
+      );
+      const reused = await this.update(reusableDraft.id, dto, user);
+      return { ...reused, message: 'Proposal created successfully' };
     }
 
     const year = new Date().getFullYear();
@@ -242,7 +268,10 @@ export class ProposalService {
       throw new BadRequestException('Invalid signature type');
     }
 
-    return this.prisma.$transaction(async (tx) => {
+    // The transaction covers the writes only. Emails and other slow work run
+    // after it commits — holding a transaction open across an SMTP round trip
+    // is what exhausts its time budget and closes it mid-flight.
+    const { updatedProposal, fullySigned } = await this.prisma.$transaction(async (tx) => {
       // Update proposal with signature
       const updatedProposal = await tx.proposal.update({
         where: { id },
@@ -269,10 +298,11 @@ export class ProposalService {
       });
 
       // Check if both signatures are present
-      if (
-        updatedProposal.ownerSignature &&
-        updatedProposal.architectSignature
-      ) {
+      const fullySigned = !!(
+        updatedProposal.ownerSignature && updatedProposal.architectSignature
+      );
+
+      if (fullySigned) {
         // Mark proposal as accepted
         await tx.proposal.update({
           where: { id },
@@ -293,21 +323,24 @@ export class ProposalService {
 
         // services are already sorted by `order`; carry that value through so the
         // stage order in project management matches the proposal exactly.
+        // One createMany rather than a create per service — each round trip
+        // eats into the transaction's budget.
         let fallbackOrder = 1;
-        for (const service of updatedProposal.services) {
-          await tx.projectStage.create({
-            data: {
-              proposalId: updatedProposal.id,
-              name: service.name,
-              description: service.description || `Service: ${service.name}`,
-              status: StageStatus.NOT_STARTED,
-              order: service.order || fallbackOrder++,
-              totalTasks: 5, // Default task count, can be updated later
-              completedTasks: 0,
-              progress: 0,
-            },
-          });
-        }
+        await tx.projectStage.createMany({
+          data: updatedProposal.services.map((service) => ({
+            proposalId: updatedProposal.id,
+            // Without this the stage is invisible to the project's phase list,
+            // so it never counts toward the project's progress.
+            projectRequestId: updatedProposal.projectRequestId,
+            name: service.name,
+            description: service.description || `Service: ${service.name}`,
+            status: StageStatus.NOT_STARTED,
+            order: service.order || fallbackOrder++,
+            totalTasks: 5, // Default task count, can be updated later
+            completedTasks: 0,
+            progress: 0,
+          })),
+        });
 
         // Update project request to ACTIVE status
         if (updatedProposal.projectRequestId) {
@@ -318,6 +351,16 @@ export class ProposalService {
           );
         }
 
+        this.logger.log(
+          `Proposal ${updatedProposal.proposalNumber} fully signed and accepted. Stages created.`,
+        );
+      }
+
+      return { updatedProposal, fullySigned };
+    }, TX_OPTIONS);
+
+    if (fullySigned) {
+      try {
         // Send notifications
         const frontendUrl = this.config.get(
           'FRONTEND_URL',
@@ -360,7 +403,7 @@ export class ProposalService {
         });
 
         // Notify internal team
-        const team = await tx.user.findMany({
+        const team = await this.prisma.user.findMany({
           where: {
             role: { in: this.MANAGER_ROLES_ARRAY },
             isActive: true,
@@ -398,14 +441,16 @@ export class ProposalService {
             text: `Proposal accepted: ${updatedProposal.projectName}\nClient: ${updatedProposal.clientName}\nView: ${frontendUrl}/admin/proposals/${updatedProposal.id}`,
           });
         }
-
-        this.logger.log(
-          `Proposal ${updatedProposal.proposalNumber} fully signed and accepted. Stages created.`,
+      } catch (error) {
+        // The signature is already committed — a bounced notification must not
+        // fail the request or make the client think signing did not work.
+        this.logger.error(
+          `Proposal ${updatedProposal.proposalNumber} was signed, but the acceptance emails failed: ${error}`,
         );
       }
+    }
 
-      return updatedProposal;
-    });
+    return updatedProposal;
   }
 
   async findOneWithFullData(id: string, user: User) {
@@ -1059,7 +1104,22 @@ export class ProposalService {
       paymentTerms: dto.paymentTerms,
       notes: dto.notes?.trim(),
       termsAndConditions: dto.termsAndConditions?.trim(),
+      // The Project step of the wizard re-submits these when the PM steps back
+      // to it, so they have to round-trip or the edit is silently dropped.
+      serviceType: dto.serviceType,
+      projectCategory: dto.projectCategory,
+      squareFootage: dto.squareFootage?.trim(),
     };
+
+    const locationParts = [
+      dto.streetAddress,
+      dto.city,
+      dto.state,
+      dto.country,
+    ].filter(Boolean);
+    if (locationParts.length > 0) {
+      updateData.projectLocation = locationParts.join(', ');
+    }
 
     if (dto.paymentMethod) {
       updateData.paymentType = dto.paymentMethod === 'installments' || dto.paymentMethod === 'INSTALLMENT'
@@ -1067,14 +1127,21 @@ export class ProposalService {
         : 'LUMP_SUM';
     }
 
-    return this.prisma.proposal.update({
+    const updated = await this.prisma.proposal.update({
       where: { id },
       data: updateData,
       include: {
-        services: true,
+        services: { orderBy: { order: 'asc' } },
+        credits: true,
         projectRequest: true,
       },
     });
+
+    return {
+      success: true,
+      message: 'Proposal updated successfully',
+      data: updated,
+    };
   }
 
   // async addService(id: string, dto: AddProposalServiceDto, user: User) {
@@ -1145,24 +1212,46 @@ export class ProposalService {
       0,
     );
 
-    const service = await this.prisma.proposalService.create({
-      data: {
-        proposalId: id,
-        name: dto.name.trim(),
-        description: dto.description?.trim() ?? null,
-        amount: dto.cost,
-        rate: dto.cost,
-        quantity: 1,
-        timelineWeeks: dto.timelineWeeks ?? null,
-        order: dto.order ?? maxOrder + 1,
-      },
-    });
+    const name = dto.name.trim();
+
+    // A phase is identified by its name in the wizard, so re-adding one (double
+    // click, or resuming a draft) must overwrite the existing row rather than
+    // create a second line item with the same name.
+    const existing = proposal.services.find(
+      (s) => s.name.trim().toLowerCase() === name.toLowerCase(),
+    );
+
+    const service = existing
+      ? await this.prisma.proposalService.update({
+        where: { id: existing.id },
+        data: {
+          description: dto.description?.trim() ?? existing.description,
+          amount: dto.cost,
+          rate: dto.cost,
+          timelineWeeks: dto.timelineWeeks ?? existing.timelineWeeks,
+          order: dto.order ?? existing.order,
+        },
+      })
+      : await this.prisma.proposalService.create({
+        data: {
+          proposalId: id,
+          name,
+          description: dto.description?.trim() ?? null,
+          amount: dto.cost,
+          rate: dto.cost,
+          quantity: 1,
+          timelineWeeks: dto.timelineWeeks ?? null,
+          order: dto.order ?? maxOrder + 1,
+        },
+      });
 
     await this.recalculateTotals(id);
 
     return {
       success: true,
-      message: `Service "${dto.name}" added successfully to proposal`,
+      message: existing
+        ? `Service "${name}" updated successfully`
+        : `Service "${name}" added successfully to proposal`,
       data: service,
     };
   }
@@ -1752,6 +1841,10 @@ export class ProposalService {
       `Proposal ${proposal.proposalNumber} status updated from ${proposal.status} to ${newStatus} by ${user.email}`,
     );
 
+    if (newStatus === ProposalStatus.ACCEPTED) {
+      await this.closeAmendmentForProposal(proposalId, user.id);
+    }
+
     // Send notification emails based on status change
     await this.sendStatusChangeNotification(
       updated,
@@ -1764,6 +1857,41 @@ export class ProposalService {
       message: `Proposal status updated to ${newStatus} successfully`,
       data: updated,
     };
+  }
+
+  /**
+   * An amendment request stays open (UNDER_REVIEW) from the moment its
+   * amendment proposal is drafted until the client accepts that proposal.
+   * Once accepted there is nothing left for the PM to act on, so the request
+   * is closed out — otherwise the studio's Contracts tab keeps offering
+   * Accept/Reject on a request that has already run its course.
+   */
+  private async closeAmendmentForProposal(proposalId: string, userId: string) {
+    try {
+      const amendment = await this.prisma.amendmentRequest.findUnique({
+        where: { amendmentProposalId: proposalId },
+        select: { id: true, status: true },
+      });
+
+      if (!amendment || amendment.status === AmendmentStatus.COMPLETED) return;
+
+      await this.prisma.amendmentRequest.update({
+        where: { id: amendment.id },
+        data: {
+          status: AmendmentStatus.COMPLETED,
+          completedAt: new Date(),
+          completedBy: userId,
+        },
+      });
+
+      this.logger.log(
+        `Amendment ${amendment.id} marked COMPLETED — proposal ${proposalId} accepted`,
+      );
+    } catch (error) {
+      this.logger.error(
+        `Failed to close amendment for proposal ${proposalId}: ${error}`,
+      );
+    }
   }
 
   private async sendStatusChangeNotification(
@@ -1937,7 +2065,7 @@ export class ProposalService {
       await tx.proposal.delete({
         where: { id },
       });
-    });
+    }, TX_OPTIONS);
 
     this.logger.log(
       `Proposal ${proposal.proposalNumber} deleted by ${user.email}`,

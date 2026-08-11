@@ -6,6 +6,7 @@ import {
   Logger,
 } from '@nestjs/common';
 import { PrismaService } from 'src/prisma/prisma.service';
+import { TX_OPTIONS } from 'src/common/prisma-transaction';
 import {
   CreateMasterContractDto,
   UpdateMasterContractDto,
@@ -18,6 +19,7 @@ import {
   StageStatus,
   ProposalStatus,
   ProposalType,
+  AmendmentStatus,
 } from '@prisma/client';
 
 @Injectable()
@@ -252,41 +254,46 @@ Interior Design & Planning: $75.00/Hour`,
       );
     }
 
+    // Everything that only reads is resolved up front. The database is remote,
+    // so each query inside an interactive transaction spends a network round
+    // trip against the transaction's time budget — reads that need no
+    // transactional guarantee must not be in there.
+    let contractSections = proposal.contractSections;
+
+    if (
+      !contractSections ||
+      (Array.isArray(contractSections) && contractSections.length === 0)
+    ) {
+      const defaultSections =
+        proposal.proposalType === ProposalType.AMENDMENT
+          ? await this.prisma.amendmentContract.findMany({
+            where: { isActive: true },
+            orderBy: { order: 'asc' },
+          })
+          : await this.prisma.masterContract.findMany({
+            where: { isActive: true },
+            orderBy: { order: 'asc' },
+          });
+
+      if (defaultSections.length === 0) {
+        throw new BadRequestException('No contract sections available');
+      }
+
+      contractSections = defaultSections.map((s) => ({
+        articleKey: s.articleKey,
+        title: s.title,
+        content: s.content,
+        order: s.order,
+      }));
+    }
+
+    const linkedAmendment = await this.prisma.amendmentRequest.findUnique({
+      where: { amendmentProposalId: proposalId },
+      select: { id: true, status: true },
+    });
+
     try {
       const result = await this.prisma.$transaction(async (tx) => {
-        let contractSections = proposal.contractSections;
-
-        // Fetch default sections if none attached to proposal
-        if (
-          !contractSections ||
-          (Array.isArray(contractSections) && contractSections.length === 0)
-        ) {
-          let defaultSections: any[] = [];
-
-          if (proposal.proposalType === ProposalType.AMENDMENT) {
-            defaultSections = await tx.amendmentContract.findMany({
-              where: { isActive: true },
-              orderBy: { order: 'asc' },
-            });
-          } else {
-            defaultSections = await tx.masterContract.findMany({
-              where: { isActive: true },
-              orderBy: { order: 'asc' },
-            });
-          }
-
-          if (defaultSections.length === 0) {
-            throw new BadRequestException('No contract sections available');
-          }
-
-          contractSections = defaultSections.map((s) => ({
-            articleKey: s.articleKey,
-            title: s.title,
-            content: s.content,
-            order: s.order,
-          }));
-        }
-
         // Update proposal with signature
         const updatedProposal = await tx.proposal.update({
           where: { id: proposalId },
@@ -335,8 +342,24 @@ Interior Design & Planning: $75.00/Hour`,
           });
         }
 
+        // Signing an amendment proposal closes out the amendment request that
+        // spawned it, so the studio stops offering Accept/Reject on a request
+        // that has already been fulfilled.
+        if (
+          linkedAmendment &&
+          linkedAmendment.status !== AmendmentStatus.COMPLETED
+        ) {
+          await tx.amendmentRequest.update({
+            where: { id: linkedAmendment.id },
+            data: {
+              status: AmendmentStatus.COMPLETED,
+              completedAt: new Date(),
+            },
+          });
+        }
+
         return updatedProposal;
-      });
+      }, TX_OPTIONS);
 
       this.logger.log(
         `Client ${user.email} successfully signed proposal ${proposalId}`,
@@ -365,6 +388,15 @@ Interior Design & Planning: $75.00/Hour`,
       where: { id: proposalId },
       select: {
         id: true,
+        proposalNumber: true,
+        createdAt: true,
+        proposalType: true,
+        // The client-facing Payment Terms article renders its own fee summary
+        // ("3.1 Payment Structure") from these, mirroring the PM's review page.
+        paymentType: true,
+        paymentMethod: true,
+        subtotal: true,
+        totalAmount: true,
         contractSections: true,
         architectContractSignature: true,
         clientContractSignature: true,
@@ -396,6 +428,8 @@ Interior Design & Planning: $75.00/Hour`,
             id: true,
             name: true,
             amount: true,
+            order: true,
+            timelineWeeks: true,
           },
         },
       },
