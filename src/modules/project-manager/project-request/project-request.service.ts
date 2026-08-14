@@ -16,6 +16,7 @@ import {
   ProjectRequest,
   ServiceType,
   MeetingStatus,
+  MeetingType,
   ProposalStatus,
 } from '@prisma/client';
 import { PrismaService } from 'src/prisma/prisma.service';
@@ -24,7 +25,7 @@ import { GetMyMeetingsDto, QueryProjectRequestDto } from './dto/query-project-re
 import { UpdateRequestStatusDto } from './dto/update-request-status.dto';
 import { CreateMeetingLinkDto } from './dto/create-meeting-link.dto';
 import { NotificationService } from 'src/modules/notification/notification.service';
-import { staffProjectLink } from 'src/common/notification-links';
+import { clientProjectLink, staffProjectLink } from 'src/common/notification-links';
 import { PaymentService } from 'src/modules/payment/payment.service';
 
 @Injectable()
@@ -109,7 +110,7 @@ export class ProjectRequestService {
       }),
       this.prisma.projectStage.findMany({
         where: { projectRequestId: { in: projectRequestIds } },
-        select: { id: true, projectRequestId: true },
+        select: { id: true, projectRequestId: true, status: true },
       }),
     ]);
 
@@ -147,7 +148,10 @@ export class ProjectRequestService {
         ? lumpSumPaidProjects.has(stage.projectRequestId)
         : paidStageIds.has(stage.id);
 
-      if (paid) unlocked.add(stage.id);
+      // Both halves have to be true. Payment alone would hand over folders for
+      // phases nobody has finished yet; completion alone would hand over the
+      // deliverables before they were paid for.
+      if (paid && stage.status === 'COMPLETED') unlocked.add(stage.id);
     }
 
     return unlocked;
@@ -290,6 +294,12 @@ export class ProjectRequestService {
               meetingUrl: true,
               title: true,
               scheduledAt: true,
+              endsAt: true,
+              status: true,
+              meetingType: true,
+              // Identifies which phase a progress meeting belongs to — the
+              // studio groups meetings by it.
+              stageId: true,
               notes: true,
               createdAt: true,
             },
@@ -366,6 +376,10 @@ export class ProjectRequestService {
             meetingUrl: true,
             title: true,
             scheduledAt: true,
+            endsAt: true,
+            status: true,
+            meetingType: true,
+            stageId: true,
             notes: true,
             createdAt: true,
             sentByUser: {
@@ -1068,6 +1082,10 @@ export class ProjectRequestService {
               meetingUrl: true,
               title: true,
               scheduledAt: true,
+              endsAt: true,
+              status: true,
+              meetingType: true,
+              stageId: true,
               notes: true,
               emailSent: true,
               createdAt: true,
@@ -1157,26 +1175,50 @@ export class ProjectRequestService {
         );
       }
 
-      const isInstallment =
-        stage.proposal.paymentType === 'INSTALLMENT' ||
-        stage.proposal.paymentMethod === 'INSTALLMENT' ||
-        stage.proposal.paymentMethod === 'installments';
+      // A phase meeting is only bookable once it has been paid for. On a lump
+      // sum plan that means the whole project fee; by-phase means this phase.
+      // Neither plan is exempt — skipping the lump-sum branch here let clients
+      // book progress calls on an entirely unpaid project.
+      const isLumpSumPlan =
+        stage.proposal.paymentType === 'LUMP_SUM' ||
+        stage.proposal.paymentMethod === 'LUMP_SUM' ||
+        stage.proposal.paymentMethod === 'lumpSum';
 
-      if (isInstallment) {
-        const completedPayment = await this.prisma.payment.findFirst({
-          where: {
-            stageId: dto.stageId,
-            paymentStatus: 'COMPLETED',
-          },
-        });
+      const completedPayment = await this.prisma.payment.findFirst({
+        where: isLumpSumPlan
+          ? {
+              projectRequestId: dto.projectRequestId,
+              paymentType: 'LUMP_SUM',
+              paymentStatus: 'COMPLETED',
+            }
+          : {
+              stageId: dto.stageId,
+              paymentType: 'INSTALLMENT',
+              paymentStatus: 'COMPLETED',
+            },
+        select: { id: true },
+      });
 
-        if (!completedPayment) {
-          throw new ForbiddenException(
-            'Client must complete payment for this phase before a meeting can be scheduled.',
-          );
-        }
+      if (!completedPayment) {
+        throw new ForbiddenException(
+          isLumpSumPlan
+            ? 'The project payment must be completed before a phase meeting can be scheduled.'
+            : 'Client must complete payment for this phase before a meeting can be scheduled.',
+        );
       }
     }
+
+    // 3c. Quantise the requested window to the 30-minute grid and make sure
+    // the manager's calendar is actually free for it.
+    const { start, end } = this.normalizeMeetingWindow(
+      dto.scheduledAt,
+      dto.endsAt,
+    );
+    const scheduleOwnerId = await this.resolveScheduleOwnerId(
+      dto.projectRequestId,
+      staff.id,
+    );
+    await this.assertSlotAvailable(scheduleOwnerId, start, end);
 
     // 4. Create meeting link record
     const meetingLink = await this.prisma.meetingLink.create({
@@ -1186,11 +1228,14 @@ export class ProjectRequestService {
         sentByUserId: staff.id,
         meetingUrl: dto.meetingUrl,
         title: dto.title,
-        scheduledAt: new Date(dto.scheduledAt),
+        scheduledAt: start,
+        endsAt: end,
         notes: dto.notes || null,
         emailSent: false,
         status: 'PENDING_RESPONSE',
         stageId: dto.stageId || null,
+        meetingType:
+          dto.meetingType ?? (dto.stageId ? 'PHASE_PROGRESS' : 'GENERAL'),
       },
       include: {
         sentByUser: { select: { id: true, name: true, email: true, role: true } },
@@ -1208,7 +1253,7 @@ export class ProjectRequestService {
         {
           meetingTitle: dto.title,
           meetingUrl: dto.meetingUrl,
-          scheduledAt: new Date(dto.scheduledAt),
+          scheduledAt: start,
           projectName: projectRequest.projectName,
           senderName: staff.name || 'Project Team',
           senderRole: staff.role,
@@ -1244,6 +1289,194 @@ export class ProjectRequestService {
   }
 
   /**
+   * Remove a meeting outright — a declined request, a duplicate, or a call
+   * that's been and gone. Deleting rather than hiding matters: a stale row
+   * still occupies the manager's calendar and clutters the client's history.
+   */
+  async deleteMeeting(meetingId: string, staff: User) {
+    if (!this.canManageRequests(staff)) {
+      throw new ForbiddenException('Access denied');
+    }
+
+    const meeting = await this.prisma.meetingLink.findUnique({
+      where: { id: meetingId },
+      select: { id: true, title: true, projectRequestId: true },
+    });
+
+    if (!meeting) {
+      throw new NotFoundException('Meeting not found');
+    }
+
+    if (!(await this.isAssignedToProject(meeting.projectRequestId, staff))) {
+      throw new ForbiddenException('You are not assigned to this project team');
+    }
+
+    await this.prisma.meetingLink.delete({ where: { id: meetingId } });
+
+    this.logger.log(
+      `Meeting ${meetingId} ("${meeting.title}") deleted by ${staff.email}`,
+    );
+
+    return { success: true, message: 'Meeting removed.' };
+  }
+
+  /**
+   * Attach the joining link to a meeting that already exists — the second half
+   * of accepting a client's requested time.
+   *
+   * The client's request IS the meeting; it just has no URL yet. Sending a
+   * fresh `sendMeetingLink` for the same slot would create a duplicate row and
+   * collide with the very booking the PM just confirmed, so the agreed time is
+   * updated in place instead.
+   *
+   * Re-timing is allowed (the slot is re-checked, ignoring this row), but a
+   * moved meeting drops back to PENDING_RESPONSE — the client agreed to the
+   * old time, not the new one.
+   */
+  async attachMeetingLink(
+    meetingId: string,
+    dto: {
+      meetingUrl: string;
+      title?: string;
+      notes?: string;
+      scheduledAt?: string;
+      endsAt?: string;
+    },
+    staff: User,
+  ) {
+    if (!this.canManageRequests(staff)) {
+      throw new ForbiddenException('Access denied');
+    }
+
+    const meeting = await this.prisma.meetingLink.findUnique({
+      where: { id: meetingId },
+      include: {
+        projectRequest: {
+          include: { user: { select: { id: true, name: true, email: true } } },
+        },
+      },
+    });
+
+    if (!meeting) {
+      throw new NotFoundException('Meeting not found');
+    }
+
+    if (!(await this.isAssignedToProject(meeting.projectRequestId, staff))) {
+      throw new ForbiddenException('You are not assigned to this project team');
+    }
+
+    // A declined time was never agreed, so there is nothing to send a link for
+    // — the sender proposes a fresh meeting instead. The UI hides the action,
+    // but the rule belongs here where it cannot be bypassed.
+    if (meeting.status === MeetingStatus.DECLINED) {
+      throw new BadRequestException(
+        'This meeting was declined. Propose a new time instead of sending a link for it.',
+      );
+    }
+
+    // Only re-check the calendar when the time actually moves.
+    const isRetimed = Boolean(dto.scheduledAt);
+    let start = meeting.scheduledAt;
+    let end = this.meetingEnd(meeting);
+
+    if (isRetimed) {
+      const window = this.normalizeMeetingWindow(dto.scheduledAt!, dto.endsAt);
+      start = window.start;
+      end = window.end;
+
+      const scheduleOwnerId = await this.resolveScheduleOwnerId(
+        meeting.projectRequestId,
+        staff.id,
+      );
+      await this.assertSlotAvailable(scheduleOwnerId, start, end, meeting.id);
+    }
+
+    const movedInTime =
+      start.getTime() !== meeting.scheduledAt.getTime() ||
+      end.getTime() !== this.meetingEnd(meeting).getTime();
+
+    const updated = await this.prisma.meetingLink.update({
+      where: { id: meetingId },
+      data: {
+        meetingUrl: dto.meetingUrl,
+        ...(dto.title ? { title: dto.title } : {}),
+        ...(dto.notes !== undefined ? { notes: dto.notes || null } : {}),
+        scheduledAt: start,
+        endsAt: end,
+        // A moved meeting needs the client's agreement again; an unchanged one
+        // stays as it is (typically already ACCEPTED).
+        ...(movedInTime ? { status: MeetingStatus.PENDING_RESPONSE } : {}),
+      },
+      include: {
+        sentByUser: { select: { id: true, name: true, email: true, role: true } },
+        sentToUser: { select: { id: true, name: true, email: true } },
+        projectRequest: { select: { id: true, projectName: true, status: true } },
+      },
+    });
+
+    const client = meeting.projectRequest?.user;
+    let emailSent = false;
+
+    if (client?.email) {
+      try {
+        await this.mailer.sendMeetingInvitation(
+          client.email,
+          client.name || 'Client',
+          {
+            meetingTitle: updated.title,
+            meetingUrl: dto.meetingUrl,
+            scheduledAt: start,
+            projectName: meeting.projectRequest.projectName,
+            senderName: staff.name || 'Project Team',
+            senderRole: staff.role,
+            notes: updated.notes ?? undefined,
+          },
+        );
+        emailSent = true;
+        await this.prisma.meetingLink.update({
+          where: { id: meetingId },
+          data: { emailSent: true, emailSentAt: new Date() },
+        });
+      } catch (error) {
+        this.logger.error(
+          `Failed to send meeting email for ${meetingId}`,
+          error,
+        );
+      }
+    }
+
+    try {
+      await this.notificationService.createNotification({
+        userId: meeting.projectRequest.userId ?? meeting.sentByUserId,
+        type: 'MEETING_LINK_SENT',
+        title: movedInTime ? 'Meeting Time Changed' : 'Meeting Link Ready',
+        message: movedInTime
+          ? `"${updated.title}" has been moved to ${start.toLocaleString()}. Please confirm the new time.`
+          : `The joining link for "${updated.title}" is ready.`,
+        link: clientProjectLink(meeting.projectRequestId, 'meetings'),
+        projectRequestId: meeting.projectRequestId,
+      });
+    } catch (error) {
+      this.logger.error(`Failed to notify meeting link for ${meetingId}`, error);
+    }
+
+    this.logger.log(
+      `Meeting link attached to ${meetingId} by ${staff.email}${movedInTime ? ' (re-timed)' : ''}`,
+    );
+
+    return {
+      success: true,
+      message: movedInTime
+        ? 'Meeting moved and link sent. The client needs to confirm the new time.'
+        : emailSent
+          ? 'Meeting link sent successfully and email delivered'
+          : 'Meeting link saved but email delivery failed',
+      emailSent,
+      data: updated,
+    };
+  }
+
+  /**
    * Accept or reject a pending meeting — whoever DIDN'T send/propose it is
    * the one allowed to respond: staff respond to PENDING_CLIENT_REQUEST
    * (client-proposed dates), the owning client responds to PENDING_RESPONSE
@@ -1274,6 +1507,24 @@ export class ProjectRequestService {
       }
     } else {
       throw new BadRequestException('This meeting has already been responded to');
+    }
+
+    // Two requests can sit on the same slot until one is accepted, so the
+    // calendar is re-checked at the moment of confirmation.
+    if (action === 'accept') {
+      const scheduleOwnerId = await this.resolveScheduleOwnerId(
+        meeting.projectRequestId,
+        meeting.sentByUserId,
+      );
+      // Competing *requests* for the same slot are fine; only an already
+      // confirmed meeting (or blocked time) stops this one. Excluding itself
+      // matters too — this row is about to become the confirmed booking.
+      await this.assertSlotAvailable(
+        scheduleOwnerId,
+        meeting.scheduledAt,
+        this.meetingEnd(meeting),
+        meeting.id,
+      );
     }
 
     const newStatus: MeetingStatus = action === 'accept' ? 'ACCEPTED' : 'DECLINED';
@@ -1824,7 +2075,13 @@ export class ProjectRequestService {
 
   async requestMeeting(
     projectRequestId: string,
-    dto: { scheduledAt: string; notes?: string; stageId?: string },
+    dto: {
+      scheduledAt: string;
+      endsAt?: string;
+      notes?: string;
+      stageId?: string;
+      meetingType?: MeetingType;
+    },
     user: User,
   ) {
     // 1. Find the project request and verify ownership
@@ -1880,23 +2137,42 @@ export class ProjectRequestService {
         acceptedProposal.paymentMethod === 'LUMP_SUM' ||
         acceptedProposal.paymentType === 'LUMP_SUM';
 
-      if (!isLumpSum) {
-        const paidForStage = await this.prisma.payment.findFirst({
-          where: {
-            projectRequestId,
-            stageId: dto.stageId,
-            paymentStatus: 'COMPLETED',
-          },
-          select: { id: true },
-        });
+      // Both plans are gated, just on different payments: a lump sum project
+      // needs the single project fee settled, a by-phase project needs this
+      // phase settled. Lump sum used to skip the check entirely.
+      const paidForStage = await this.prisma.payment.findFirst({
+        where: isLumpSum
+          ? {
+              projectRequestId,
+              paymentType: 'LUMP_SUM',
+              paymentStatus: 'COMPLETED',
+            }
+          : {
+              projectRequestId,
+              stageId: dto.stageId,
+              paymentType: 'INSTALLMENT',
+              paymentStatus: 'COMPLETED',
+            },
+        select: { id: true },
+      });
 
-        if (!paidForStage) {
-          throw new BadRequestException(
-            'Please complete the payment for this phase before booking its meeting.',
-          );
-        }
+      if (!paidForStage) {
+        throw new BadRequestException(
+          isLumpSum
+            ? 'Please complete the project payment before booking a phase meeting.'
+            : 'Please complete the payment for this phase before booking its meeting.',
+        );
       }
     }
+
+    // 1c. Quantise to the 30-minute grid and reject a slot the assigned
+    // manager already has taken (or has blocked off).
+    const { start, end } = this.normalizeMeetingWindow(
+      dto.scheduledAt,
+      dto.endsAt,
+    );
+    const scheduleOwnerId = await this.resolveScheduleOwnerId(projectRequestId);
+    await this.assertSlotAvailable(scheduleOwnerId, start, end);
 
     // 2. Find managers to notify
     const managers = await this.prisma.user.findMany({
@@ -1919,8 +2195,12 @@ export class ProjectRequestService {
         title: stage
           ? `${stage.name} — Progress Meeting Requested`
           : 'Meeting Requested by Client',
-        scheduledAt: new Date(dto.scheduledAt),
+        scheduledAt: start,
+        endsAt: end,
         notes: dto.notes || 'No additional notes provided.',
+        meetingType:
+          dto.meetingType ??
+          (stage ? 'PHASE_PROGRESS' : 'INITIAL_CONSULTATION'),
       },
     });
 
@@ -2028,8 +2308,10 @@ export class ProjectRequestService {
         id: true,
         title: true,
         scheduledAt: true,
+        endsAt: true,
         notes: true,
         status: true,
+        meetingType: true,
         meetingUrl: true,
         stageId: true,
         projectRequest: {
@@ -2052,8 +2334,10 @@ export class ProjectRequestService {
         id: m.id,
         title: m.title,
         scheduledAt: m.scheduledAt,
+        endsAt: this.meetingEnd(m),
         notes: m.notes,
         status: m.status,
+        meetingType: m.meetingType,
         meetingUrl: m.meetingUrl,
         stageId: m.stageId,
         projectRequestId: m.projectRequest?.id ?? null,
@@ -2068,6 +2352,477 @@ export class ProjectRequestService {
         managerName: m.projectRequest?.assignedManager?.name ?? null,
       })),
     };
+  }
+
+  // ──────────────────────────────────────────────────────────────────────
+  // Scheduling / availability
+  //
+  // Every meeting occupies a range on exactly one staff calendar — the
+  // project's assigned manager (falling back to whoever booked it when the
+  // project is unassigned). Ranges are quantised to 30-minute slots so both
+  // sides of the booking flow speak the same units, and a slot is unavailable
+  // if it collides with another meeting or with time the manager has blocked
+  // off.
+  // ──────────────────────────────────────────────────────────────────────
+
+  /** Booking granularity, in minutes. Both calendars render this grid. */
+  static readonly SLOT_MINUTES = 30;
+
+  private get slotMs() {
+    return ProjectRequestService.SLOT_MINUTES * 60 * 1000;
+  }
+
+  /** A meeting with no stored end covers a single slot. */
+  private meetingEnd(meeting: { scheduledAt: Date; endsAt: Date | null }): Date {
+    return meeting.endsAt ?? new Date(meeting.scheduledAt.getTime() + this.slotMs);
+  }
+
+  /**
+   * Whose calendar a project's meetings land on. The assigned manager owns the
+   * project; before assignment the booking staff member does.
+   */
+  private async resolveScheduleOwnerId(
+    projectRequestId: string,
+    fallbackUserId?: string,
+  ): Promise<string | null> {
+    const request = await this.prisma.projectRequest.findUnique({
+      where: { id: projectRequestId },
+      select: { assignedManagerId: true },
+    });
+    return request?.assignedManagerId ?? fallbackUserId ?? null;
+  }
+
+  /**
+   * Validate and normalise a requested window. Callers pass ISO strings from
+   * the UI; what comes back is a clean [start, end) on the 30-minute grid.
+   */
+  private normalizeMeetingWindow(
+    scheduledAt: string | Date,
+    endsAt?: string | Date | null,
+  ): { start: Date; end: Date } {
+    const start = new Date(scheduledAt);
+    if (Number.isNaN(start.getTime())) {
+      throw new BadRequestException('Invalid meeting start time.');
+    }
+
+    const end = endsAt
+      ? new Date(endsAt)
+      : new Date(start.getTime() + this.slotMs);
+    if (Number.isNaN(end.getTime())) {
+      throw new BadRequestException('Invalid meeting end time.');
+    }
+
+    if (end.getTime() <= start.getTime()) {
+      throw new BadRequestException('The meeting must end after it starts.');
+    }
+
+    const onGrid = (d: Date) =>
+      d.getTime() % this.slotMs === 0 ||
+      // Timezone offsets are always whole- or half-hours, so testing the
+      // local minute/second components is the reliable check.
+      (d.getSeconds() === 0 &&
+        d.getMilliseconds() === 0 &&
+        d.getMinutes() % ProjectRequestService.SLOT_MINUTES === 0);
+
+    if (!onGrid(start) || !onGrid(end)) {
+      throw new BadRequestException(
+        `Meetings are booked in ${ProjectRequestService.SLOT_MINUTES}-minute slots. Pick times on the hour or half hour.`,
+      );
+    }
+
+    const durationMs = end.getTime() - start.getTime();
+    if (durationMs > 8 * 60 * 60 * 1000) {
+      throw new BadRequestException('A meeting cannot run longer than 8 hours.');
+    }
+
+    return { start, end };
+  }
+
+  /**
+   * Everything occupying a manager's calendar between two instants: confirmed
+   * and still-pending meetings, plus their blocked-off time.
+   */
+  private async loadBusyRanges(
+    ownerId: string,
+    from: Date,
+    to: Date,
+    excludeMeetingId?: string,
+  ) {
+    const [meetings, blocks] = await Promise.all([
+      this.prisma.meetingLink.findMany({
+        where: {
+          // Declined proposals free their slot back up.
+          status: { not: MeetingStatus.DECLINED },
+          ...(excludeMeetingId ? { id: { not: excludeMeetingId } } : {}),
+          // Widened lower bound so a long meeting starting before `from` is
+          // still considered — `endsAt` is nullable and can't be filtered on.
+          scheduledAt: {
+            gte: new Date(from.getTime() - 8 * 60 * 60 * 1000),
+            lt: to,
+          },
+          OR: [
+            { projectRequest: { assignedManagerId: ownerId } },
+            {
+              AND: [
+                { projectRequest: { assignedManagerId: null } },
+                { sentByUserId: ownerId },
+              ],
+            },
+          ],
+        },
+        select: {
+          id: true,
+          title: true,
+          scheduledAt: true,
+          endsAt: true,
+          status: true,
+          projectRequestId: true,
+          projectRequest: { select: { projectName: true } },
+        },
+      }),
+      this.prisma.scheduleBlock.findMany({
+        where: {
+          userId: ownerId,
+          startAt: { lt: to },
+          endAt: { gt: from },
+        },
+        select: {
+          id: true,
+          title: true,
+          notes: true,
+          startAt: true,
+          endAt: true,
+          allDay: true,
+        },
+      }),
+    ]);
+
+    const meetingRanges = meetings
+      .map((m) => ({
+        kind: 'MEETING' as const,
+        id: m.id,
+        title: m.title,
+        projectName: m.projectRequest?.projectName ?? null,
+        projectRequestId: m.projectRequestId,
+        status: m.status,
+        // Only a confirmed meeting actually reserves the calendar. A proposal
+        // still awaiting a reply is shown as tentative but must not stop anyone
+        // booking — otherwise an unanswered request holds a slot hostage
+        // forever, and two clients could never compete for the same time.
+        blocking: m.status === MeetingStatus.ACCEPTED,
+        start: m.scheduledAt,
+        end: this.meetingEnd(m),
+      }))
+      // Drop the ones the widened lower bound pulled in that don't actually
+      // reach into the window.
+      .filter((r) => r.end > from && r.start < to);
+
+    const blockRanges = blocks.map((b) => ({
+      kind: 'BLOCK' as const,
+      id: b.id,
+      title: b.title,
+      notes: b.notes,
+      allDay: b.allDay,
+      start: b.startAt,
+      end: b.endAt,
+    }));
+
+    return { meetingRanges, blockRanges };
+  }
+
+  /**
+   * Refuse a booking that collides with anything already on the manager's
+   * calendar. Called from both directions — PM-proposed and client-requested.
+   */
+  private async assertSlotAvailable(
+    ownerId: string | null,
+    start: Date,
+    end: Date,
+    excludeMeetingId?: string,
+  ) {
+    // With nobody assigned there's no calendar to protect yet.
+    if (!ownerId) return;
+
+    const { meetingRanges, blockRanges } = await this.loadBusyRanges(
+      ownerId,
+      start,
+      end,
+      excludeMeetingId,
+    );
+
+    const clash = (r: { start: Date; end: Date }) =>
+      r.start < end && r.end > start;
+
+    const blocked = blockRanges.find(clash);
+    if (blocked) {
+      throw new BadRequestException(
+        `The project manager is unavailable then (${blocked.title}). Please pick another time.`,
+      );
+    }
+
+    const taken = meetingRanges.filter((r) => r.blocking).find(clash);
+    if (taken) {
+      throw new BadRequestException(
+        'That time slot is already booked. Please choose a different slot.',
+      );
+    }
+  }
+
+  /**
+   * Slot availability for a calendar, for both panels. A client passes their
+   * `projectRequestId` and gets their assigned manager's calendar without any
+   * detail about who else booked it; staff may query a manager directly.
+   */
+  async getAvailability(
+    user: User,
+    opts: {
+      projectRequestId?: string;
+      managerId?: string;
+      from: string;
+      to: string;
+      /** Ignore this meeting — used when re-timing or linking an existing one. */
+      excludeMeetingId?: string;
+    },
+  ) {
+    const from = new Date(opts.from);
+    const to = new Date(opts.to);
+    if (Number.isNaN(from.getTime()) || Number.isNaN(to.getTime())) {
+      throw new BadRequestException('Invalid date range.');
+    }
+
+    const isStaff = this.canManageRequests(user);
+    let ownerId: string | null = null;
+
+    if (opts.projectRequestId) {
+      const request = await this.prisma.projectRequest.findFirst({
+        where: { id: opts.projectRequestId, deletedAt: null },
+        select: { id: true, userId: true, assignedManagerId: true },
+      });
+
+      if (!request) {
+        throw new NotFoundException('Project request not found');
+      }
+
+      // Clients may only inspect their own project's calendar.
+      if (!isStaff && request.userId !== user.id) {
+        throw new ForbiddenException('Access denied');
+      }
+
+      ownerId = request.assignedManagerId;
+    } else if (opts.managerId) {
+      if (!isStaff) throw new ForbiddenException('Access denied');
+      // A PM is pinned to their own calendar.
+      const isPrivileged =
+        user.role === UserRole.SUPER_ADMIN || user.role === UserRole.ADMIN;
+      ownerId = isPrivileged ? opts.managerId : user.id;
+    } else if (isStaff) {
+      ownerId = user.id;
+    } else {
+      throw new BadRequestException('A project is required to check availability.');
+    }
+
+    if (!ownerId) {
+      // No manager assigned yet — nothing is booked, so everything is open.
+      return {
+        success: true,
+        message: 'Availability retrieved',
+        data: {
+          managerId: null,
+          slotMinutes: ProjectRequestService.SLOT_MINUTES,
+          busy: [],
+        },
+      };
+    }
+
+    const { meetingRanges, blockRanges } = await this.loadBusyRanges(
+      ownerId,
+      from,
+      to,
+      opts.excludeMeetingId,
+    );
+
+    // Clients see only that a slot is taken, never whose meeting it is.
+    // `blocking` separates a confirmed booking (unselectable) from a proposal
+    // still awaiting a reply (shown as tentative, but still selectable).
+    const busy = [
+      ...meetingRanges.map((m) => ({
+        type: 'MEETING' as const,
+        start: m.start,
+        end: m.end,
+        blocking: m.blocking,
+        label: isStaff
+          ? m.title
+          : m.blocking
+            ? 'Booked'
+            : 'Awaiting confirmation',
+        projectName: isStaff ? m.projectName : null,
+        status: m.status,
+      })),
+      ...blockRanges.map((b) => ({
+        type: 'BLOCK' as const,
+        start: b.start,
+        end: b.end,
+        blocking: true,
+        label: isStaff ? b.title : 'Unavailable',
+        projectName: null,
+        status: null,
+      })),
+    ].sort((a, b) => a.start.getTime() - b.start.getTime());
+
+    return {
+      success: true,
+      message: 'Availability retrieved',
+      data: {
+        managerId: ownerId,
+        slotMinutes: ProjectRequestService.SLOT_MINUTES,
+        busy,
+      },
+    };
+  }
+
+  /** Time-off entries on a calendar, for the Master Schedule. */
+  async listScheduleBlocks(
+    user: User,
+    opts: { managerId?: string; from?: string; to?: string },
+  ) {
+    if (!this.canManageRequests(user)) {
+      throw new ForbiddenException('Access denied');
+    }
+
+    const isPrivileged =
+      user.role === UserRole.SUPER_ADMIN || user.role === UserRole.ADMIN;
+    // A PM only ever sees their own time off.
+    const userFilter = isPrivileged ? opts.managerId : user.id;
+
+    const blocks = await this.prisma.scheduleBlock.findMany({
+      where: {
+        ...(userFilter ? { userId: userFilter } : {}),
+        ...(opts.to ? { startAt: { lt: new Date(opts.to) } } : {}),
+        ...(opts.from ? { endAt: { gt: new Date(opts.from) } } : {}),
+      },
+      orderBy: { startAt: 'asc' },
+      include: {
+        user: { select: { id: true, name: true, email: true } },
+      },
+    });
+
+    return {
+      success: true,
+      message: 'Schedule blocks retrieved',
+      data: blocks,
+    };
+  }
+
+  /**
+   * Block off time. A PM blocks their own calendar; SUPER_ADMIN/ADMIN may block
+   * anyone's. Existing meetings inside the range are left alone — they were
+   * already agreed with a client, so they're reported back for follow-up
+   * rather than silently cancelled.
+   */
+  async createScheduleBlock(
+    dto: {
+      userId?: string;
+      title: string;
+      notes?: string;
+      startAt: string;
+      endAt: string;
+      allDay?: boolean;
+    },
+    user: User,
+  ) {
+    if (!this.canManageRequests(user)) {
+      throw new ForbiddenException('Access denied');
+    }
+
+    const isPrivileged =
+      user.role === UserRole.SUPER_ADMIN || user.role === UserRole.ADMIN;
+    const targetUserId = isPrivileged ? (dto.userId ?? user.id) : user.id;
+
+    if (!isPrivileged && dto.userId && dto.userId !== user.id) {
+      throw new ForbiddenException("You can only block your own calendar.");
+    }
+
+    const startAt = new Date(dto.startAt);
+    const endAt = new Date(dto.endAt);
+
+    if (Number.isNaN(startAt.getTime()) || Number.isNaN(endAt.getTime())) {
+      throw new BadRequestException('Invalid date range.');
+    }
+
+    if (dto.allDay) {
+      startAt.setHours(0, 0, 0, 0);
+      endAt.setHours(23, 59, 59, 999);
+    }
+
+    if (endAt.getTime() <= startAt.getTime()) {
+      throw new BadRequestException('The block must end after it starts.');
+    }
+
+    const block = await this.prisma.scheduleBlock.create({
+      data: {
+        userId: targetUserId,
+        title: dto.title.trim(),
+        notes: dto.notes?.trim() || null,
+        startAt,
+        endAt,
+        allDay: dto.allDay ?? false,
+        createdById: user.id,
+      },
+      include: { user: { select: { id: true, name: true, email: true } } },
+    });
+
+    const { meetingRanges } = await this.loadBusyRanges(
+      targetUserId,
+      startAt,
+      endAt,
+    );
+    const affected = meetingRanges.filter(
+      (m) => m.start < endAt && m.end > startAt,
+    );
+
+    this.logger.log(
+      `Schedule block ${block.id} created for ${targetUserId} by ${user.email}`,
+    );
+
+    return {
+      success: true,
+      message: affected.length
+        ? `Time blocked. ${affected.length} meeting(s) already booked in this range were left in place.`
+        : 'Time blocked off successfully.',
+      data: block,
+      conflicts: affected.map((m) => ({
+        id: m.id,
+        title: m.title,
+        projectName: m.projectName,
+        scheduledAt: m.start,
+        endsAt: m.end,
+      })),
+    };
+  }
+
+  async deleteScheduleBlock(id: string, user: User) {
+    if (!this.canManageRequests(user)) {
+      throw new ForbiddenException('Access denied');
+    }
+
+    const block = await this.prisma.scheduleBlock.findUnique({
+      where: { id },
+      select: { id: true, userId: true },
+    });
+
+    if (!block) {
+      throw new NotFoundException('Schedule block not found');
+    }
+
+    const isPrivileged =
+      user.role === UserRole.SUPER_ADMIN || user.role === UserRole.ADMIN;
+    if (!isPrivileged && block.userId !== user.id) {
+      throw new ForbiddenException("You can only remove your own time off.");
+    }
+
+    await this.prisma.scheduleBlock.delete({ where: { id } });
+
+    return { success: true, message: 'Time off removed.' };
   }
 
   /**

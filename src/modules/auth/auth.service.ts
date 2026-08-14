@@ -16,6 +16,7 @@ import * as crypto from 'crypto';
 import { UserRole, User, Prisma } from '@prisma/client';
 import { RegisterUserDto } from './dto/register-user.dto';
 import { RegisterStaffDto } from './dto/register-staff.dto';
+import { RegisterSuperAdminDto } from './dto/register-super-admin.dto';
 import { VerifyEmailDto } from './dto/verify-email.dto';
 import { AuthResponseDto } from './dto/auth-response.dto';
 import { MailerService } from 'src/utils/email/email.service';
@@ -25,6 +26,7 @@ import { FindAllOptions } from './constant';
 export class AuthService {
   private readonly logger = new Logger(AuthService.name);
   private readonly emailVerifyExpiry: number;
+  private readonly passwordResetExpiry: number;
 
   constructor(
     private prisma: PrismaService,
@@ -34,6 +36,9 @@ export class AuthService {
   ) {
     this.emailVerifyExpiry =
       parseInt(this.config.get('EMAIL_VERIFY_EXPIRY', '24')) * 60 * 60 * 1000;
+    // The reset email tells the recipient the link lasts 1 hour.
+    this.passwordResetExpiry =
+      parseInt(this.config.get('PASSWORD_RESET_EXPIRY', '1')) * 60 * 60 * 1000;
   }
 
   private async generateTokens(userId: string, role: UserRole) {
@@ -106,11 +111,23 @@ export class AuthService {
       );
     }
 
+    const optional = (value?: string) => {
+      const trimmed = value?.trim();
+      return trimmed ? trimmed : undefined;
+    };
+
     const hashed = await bcrypt.hash(dto.password, 12);
     const user = await this.prisma.user.create({
       data: {
         email: normalizedEmail,
         name: dto.name?.trim() ?? undefined,
+        firstName: dto.firstName.trim(),
+        lastName: dto.lastName.trim(),
+        country: optional(dto.country),
+        stateRegion: optional(dto.state),
+        city: optional(dto.city),
+        streetAddress: optional(dto.streetAddress),
+        zipCode: optional(dto.zipCode),
         password: hashed,
         role: UserRole.USER,
         emailVerified: false,
@@ -193,7 +210,7 @@ export class AuthService {
   }
 
   async registerSuperAdmin(
-    dto: RegisterUserDto,
+    dto: RegisterSuperAdminDto,
     frontendUrl: string,
     requestingUser?: User,
   ) {
@@ -253,6 +270,90 @@ export class AuthService {
     });
 
     return { message: 'Email verified! You can now log in.' };
+  }
+
+  /**
+   * Start the "forgot password" flow. The response is intentionally identical
+   * whether or not the address is registered — otherwise this endpoint doubles
+   * as an account-enumeration oracle.
+   */
+  async forgotPassword(email: string, frontendUrl: string) {
+    const genericMessage =
+      'If an account exists for that email, a password reset link has been sent.';
+
+    const normalizedEmail = email.toLowerCase().trim();
+    const user = await this.prisma.user.findUnique({
+      where: { email: normalizedEmail },
+    });
+
+    // OAuth-only accounts have no password to reset.
+    if (!user || !user.isActive || !user.password) {
+      return { message: genericMessage };
+    }
+
+    const token = crypto.randomBytes(32).toString('hex');
+    const expiry = new Date(Date.now() + this.passwordResetExpiry);
+
+    await this.prisma.user.update({
+      where: { id: user.id },
+      data: { passwordResetToken: token, passwordResetExpiry: expiry },
+    });
+
+    try {
+      await this.mailer.sendPasswordReset(
+        user.email,
+        token,
+        user.name ?? user.firstName ?? 'User',
+        `${frontendUrl.replace(/\/$/, '')}/resetPassword`,
+      );
+    } catch (error) {
+      // Don't leave a live token behind on a mail failure.
+      await this.prisma.user.update({
+        where: { id: user.id },
+        data: { passwordResetToken: null, passwordResetExpiry: null },
+      });
+      this.logger.error(`Failed to send password reset email to ${user.email}`, error);
+      throw new InternalServerErrorException(
+        'Could not send the reset email. Please try again later.',
+      );
+    }
+
+    this.logger.log(`Password reset requested for ${user.email}`);
+    return { message: genericMessage };
+  }
+
+  /**
+   * Complete the flow. Consumes the token, sets the new password and drops any
+   * live refresh token so existing sessions can't outlive the reset.
+   */
+  async resetPassword(token: string, password: string) {
+    const user = await this.prisma.user.findFirst({
+      where: {
+        passwordResetToken: token,
+        passwordResetExpiry: { gt: new Date() },
+      },
+    });
+
+    if (!user) {
+      throw new BadRequestException('This reset link is invalid or has expired.');
+    }
+
+    const hashed = await bcrypt.hash(password, 12);
+
+    await this.prisma.user.update({
+      where: { id: user.id },
+      data: {
+        password: hashed,
+        passwordResetToken: null,
+        passwordResetExpiry: null,
+        refreshToken: null,
+        // A reset over a verified email address proves ownership.
+        emailVerified: true,
+      },
+    });
+
+    this.logger.log(`Password reset completed for ${user.email}`);
+    return { message: 'Password updated. You can now log in.' };
   }
 
   async login(email: string, password: string): Promise<AuthResponseDto> {
@@ -321,6 +422,21 @@ export class AuthService {
         role: user.role,
         avatar: user.avatar || null,
         isEmailVerified: user.emailVerified,
+
+        // Profile details, including anything supplied at sign-up. The client
+        // replaces its stored user with this payload on every login, so
+        // omitting these blanked out Profile Settings after each sign-in.
+        firstName: user.firstName,
+        middleInitial: user.middleInitial,
+        lastName: user.lastName,
+        phoneNumber: user.phoneNumber,
+        companyName: user.companyName,
+        bio: user.bio,
+        streetAddress: user.streetAddress,
+        city: user.city,
+        stateRegion: user.stateRegion,
+        zipCode: user.zipCode,
+        country: user.country,
       },
     };
   }

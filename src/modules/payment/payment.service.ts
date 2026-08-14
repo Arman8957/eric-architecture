@@ -292,14 +292,20 @@ export class PaymentService {
       const service = proposal?.services?.[idx];
       const amount = service ? Number(service.amount) : 0;
 
+      // Deliverables need both halves: the phase has to be finished AND paid
+      // for. Payment alone would expose folders for unfinished phases;
+      // completion alone would hand over work that hasn't been paid for.
+      const stageCompleted = stage.status === 'COMPLETED';
+
       if (isLumpSum) {
         return {
           stageId: stage.id,
           stageName: stage.name,
           amount,
           paid: isLumpSumPaid,
+          completed: stageCompleted,
           canPay: !isLumpSumPaid, // only show pay for lump sum at top level
-          canViewFiles: isLumpSumPaid,
+          canViewFiles: isLumpSumPaid && stageCompleted,
         };
       }
 
@@ -313,8 +319,9 @@ export class PaymentService {
         stageName: stage.name,
         amount,
         paid: isPaid,
+        completed: stageCompleted,
         canPay: !isPaid && previousCompleted,
-        canViewFiles: isPaid,
+        canViewFiles: isPaid && stageCompleted,
       };
     });
 

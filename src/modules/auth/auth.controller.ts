@@ -32,6 +32,8 @@ import { RegisterStaffDto } from './dto/register-staff.dto';
 import { VerifyEmailDto } from './dto/verify-email.dto';
 import { LoginDto } from './dto/login.dto';
 import { RegisterSuperAdminDto } from './dto/register-super-admin.dto';
+import { ForgotPasswordDto } from './dto/forgot-password.dto';
+import { ResetPasswordDto } from './dto/reset-password.dto';
 
 import { CurrentUser } from 'src/common/decorators/current-user.decorator';
 import { ProjectRequestService } from '../users/user-service/project-request.service';
@@ -132,6 +134,39 @@ export class AuthController {
       email,
       this.frontendUrl,
     );
+
+    return res.status(HttpStatus.OK).json({
+      success: true,
+      message: result.message,
+    });
+  }
+
+  @Post('forgot-password')
+  @Public()
+  @HttpCode(HttpStatus.OK)
+  async forgotPassword(
+    @Body() dto: ForgotPasswordDto,
+    @Res({ passthrough: true }) res: express.Response,
+  ) {
+    const result = await this.authService.forgotPassword(
+      dto.email,
+      this.frontendUrl,
+    );
+
+    return res.status(HttpStatus.OK).json({
+      success: true,
+      message: result.message,
+    });
+  }
+
+  @Post('reset-password')
+  @Public()
+  @HttpCode(HttpStatus.OK)
+  async resetPassword(
+    @Body() dto: ResetPasswordDto,
+    @Res({ passthrough: true }) res: express.Response,
+  ) {
+    const result = await this.authService.resetPassword(dto.token, dto.password);
 
     return res.status(HttpStatus.OK).json({
       success: true,

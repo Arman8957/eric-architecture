@@ -24,7 +24,11 @@ import {
 import { CurrentUser } from 'src/common/decorators/current-user.decorator';
 import { UpdateRequestStatusDto } from './dto/update-request-status.dto';
 import { AssignRequestDto } from './dto/create-project-request.dto';
-import { CreateMeetingLinkDto } from './dto/create-meeting-link.dto';
+import {
+  AttachMeetingLinkDto,
+  CreateMeetingLinkDto,
+} from './dto/create-meeting-link.dto';
+import { CreateScheduleBlockDto } from './dto/schedule-block.dto';
 
 @Controller('project-requests-admin')
 @UseGuards(JwtAuthGuard, RolesGuard)
@@ -196,6 +200,32 @@ export class ProjectRequestController {
     return this.projectRequestService.sendMeetingLink(dto, user);
   }
 
+  /**
+   * Attach the joining link to a meeting that already exists — how a PM
+   * follows up after accepting a client's requested time, without creating a
+   * duplicate booking on the same slot.
+   */
+  @Patch('meetings/:id/link')
+  @Roles('SUPER_ADMIN', 'ADMIN', 'PROJECT_MANAGER', 'DRAFTER', 'EMPLOYEE')
+  @HttpCode(HttpStatus.OK)
+  async attachMeetingLink(
+    @Param('id') id: string,
+    @Body() dto: AttachMeetingLinkDto,
+    @CurrentUser() user: client.User,
+  ) {
+    return this.projectRequestService.attachMeetingLink(id, dto, user);
+  }
+
+  @Delete('meetings/:id')
+  @Roles('SUPER_ADMIN', 'ADMIN', 'PROJECT_MANAGER', 'DRAFTER', 'EMPLOYEE')
+  @HttpCode(HttpStatus.OK)
+  async deleteMeeting(
+    @Param('id') id: string,
+    @CurrentUser() user: client.User,
+  ) {
+    return this.projectRequestService.deleteMeeting(id, user);
+  }
+
   @Patch('meetings/:id/respond')
   async respondToMeeting(
     @Param('id') id: string,
@@ -232,16 +262,95 @@ export class ProjectRequestController {
     body: {
       projectRequestId: string;
       scheduledAt: string;
+      endsAt?: string;
       notes?: string;
       stageId?: string;
+      meetingType?: client.MeetingType;
     },
     @CurrentUser() user: client.User,
   ) {
     return this.projectRequestService.requestMeeting(
       body.projectRequestId,
-      { scheduledAt: body.scheduledAt, notes: body.notes, stageId: body.stageId },
+      {
+        scheduledAt: body.scheduledAt,
+        endsAt: body.endsAt,
+        notes: body.notes,
+        stageId: body.stageId,
+        meetingType: body.meetingType,
+      },
       user,
     );
+  }
+
+  /**
+   * Free/busy for a manager's calendar, used by both booking calendars.
+   * Clients pass their own `projectRequestId`; staff may pass `managerId`.
+   */
+  @Get('availability')
+  async getAvailability(
+    @CurrentUser() user: client.User,
+    @Query('from') from: string,
+    @Query('to') to: string,
+    @Query('projectRequestId') projectRequestId?: string,
+    @Query('managerId') managerId?: string,
+    @Query('excludeMeetingId') excludeMeetingId?: string,
+  ) {
+    return this.projectRequestService.getAvailability(user, {
+      from,
+      to,
+      projectRequestId,
+      managerId,
+      excludeMeetingId,
+    });
+  }
+
+  // ── PM time off (site visit / out of office / vacation) ────────────────
+
+  @Get('schedule-blocks')
+  @Roles(
+    client.UserRole.SUPER_ADMIN,
+    client.UserRole.ADMIN,
+    client.UserRole.PROJECT_MANAGER,
+  )
+  async getScheduleBlocks(
+    @CurrentUser() user: client.User,
+    @Query('managerId') managerId?: string,
+    @Query('from') from?: string,
+    @Query('to') to?: string,
+  ) {
+    return this.projectRequestService.listScheduleBlocks(user, {
+      managerId,
+      from,
+      to,
+    });
+  }
+
+  @Post('schedule-blocks')
+  @Roles(
+    client.UserRole.SUPER_ADMIN,
+    client.UserRole.ADMIN,
+    client.UserRole.PROJECT_MANAGER,
+  )
+  @HttpCode(HttpStatus.CREATED)
+  async createScheduleBlock(
+    @Body() dto: CreateScheduleBlockDto,
+    @CurrentUser() user: client.User,
+  ) {
+    return this.projectRequestService.createScheduleBlock(dto, user);
+  }
+
+  @Delete('schedule-blocks/:id')
+  @Roles(
+    client.UserRole.SUPER_ADMIN,
+    client.UserRole.ADMIN,
+    client.UserRole.PROJECT_MANAGER,
+  )
+  @HttpCode(HttpStatus.OK)
+  async deleteScheduleBlock(
+    @Param('id') id: string,
+    @CurrentUser() user: client.User,
+  ) {
+    return this.projectRequestService.deleteScheduleBlock(id, user);
   }
 
   @Get('schedule')
