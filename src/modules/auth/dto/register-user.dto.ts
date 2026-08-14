@@ -1,5 +1,5 @@
 // modules/auth/dto/register-user.dto.ts
-import { IsEmail, IsString, MinLength, IsOptional } from 'class-validator';
+import { IsEmail, IsString, MinLength, IsOptional, IsNotEmpty } from 'class-validator';
 
 export class RegisterUserDto {
   @IsEmail({}, { message: 'Invalid email address' })
@@ -9,7 +9,37 @@ export class RegisterUserDto {
   @MinLength(8, { message: 'Password must be at least 8 characters' })
   password!: string;
 
+  // Username — stored on `User.name`
+  @IsString()
+  @IsNotEmpty({ message: 'Username is required' })
+  name!: string;
+
+  @IsString()
+  @IsNotEmpty({ message: 'First name is required' })
+  firstName!: string;
+
+  @IsString()
+  @IsNotEmpty({ message: 'Last name is required' })
+  lastName!: string;
+
+  // ── Optional address details ────────────────────────────────────────────
   @IsString()
   @IsOptional()
-  name?: string;
+  country?: string;
+
+  @IsString()
+  @IsOptional()
+  state?: string;
+
+  @IsString()
+  @IsOptional()
+  city?: string;
+
+  @IsString()
+  @IsOptional()
+  streetAddress?: string;
+
+  @IsString()
+  @IsOptional()
+  zipCode?: string;
 }

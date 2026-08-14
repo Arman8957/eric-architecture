@@ -92,6 +92,31 @@ export class ProposalService {
       // throw new BadRequestException('Cannot create proposal: no registered client user linked to this request');
     }
 
+    // One proposal per project. Once a normal proposal has actually reached the
+    // client, further scope changes go through the amendment flow instead of a
+    // second proposal. A rejected or expired proposal releases the slot.
+    const liveProposal = await this.prisma.proposal.findFirst({
+      where: {
+        projectRequestId: dto.projectRequestId,
+        proposalType: ProposalType.NORMAL,
+        status: {
+          in: [
+            ProposalStatus.SENT,
+            ProposalStatus.VIEWED,
+            ProposalStatus.ACCEPTED,
+          ],
+        },
+      },
+      select: { id: true, proposalNumber: true, status: true },
+    });
+
+    if (liveProposal) {
+      throw new BadRequestException(
+        `Proposal ${liveProposal.proposalNumber} has already been sent for this project. ` +
+        `Use an amendment to change its scope.`,
+      );
+    }
+
     // The wizard's Project step is re-submitted whenever the PM steps back to
     // it, so an untouched DRAFT from an earlier pass is reused instead of
     // littering the project with empty proposals. Only a draft this same user

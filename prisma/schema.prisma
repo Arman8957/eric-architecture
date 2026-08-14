@@ -121,6 +121,13 @@ enum RequestStatus {
   CANCELLED
 }
 
+enum MeetingType {
+  INITIAL_CONSULTATION // the first call — either side may propose it
+  PROJECT_KICKOFF // always set by the architect
+  PHASE_PROGRESS // legacy per-phase walkthroughs
+  GENERAL
+}
+
 enum MeetingStatus {
   PENDING_CLIENT_REQUEST // client proposed a time, awaiting PM response
   PENDING_RESPONSE // PM proposed a time, awaiting client response
@@ -217,6 +224,8 @@ model User {
   emailVerified        Boolean            @default(false)
   emailVerifyToken     String?            @unique // for email verification
   emailVerifyExpiry    DateTime? // token expiry
+  passwordResetToken   String?            @unique // for the "forgot password" flow
+  passwordResetExpiry  DateTime? // token expiry
   projects             Project[]
   assets               ProjectAsset[] // new: unified assets
   comments             Comment[]
@@ -254,6 +263,8 @@ model User {
   approvedRefunds      RefundRequest[]    @relation("ApprovedRefunds")
   payments             Payment[]
   createdAttachments   ProjectAttachment[]
+  scheduleBlocks       ScheduleBlock[]     @relation("ScheduleBlockOwner")
+  createdScheduleBlocks ScheduleBlock[]    @relation("ScheduleBlockCreator")
 
   @@index([email])
   @@index([googleId])
@@ -274,14 +285,19 @@ model MeetingLink {
 
   meetingUrl  String?
   title       String
+  // Meetings occupy a range: `scheduledAt` is the start, `endsAt` the end.
+  // Rows created before ranges existed have no `endsAt` and are treated as
+  // a single 30-minute slot.
   scheduledAt DateTime
+  endsAt      DateTime?
   notes       String?
   emailSent   Boolean   @default(false)
   emailSentAt DateTime?
   createdAt   DateTime  @default(now())
   updatedAt   DateTime  @updatedAt
 
-  status MeetingStatus @default(PENDING_RESPONSE)
+  status      MeetingStatus @default(PENDING_RESPONSE)
+  meetingType MeetingType   @default(GENERAL)
 
   // Optional link to a specific project phase — null means this is the
   // overall/initial meeting, non-null means a per-phase meeting.
@@ -300,6 +316,34 @@ model MeetingLink {
   @@index([stageId])
   @@index([status])
   @@map("meeting_links")
+}
+
+// ──────────────────────────────────────────────────────────────
+// Schedule Blocks – a PM/admin marks themselves unavailable (site visit,
+// vacation, out of office). Clients assigned to that manager cannot book a
+// meeting inside a blocked range.
+// ──────────────────────────────────────────────────────────────
+model ScheduleBlock {
+  id     String @id @default(uuid())
+  userId String
+  user   User   @relation("ScheduleBlockOwner", fields: [userId], references: [id], onDelete: Cascade)
+
+  title  String // e.g. "Site visit", "Vacation"
+  notes  String?
+  startAt DateTime
+  endAt   DateTime
+  allDay  Boolean @default(false)
+
+  createdById String
+  createdBy   User   @relation("ScheduleBlockCreator", fields: [createdById], references: [id])
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([userId])
+  @@index([startAt])
+  @@index([endAt])
+  @@map("schedule_blocks")
 }
 
 // ──────────────────────────────────────────────────────────────
