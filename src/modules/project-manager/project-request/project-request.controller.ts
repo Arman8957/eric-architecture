@@ -28,15 +28,11 @@ import {
   AttachMeetingLinkDto,
   CreateMeetingLinkDto,
 } from './dto/create-meeting-link.dto';
-<<<<<<< HEAD
 import {
   CreateScheduleBlockDto,
   UpdateScheduleBlockDto,
 } from './dto/schedule-block.dto';
 import { UpdateClientDetailsDto } from './dto/update-client-details.dto';
-=======
-import { CreateScheduleBlockDto } from './dto/schedule-block.dto';
->>>>>>> 647fd1a3608cd8b6e3d8c2e5154103a745db5b6b
 
 @Controller('project-requests-admin')
 @UseGuards(JwtAuthGuard, RolesGuard)
@@ -361,7 +357,6 @@ export class ProjectRequestController {
     return this.projectRequestService.createScheduleBlock(dto, user);
   }
 
-<<<<<<< HEAD
   @Patch('schedule-blocks/:id')
   @Roles(
     client.UserRole.SUPER_ADMIN,
@@ -377,8 +372,6 @@ export class ProjectRequestController {
     return this.projectRequestService.updateScheduleBlock(id, dto, user);
   }
 
-=======
->>>>>>> 647fd1a3608cd8b6e3d8c2e5154103a745db5b6b
   @Delete('schedule-blocks/:id')
   @Roles(
     client.UserRole.SUPER_ADMIN,
