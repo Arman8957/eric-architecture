@@ -1052,6 +1052,15 @@ Dashboard: ${data.dashboardUrl}
 
   // Reusable low-level send method.
   // Defaults to the studio (project) mailbox — pass `mailbox: 'contact'` for contact-form mail.
+  /**
+   * The address a mailbox sends from. Use it to copy the studio itself on a
+   * client-triggered event, so the shared inbox carries the same trail the
+   * individual managers get.
+   */
+  mailboxAddress(mailbox: Mailbox = DEFAULT_MAILBOX): string {
+    return this.mailboxes[mailbox].from;
+  }
+
   async sendMail(options: {
     to: string | string[];
     subject: string;

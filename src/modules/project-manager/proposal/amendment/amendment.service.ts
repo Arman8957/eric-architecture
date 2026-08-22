@@ -16,6 +16,7 @@ import {
 } from '@prisma/client';
 import { PrismaService } from 'src/prisma/prisma.service';
 import { MailerService } from 'src/utils/email/email.service';
+import { NotificationService } from 'src/modules/notification/notification.service';
 import { CreateAmendmentProposalDto, CreateAmendmentRequestDto, ReviewAmendmentDto } from '../dto/amendment.dto';
 
 
@@ -32,6 +33,7 @@ export class AmendmentService {
     private prisma: PrismaService,
     private config: ConfigService,
     private mailer: MailerService,
+    private notificationService: NotificationService,
   ) {}
 
   private canManage(user: User): boolean {
@@ -134,6 +136,20 @@ async createAmendmentRequest(
   this.logger.log(
     `Amendment request created: ${amendment.id} for proposal ${proposal.proposalNumber} by ${user.email}`,
   );
+
+  // In-app notification for the studio, mirroring what a new project request
+  // raises. Failing to notify must not fail the client's request, so this is
+  // best-effort like the email below it.
+  try {
+    await this.notificationService.createNotificationsForAdminsAndPMs({
+      type: 'NEW_AMENDMENT_REQUEST',
+      title: 'New Amendment Request',
+      message: `${amendment.proposal.clientName || user.name || 'A client'} requested an amendment on ${amendment.proposal.proposalNumber}: ${amendment.projectName}`,
+      projectRequestId: proposal.projectRequestId ?? undefined,
+    });
+  } catch (notifError) {
+    this.logger.error('Failed to raise amendment notifications', notifError);
+  }
 
   await this.notifyManagersNewAmendment(amendment);
 
@@ -712,7 +728,20 @@ async createAmendmentRequest(
         select: { email: true, name: true },
       });
 
-      for (const manager of managers) {
+      // The studio mailbox gets its own copy, the same way the rest of the
+      // client-triggered project flows land there — individual managers alone
+      // leave nothing in the shared inbox.
+      const studioAddress = this.mailer.mailboxAddress('project');
+      const recipients = [
+        ...managers,
+        ...(managers.some(
+          (m) => m.email.toLowerCase() === studioAddress.toLowerCase(),
+        )
+          ? []
+          : [{ email: studioAddress, name: 'Architecture Simple' }]),
+      ];
+
+      for (const manager of recipients) {
         await this.mailer.sendMail({
           to: manager.email,
           subject: `New Amendment Request: ${amendment.proposal.projectName}`,

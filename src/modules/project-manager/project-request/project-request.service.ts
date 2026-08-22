@@ -24,9 +24,14 @@ import { MailerService } from 'src/utils/email/email.service';
 import { GetMyMeetingsDto, QueryProjectRequestDto } from './dto/query-project-request.dto';
 import { UpdateRequestStatusDto } from './dto/update-request-status.dto';
 import { CreateMeetingLinkDto } from './dto/create-meeting-link.dto';
+import { UpdateClientDetailsDto } from './dto/update-client-details.dto';
 import { NotificationService } from 'src/modules/notification/notification.service';
 import { clientProjectLink, staffProjectLink } from 'src/common/notification-links';
 import { PaymentService } from 'src/modules/payment/payment.service';
+import {
+  SiteSettingsService,
+  parseTimeToMinutes,
+} from 'src/modules/site-settings/site-settings.service';
 
 @Injectable()
 export class ProjectRequestService {
@@ -49,6 +54,7 @@ export class ProjectRequestService {
     private mailer: MailerService,
     private notificationService: NotificationService,
     private paymentService: PaymentService,
+    private siteSettings: SiteSettingsService,
   ) { }
 
   private canManageRequests(user: User): boolean {
@@ -831,6 +837,65 @@ export class ProjectRequestService {
     return {
       success: true,
       message: 'Google Drive link updated successfully',
+      data: updated,
+    };
+  }
+
+  /**
+   * Save the client contact details edited on the proposal wizard's Client
+   * step back onto the project request. Only the keys actually sent are
+   * touched, so a partially filled form can't blank out existing data.
+   */
+  async updateClientDetails(
+    id: string,
+    dto: UpdateClientDetailsDto,
+    user: User,
+  ) {
+    if (!this.canManageRequests(user)) {
+      throw new ForbiddenException('Access denied');
+    }
+
+    if (!(await this.isAssignedToProject(id, user))) {
+      throw new ForbiddenException('Access denied to this project');
+    }
+
+    const request = await this.prisma.projectRequest.findUnique({
+      where: { id, deletedAt: null },
+    });
+
+    if (!request) {
+      throw new NotFoundException('Request not found');
+    }
+
+    // An omitted key is left alone; a key sent empty clears the column.
+    const clean = (value?: string) =>
+      value === undefined ? undefined : value.trim() || null;
+
+    const data: Prisma.ProjectRequestUpdateInput = {
+      clientFirstName: dto.clientFirstName?.trim() || undefined,
+      clientLastName: dto.clientLastName?.trim() || undefined,
+      companyName: clean(dto.companyName),
+      phone: clean(dto.phone),
+      streetAddress: clean(dto.streetAddress),
+      aptSuiteUnit: clean(dto.aptSuiteUnit),
+      city: clean(dto.city),
+      state: clean(dto.state),
+      zipCode: clean(dto.zipCode),
+      // country is non-nullable in the schema, so it can only be replaced
+      country: dto.country?.trim() || undefined,
+      additionalComments: clean(dto.additionalComments),
+    };
+
+    const updated = await this.prisma.projectRequest.update({
+      where: { id },
+      data,
+    });
+
+    this.logger.log(`Client details updated on request ${id} by ${user.email}`);
+
+    return {
+      success: true,
+      message: 'Client details updated successfully',
       data: updated,
     };
   }
@@ -1775,8 +1840,10 @@ export class ProjectRequestService {
         email: string;
         phone?: string;
         address?: string;
+        aptSuiteUnit?: string;
         city?: string;
         state?: string;
+        zip?: string;
         country?: string;
         additionalNotes?: string;
       };
@@ -1791,7 +1858,9 @@ export class ProjectRequestService {
         country?: string;
         sameAsMailingAddress?: boolean;
         serviceType?: string;
+        serviceTypeOther?: string;
         projectType?: string;
+        projectTypeOther?: string;
         squareFootage?: string;
         budgetRange?: string;
         timeline?: string;
@@ -1810,27 +1879,49 @@ export class ProjectRequestService {
       throw new BadRequestException('Email is required');
     }
 
-    // Map service type string to enum
+    // Map service type to enum. The inquiry form posts the same slugs the
+    // public New Project wizard uses; the label and enum keys are kept so
+    // older callers keep working.
     const serviceTypeMap: Record<string, any> = {
+      'new-construction': 'NEW_CONSTRUCTION',
+      'renovation': 'RENOVATION',
+      'tenant-improvement': 'TENANT_IMPROVEMENT',
+      'addition': 'ADDITION',
+      'interior-design': 'INTERIOR_DESIGN',
+      'consultation': 'OTHER', // the form's "Other" option
       'New Construction': 'NEW_CONSTRUCTION',
       'Renovation': 'RENOVATION',
+      'Renovation / Remodel': 'RENOVATION',
+      'Tenant Improvement': 'TENANT_IMPROVEMENT',
       'Addition': 'ADDITION',
       'Interior Design': 'INTERIOR_DESIGN',
       'NEW_CONSTRUCTION': 'NEW_CONSTRUCTION',
       'RENOVATION': 'RENOVATION',
+      'TENANT_IMPROVEMENT': 'TENANT_IMPROVEMENT',
       'ADDITION': 'ADDITION',
       'INTERIOR_DESIGN': 'INTERIOR_DESIGN',
+      'OTHER': 'OTHER',
     };
 
     const projectCategoryMap: Record<string, any> = {
+      'residential': 'RESIDENTIAL',
+      'commercial': 'COMMERCIAL',
+      'other': 'OTHER',
       'Residential': 'RESIDENTIAL',
       'Commercial': 'COMMERCIAL',
+      'Interior': 'INTERIOR',
       'Mixed-Use': 'MIXED_USE',
-      'Institutional': 'INSTITUTIONAL',
+      'Tenant Improvement': 'TENANT_IMPROVEMENT',
+      'Remodel': 'REMODEL',
+      'Addition': 'ADDITION',
       'RESIDENTIAL': 'RESIDENTIAL',
       'COMMERCIAL': 'COMMERCIAL',
+      'INTERIOR': 'INTERIOR',
       'MIXED_USE': 'MIXED_USE',
-      'INSTITUTIONAL': 'INSTITUTIONAL',
+      'TENANT_IMPROVEMENT': 'TENANT_IMPROVEMENT',
+      'REMODEL': 'REMODEL',
+      'ADDITION': 'ADDITION',
+      'OTHER': 'OTHER',
     };
 
     const bcrypt = await import('bcrypt');
@@ -1911,8 +2002,10 @@ export class ProjectRequestService {
           email: normalizedEmail,
           phone: clientInfo.phone || null,
           streetAddress: clientInfo.address || null,
+          aptSuiteUnit: clientInfo.aptSuiteUnit || null,
           city: clientInfo.city || null,
           state: clientInfo.state || null,
+          zipCode: clientInfo.zip || null,
           country: clientInfo.country || 'United States',
           additionalComments: clientInfo.additionalNotes || null,
           projectName: projectInfo.projectName,
@@ -1924,7 +2017,9 @@ export class ProjectRequestService {
           projectCountry: projectInfo.country || 'United States',
           projectLocationSameAsClient: projectInfo.sameAsMailingAddress || false,
           serviceType: serviceTypeMap[projectInfo.serviceType || 'New Construction'] || 'NEW_CONSTRUCTION',
+          serviceTypeOther: projectInfo.serviceTypeOther?.trim() || null,
           projectCategory: projectCategoryMap[projectInfo.projectType || ''] || null,
+          projectCategoryOther: projectInfo.projectTypeOther?.trim() || null,
           projectSize: projectInfo.squareFootage || null,
           budgetRange: projectInfo.budgetRange || null,
           userId: clientUser.id,
@@ -2171,6 +2266,7 @@ export class ProjectRequestService {
       dto.scheduledAt,
       dto.endsAt,
     );
+    await this.assertWithinOfficeHours(start, end);
     const scheduleOwnerId = await this.resolveScheduleOwnerId(projectRequestId);
     await this.assertSlotAvailable(scheduleOwnerId, start, end);
 
@@ -2534,6 +2630,37 @@ export class ProjectRequestService {
    * Refuse a booking that collides with anything already on the manager's
    * calendar. Called from both directions — PM-proposed and client-requested.
    */
+  /**
+   * Clients may only book inside the firm's office hours, set by a super admin
+   * in Site Settings. Staff booking on a client's behalf are not restricted —
+   * they are the ones who decide when the studio makes an exception.
+   */
+  private async assertWithinOfficeHours(start: Date, end: Date) {
+    const hours = await this.siteSettings.getOfficeHours();
+    const openMinutes = parseTimeToMinutes(hours.start);
+    const closeMinutes = parseTimeToMinutes(hours.end);
+
+    // A malformed setting must not block every booking.
+    if (openMinutes === null || closeMinutes === null) return;
+
+    const startMinutes = start.getHours() * 60 + start.getMinutes();
+    const endMinutes = end.getHours() * 60 + end.getMinutes();
+    // An end of exactly midnight is the close of the same day, not the next.
+    const normalizedEnd = endMinutes === 0 ? 24 * 60 : endMinutes;
+
+    const sameDay = start.toDateString() === end.toDateString();
+
+    if (
+      !sameDay ||
+      startMinutes < openMinutes ||
+      normalizedEnd > closeMinutes
+    ) {
+      throw new BadRequestException(
+        `Meetings can only be booked between ${hours.start} and ${hours.end}.`,
+      );
+    }
+  }
+
   private async assertSlotAvailable(
     ownerId: string | null,
     start: Date,
@@ -2798,6 +2925,69 @@ export class ProjectRequestService {
         endsAt: m.end,
       })),
     };
+  }
+
+  /**
+   * Edit an existing block — narrow an all-day block to specific hours, or move
+   * it to another date. Only the fields sent are touched; `allDay` re-snaps the
+   * range to midnight-to-midnight, and clearing it keeps the times as given.
+   */
+  async updateScheduleBlock(
+    id: string,
+    dto: {
+      title?: string;
+      notes?: string;
+      startAt?: string;
+      endAt?: string;
+      allDay?: boolean;
+    },
+    user: User,
+  ) {
+    if (!this.canManageRequests(user)) {
+      throw new ForbiddenException('Access denied');
+    }
+
+    const block = await this.prisma.scheduleBlock.findUnique({ where: { id } });
+
+    if (!block) {
+      throw new NotFoundException('Schedule block not found');
+    }
+
+    const isPrivileged =
+      user.role === UserRole.SUPER_ADMIN || user.role === UserRole.ADMIN;
+    if (!isPrivileged && block.userId !== user.id) {
+      throw new ForbiddenException('You can only edit your own time off.');
+    }
+
+    const startAt = dto.startAt ? new Date(dto.startAt) : block.startAt;
+    const endAt = dto.endAt ? new Date(dto.endAt) : block.endAt;
+
+    if (Number.isNaN(startAt.getTime()) || Number.isNaN(endAt.getTime())) {
+      throw new BadRequestException('Invalid date range.');
+    }
+
+    const allDay = dto.allDay ?? block.allDay;
+    if (allDay) {
+      startAt.setHours(0, 0, 0, 0);
+      endAt.setHours(23, 59, 59, 999);
+    }
+
+    if (endAt.getTime() <= startAt.getTime()) {
+      throw new BadRequestException('The block must end after it starts.');
+    }
+
+    const updated = await this.prisma.scheduleBlock.update({
+      where: { id },
+      data: {
+        title: dto.title?.trim() || undefined,
+        notes: dto.notes === undefined ? undefined : dto.notes.trim() || null,
+        startAt,
+        endAt,
+        allDay,
+      },
+    });
+
+    return { success: true, message: 'Time off updated.', data: updated };
   }
 
   async deleteScheduleBlock(id: string, user: User) {

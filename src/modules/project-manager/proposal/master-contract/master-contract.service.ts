@@ -292,6 +292,16 @@ Interior Design & Planning: $75.00/Hour`,
       select: { id: true, status: true },
     });
 
+    // Read outside the transaction — it only decides whether the project clock
+    // has already been started, and holding a round trip inside the transaction
+    // spends its time budget for nothing.
+    const existingProject = proposal.projectRequestId
+      ? await this.prisma.projectRequest.findUnique({
+        where: { id: proposal.projectRequestId },
+        select: { projectStartedAt: true },
+      })
+      : null;
+
     try {
       const result = await this.prisma.$transaction(async (tx) => {
         // Update proposal with signature
@@ -311,14 +321,24 @@ Interior Design & Planning: $75.00/Hour`,
           },
         });
 
-        // Activate project request
+        // Activate project request.
+        //
+        // The clock belongs to the project, not to the contract being signed.
+        // Signing an amendment runs this same path, so stamping the start date
+        // unconditionally used to restart the timer every time an amendment was
+        // accepted. Only the first signature sets it; later ones leave it alone
+        // and a completed project reopens with its original start intact.
         if (proposal.projectRequestId) {
           await tx.projectRequest.update({
             where: { id: proposal.projectRequestId },
             data: {
               status: RequestStatus.ACTIVE,
               isProjectStarted: true,
-              projectStartedAt: new Date(),
+              ...(existingProject?.projectStartedAt
+                ? {}
+                : { projectStartedAt: new Date() }),
+              // New work reopens a project that had run to completion.
+              projectCompletedAt: null,
             },
           });
         }

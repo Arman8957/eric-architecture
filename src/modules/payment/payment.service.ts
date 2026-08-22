@@ -276,12 +276,22 @@ export class PaymentService {
                       proposal?.paymentMethod === 'LUMP_SUM' ||
                       proposal?.paymentType === 'LUMP_SUM';
 
-    const isLumpSumPaid = completedPayments.some(p => p.paymentType === 'LUMP_SUM');
+    // An amendment is a separate proposal with its own payments, billed in the
+    // amendmentPayments block below. Those payments live under the same
+    // projectRequestId, so anything carrying another proposal's id has to be
+    // excluded here — counting them is what marked a $10 contract "fully paid"
+    // once a $1 amendment was settled. Payments predating proposalId being
+    // recorded fall back to the base contract.
+    const baseProposalPayments = completedPayments.filter(
+      p => !p.proposalId || p.proposalId === proposal?.id,
+    );
+
+    const isLumpSumPaid = baseProposalPayments.some(p => p.paymentType === 'LUMP_SUM');
 
     // Build a map of paid stages. Only COMPLETED payments count — a checkout
     // session that was started and abandoned must not unlock a phase.
     const paidStageIds = new Set(
-      completedPayments
+      baseProposalPayments
         .filter(p => p.paymentType === 'INSTALLMENT' && p.stageId)
         .map(p => p.stageId),
     );
@@ -409,7 +419,12 @@ export class PaymentService {
     return {
       paymentMethod: isLumpSum ? 'LUMP_SUM' : 'INSTALLMENT',
       totalAmount: proposal ? Number(proposal.totalAmount) : 0,
-      totalPaid: completedPayments.reduce((sum, p) => sum + Number(p.amount), 0),
+      // Paired with totalAmount above, which is the base contract only.
+      totalPaid: baseProposalPayments.reduce((sum, p) => sum + Number(p.amount), 0),
+      totalPaidIncludingAmendments: completedPayments.reduce(
+        (sum, p) => sum + Number(p.amount),
+        0,
+      ),
       lumpSumPaid: isLumpSumPaid,
       consultationPaid: !!project?.consultationPaymentId,
       stages: stagePaymentStatus,

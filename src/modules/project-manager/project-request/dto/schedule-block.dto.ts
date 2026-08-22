@@ -40,3 +40,31 @@ export class CreateScheduleBlockDto {
   @IsOptional()
   allDay?: boolean;
 }
+
+/**
+ * Editing an existing block — narrowing an all-day block to specific hours, or
+ * moving it to another date. Every field is optional; only what is sent changes.
+ */
+export class UpdateScheduleBlockDto {
+  @IsString()
+  @IsOptional()
+  @MaxLength(200)
+  title?: string;
+
+  @IsString()
+  @IsOptional()
+  @MaxLength(1000)
+  notes?: string;
+
+  @IsDateString({}, { message: 'startAt must be a valid date' })
+  @IsOptional()
+  startAt?: string;
+
+  @IsDateString({}, { message: 'endAt must be a valid date' })
+  @IsOptional()
+  endAt?: string;
+
+  @IsBoolean()
+  @IsOptional()
+  allDay?: boolean;
+}

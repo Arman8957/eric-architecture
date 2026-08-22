@@ -28,7 +28,11 @@ import {
   AttachMeetingLinkDto,
   CreateMeetingLinkDto,
 } from './dto/create-meeting-link.dto';
-import { CreateScheduleBlockDto } from './dto/schedule-block.dto';
+import {
+  CreateScheduleBlockDto,
+  UpdateScheduleBlockDto,
+} from './dto/schedule-block.dto';
+import { UpdateClientDetailsDto } from './dto/update-client-details.dto';
 
 @Controller('project-requests-admin')
 @UseGuards(JwtAuthGuard, RolesGuard)
@@ -127,6 +131,20 @@ export class ProjectRequestController {
     @CurrentUser() user: client.User,
   ) {
     return this.projectRequestService.startProject(id, user);
+  }
+
+  @Patch(':id/client-details')
+  @Roles(
+    client.UserRole.SUPER_ADMIN,
+    client.UserRole.ADMIN,
+    client.UserRole.PROJECT_MANAGER,
+  )
+  updateClientDetails(
+    @Param('id') id: string,
+    @Body() dto: UpdateClientDetailsDto,
+    @CurrentUser() user: client.User,
+  ) {
+    return this.projectRequestService.updateClientDetails(id, dto, user);
   }
 
   @Patch(':id/drive-link')
@@ -339,6 +357,21 @@ export class ProjectRequestController {
     return this.projectRequestService.createScheduleBlock(dto, user);
   }
 
+  @Patch('schedule-blocks/:id')
+  @Roles(
+    client.UserRole.SUPER_ADMIN,
+    client.UserRole.ADMIN,
+    client.UserRole.PROJECT_MANAGER,
+  )
+  @HttpCode(HttpStatus.OK)
+  async updateScheduleBlock(
+    @Param('id') id: string,
+    @Body() dto: UpdateScheduleBlockDto,
+    @CurrentUser() user: client.User,
+  ) {
+    return this.projectRequestService.updateScheduleBlock(id, dto, user);
+  }
+
   @Delete('schedule-blocks/:id')
   @Roles(
     client.UserRole.SUPER_ADMIN,
@@ -450,8 +483,10 @@ export class ProjectRequestController {
         email: string;
         phone?: string;
         address?: string;
+        aptSuiteUnit?: string;
         city?: string;
         state?: string;
+        zip?: string;
         country?: string;
         additionalNotes?: string;
       };
@@ -466,7 +501,9 @@ export class ProjectRequestController {
         country?: string;
         sameAsMailingAddress?: boolean;
         serviceType?: string;
+        serviceTypeOther?: string;
         projectType?: string;
+        projectTypeOther?: string;
         squareFootage?: string;
         budgetRange?: string;
         timeline?: string;

@@ -360,13 +360,13 @@ export class FinancialService {
       });
       const totalStaffRate = Array.from(staffMap.values()).reduce((sum, r) => sum + r, 0);
 
-      // Get all billable entries for this project
+      // Only APPROVED timecards count. Including SUBMITTED ones meant Total
+      // Burned (and the labor/overhead figures below it) moved on hours nobody
+      // had signed off yet, and dropped again if a timecard was rejected.
       const projBillableEntries = await this.prisma.timecardBillableEntry.findMany({
         where: {
           projectRequestId: pr.id,
-          timecard: {
-            status: { in: [TimecardStatus.APPROVED, TimecardStatus.SUBMITTED] },
-          },
+          timecard: { status: TimecardStatus.APPROVED },
         },
       });
 
@@ -385,9 +385,7 @@ export class FinancialService {
       const projNonBillableEntries = await this.prisma.timecardEntry.findMany({
         where: {
           projectRequestId: pr.id,
-          timecard: {
-            status: { in: [TimecardStatus.APPROVED, TimecardStatus.SUBMITTED] },
-          },
+          timecard: { status: TimecardStatus.APPROVED },
         } as any,
       });
 
@@ -736,12 +734,12 @@ export class FinancialService {
     const billingRateRes = await this.getBillingRate();
     const firmBillingRate = billingRateRes.billingRate || 150; // Default fallback
 
-    // Get billable entries for this project from submitted/approved timecards
+    // Approved timecards only — an unapproved one must not move the money.
     const billableEntries = await this.prisma.timecardBillableEntry.findMany({
       where: {
         projectRequestId,
         timecard: {
-          status: { in: [TimecardStatus.APPROVED, TimecardStatus.SUBMITTED] }
+          status: TimecardStatus.APPROVED
         }
       },
       include: {
@@ -868,7 +866,7 @@ export class FinancialService {
       where: {
         projectRequestId,
         timecard: {
-          status: { in: [TimecardStatus.APPROVED, TimecardStatus.SUBMITTED] },
+          status: TimecardStatus.APPROVED,
         },
       } as any,
     });
@@ -1002,6 +1000,16 @@ export class FinancialService {
             id: true,
             name: true,
             status: true,
+            proposalId: true,
+            proposal: {
+              select: {
+                id: true,
+                proposalNumber: true,
+                title: true,
+                projectName: true,
+                proposalType: true,
+              },
+            },
           },
           orderBy: { order: 'asc' },
         },
@@ -1010,11 +1018,49 @@ export class FinancialService {
 
     this.logger.debug(`Found ${projectRequests.length} projects for user ${userId}`);
 
-    return projectRequests.map((pr) => ({
-      id: pr.id,
-      projectName: pr.projectName,
-      phases: pr.stages,
-    }));
+    return projectRequests.map((pr) => {
+      // A timesheet line is booked against a phase of a specific contract — the
+      // original proposal or one of its amendments — so the phases are grouped
+      // by the contract they belong to rather than presented as one flat list.
+      const contracts = new Map<string, any>();
+
+      for (const stage of pr.stages) {
+        const key = stage.proposalId ?? 'unassigned';
+        if (!contracts.has(key)) {
+          contracts.set(key, {
+            id: stage.proposalId ?? null,
+            proposalNumber: stage.proposal?.proposalNumber ?? null,
+            title:
+              stage.proposal?.title ||
+              stage.proposal?.projectName ||
+              'Unassigned phases',
+            isAmendment: stage.proposal?.proposalType === 'AMENDMENT',
+            phases: [] as any[],
+          });
+        }
+        contracts.get(key).phases.push({
+          id: stage.id,
+          name: stage.name,
+          status: stage.status,
+        });
+      }
+
+      return {
+        id: pr.id,
+        projectName: pr.projectName,
+        // Original contract first, then amendments, so the list reads in order.
+        contracts: Array.from(contracts.values()).sort((a, b) => {
+          if (a.isAmendment !== b.isAmendment) return a.isAmendment ? 1 : -1;
+          return (a.proposalNumber || '').localeCompare(b.proposalNumber || '');
+        }),
+        // Kept so anything still reading a flat phase list keeps working.
+        phases: pr.stages.map((s) => ({
+          id: s.id,
+          name: s.name,
+          status: s.status,
+        })),
+      };
+    });
   }
 
   // ═══════════════════════════════════════════════════
@@ -1137,6 +1183,9 @@ export class FinancialService {
         timecardId: id,
         category: entry.category,
         projectRequestId: entry.projectRequestId || null,
+        proposalId: entry.proposalId || null,
+        proposalNumber: entry.proposalNumber || null,
+        stageId: entry.stageId || null,
         phaseName: entry.phaseName || null,
         entryWeek: entry.entryWeek || 1,
         monday: entry.monday,
@@ -1167,6 +1216,9 @@ export class FinancialService {
           timecardId: id,
           projectRequestId: entry.projectRequestId,
           projectName: entry.projectName,
+          proposalId: entry.proposalId || null,
+          proposalNumber: entry.proposalNumber || null,
+          stageId: entry.stageId || null,
           phaseName: entry.phaseName,
           description: entry.description || null,
           entryWeek: entry.entryWeek || 1,
@@ -1510,8 +1562,14 @@ export class FinancialService {
     const totalHours = billableHours + nonBillableHours;
     const utilization = totalHours > 0 ? (billableHours / totalHours) * 100 : 0;
 
-    const avgMonthlyRevenue = totalContract / timeline.totalMonths;
-    const avgMonthlyCost = totalCost / timeline.totalMonths;
+    // Dividing by a fraction of a month turns a $10 contract into "$304 / month"
+    // on its first day, which reads as impossible. The divisor is floored at one
+    // month so a young project shows its actual contract value and converges on
+    // the true monthly rate once it has run longer than a month.
+    const monthsForAverage = Math.max(1, timeline.totalMonths);
+
+    const avgMonthlyRevenue = totalContract / monthsForAverage;
+    const avgMonthlyCost = totalCost / monthsForAverage;
     const avgMonthlyProfit = avgMonthlyRevenue - avgMonthlyCost;
 
     // Label with the year too when the project spans more than one calendar year.
@@ -1533,8 +1591,8 @@ export class FinancialService {
       return {
         month: spansYears ? `${label} '${String(d.getFullYear()).slice(-2)}` : label,
         revenue: avgMonthlyRevenue,
-        laborCost: laborCost / timeline.totalMonths,
-        overheadCost: projectOverhead / timeline.totalMonths,
+        laborCost: laborCost / monthsForAverage,
+        overheadCost: projectOverhead / monthsForAverage,
         totalCost: avgMonthlyCost,
         profit: avgMonthlyProfit,
         utilization: Math.round(utilization),
@@ -1550,6 +1608,8 @@ export class FinancialService {
         isCompleted: timeline.isCompleted,
         totalDays: timeline.totalDays,
         totalMonths: timeline.totalMonths,
+        /** The divisor actually used for the averages (never below 1 month). */
+        monthsForAverage,
         monthCount: timeline.monthCount,
         totalContract,
         laborCost,

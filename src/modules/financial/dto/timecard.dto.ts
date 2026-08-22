@@ -13,6 +13,21 @@ export class TimecardEntryDto {
   @IsOptional()
   phaseName?: string;
 
+  // Which contract the phase belongs to — the original proposal or one of its
+  // amendments. Phase names repeat across contracts, so this is what makes the
+  // attribution unambiguous.
+  @IsString()
+  @IsOptional()
+  proposalId?: string;
+
+  @IsString()
+  @IsOptional()
+  proposalNumber?: string;
+
+  @IsString()
+  @IsOptional()
+  stageId?: string;
+
   @IsInt()
   @IsOptional()
   entryWeek?: number; // 1 or 2
@@ -48,6 +63,21 @@ export class TimecardBillableEntryDto {
 
   @IsString()
   phaseName!: string;
+
+  // Which contract the phase belongs to — the original proposal or one of its
+  // amendments. Phase names repeat across contracts, so this is what makes the
+  // attribution unambiguous.
+  @IsString()
+  @IsOptional()
+  proposalId?: string;
+
+  @IsString()
+  @IsOptional()
+  proposalNumber?: string;
+
+  @IsString()
+  @IsOptional()
+  stageId?: string;
 
   @IsString()
   @IsOptional()

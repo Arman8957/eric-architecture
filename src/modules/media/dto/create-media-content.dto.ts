@@ -87,6 +87,11 @@ export class CreateMediaContentDto {
   @IsOptional()
   category?: ProjectCategory;
 
+  /** What "Other" means, when the category is OTHER. */
+  @IsString()
+  @IsOptional()
+  categoryOther?: string;
+
   @IsArray()
   @IsString({ each: true })
   @IsOptional()

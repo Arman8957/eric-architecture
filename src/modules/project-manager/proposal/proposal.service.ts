@@ -3,9 +3,11 @@ import {
   NotFoundException,
   BadRequestException,
   ForbiddenException,
+  UnauthorizedException,
   Logger,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import * as bcrypt from 'bcrypt';
 import { NotificationService } from 'src/modules/notification/notification.service';
 import { clientProjectLink } from 'src/common/notification-links';
 import {
@@ -695,6 +697,10 @@ export class ProposalService {
             projectCity: true,
             projectState: true,
             projectCountry: true,
+            // Drives the Project Manager column and its sort option.
+            assignedManager: {
+              select: { id: true, name: true, email: true },
+            },
           },
         },
         user: {
@@ -2046,9 +2052,32 @@ export class ProposalService {
     }
   }
   //=============================================delete proposal============
-  async deleteProposal(id: string, user: User) {
-    if (!this.canManage(user)) {
-      throw new ForbiddenException('Access denied');
+  /**
+   * Deleting a proposal takes its services, phases and contract with it, so it
+   * is gated the same way deleting a project is: SUPER_ADMIN only, and the
+   * caller has to re-enter their own password.
+   */
+  async deleteProposal(id: string, password: string, user: User) {
+    if (user.role !== UserRole.SUPER_ADMIN) {
+      throw new ForbiddenException('Only a super admin can delete a proposal');
+    }
+
+    if (!password) {
+      throw new UnauthorizedException(
+        'Password is required to delete a proposal',
+      );
+    }
+
+    const fullUser = await this.prisma.user.findUnique({
+      where: { id: user.id },
+      select: { password: true },
+    });
+
+    if (
+      !fullUser?.password ||
+      !(await bcrypt.compare(password, fullUser.password))
+    ) {
+      throw new UnauthorizedException('Incorrect password');
     }
 
     const proposal = await this.prisma.proposal.findUnique({

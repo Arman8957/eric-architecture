@@ -167,6 +167,55 @@ export class MediaService {
     });
   }
 
+  /**
+   * Remove one image from a media item, used by the edit modal's per-photo X.
+   * Deleting the whole media row was the only delete that existed, so the
+   * modal's request had no route to hit at all.
+   */
+  async deleteAsset(
+    mediaId: string,
+    assetId: string,
+    userId: string,
+    userRole: UserRole,
+  ) {
+    const media = await this.prisma.mediaContent.findUnique({
+      where: { id: mediaId },
+      select: { id: true, createdById: true },
+    });
+
+    if (!media) throw new NotFoundException('Media content not found');
+
+    if (!this.allowedMediaRoles.has(userRole) && media.createdById !== userId) {
+      throw new ForbiddenException('Not authorized to edit this media');
+    }
+
+    const asset = await this.prisma.mediaAsset.findUnique({
+      where: { id: assetId },
+      select: { id: true, cdnUrl: true, mediaContentId: true },
+    });
+
+    if (!asset || asset.mediaContentId !== mediaId) {
+      throw new NotFoundException('Asset not found on this media item');
+    }
+
+    // Losing the remote file must not leave the row behind, so the database
+    // write is what the caller's success depends on.
+    try {
+      const filename = asset.cdnUrl.split('/').pop();
+      const publicId = filename ? filename.split('.')[0] : null;
+      if (publicId) await this.cloudinary.deleteMultiple([publicId]);
+    } catch (error) {
+      console.error(
+        `Failed to remove Cloudinary file for asset ${assetId}`,
+        error,
+      );
+    }
+
+    await this.prisma.mediaAsset.delete({ where: { id: assetId } });
+
+    return { message: 'Image removed successfully' };
+  }
+
   async delete(id: string, userId: string, userRole: UserRole) {
     const media = await this.prisma.mediaContent.findUnique({
       where: { id },

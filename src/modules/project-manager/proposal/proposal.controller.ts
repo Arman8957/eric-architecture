@@ -207,9 +207,10 @@ export class ProposalController {
   )
   deleteProposal(
     @Param('id') id: string,
+    @Body() body: { password?: string },
     @CurrentUser() user: client.User,
   ) {
-    return this.proposalService.deleteProposal(id, user);
+    return this.proposalService.deleteProposal(id, body?.password ?? '', user);
   }
 
   @Post(':id/services/with-approval')

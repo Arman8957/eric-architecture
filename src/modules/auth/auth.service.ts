@@ -188,11 +188,19 @@ export class AuthService {
         password: hashed,
         role: dto.role,
         emailVerified: false,
+        // The Add Team Member form collects these; they were previously
+        // dropped, leaving a new staff member with no address on file.
+        phoneNumber: dto.phoneNumber ?? dto.phone ?? undefined,
+        streetAddress: dto.streetAddress ?? dto.address ?? undefined,
+        city: dto.city ?? undefined,
+        stateRegion: dto.stateRegion ?? undefined,
+        zipCode: dto.zipCode ?? undefined,
+        country: dto.country ?? undefined,
         employeeProfile: {
           create: {
             employeeId: `EMP-${Date.now()}`,
-            phone: dto.phone,
-            address: dto.address,
+            phone: dto.phoneNumber ?? dto.phone,
+            address: dto.streetAddress ?? dto.address,
           },
         },
       },

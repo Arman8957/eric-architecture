@@ -89,7 +89,9 @@ export class ProjectRequestService {
           projectLocationSameAsClient: dto.projectLocationSameAsClient ?? false,
           ...projectData,
           serviceType: dto.serviceType,
+          serviceTypeOther: dto.serviceTypeOther?.trim(),
           projectCategory: dto.projectCategory,
+          projectCategoryOther: dto.projectCategoryOther?.trim(),
           projectSize: dto.projectSize?.trim(),
           budgetRange: dto.budgetRange?.trim(),
           preferredArchitecturalStyle: dto.preferredArchitecturalStyle?.trim(),
@@ -101,6 +103,11 @@ export class ProjectRequestService {
             : null,
           appointmentTime: dto.appointmentTime?.trim(),
           appointmentType: dto.appointmentType?.trim(),
+          // Location is meaningless for a video call, so only keep it for in-person
+          meetingLocation:
+            dto.appointmentType?.toLowerCase().includes('in-person')
+              ? dto.meetingLocation?.trim()
+              : null,
           additionalNotes: dto.additionalNotes?.trim(),
           consultationPaymentId: dto.paymentIntentId,
           userId: userId || null,

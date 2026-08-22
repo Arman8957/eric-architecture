@@ -255,6 +255,32 @@ export class MediaController {
     }
   }
 
+  @Delete(':id/assets/:assetId')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(...MediaRoles)
+  async removeAsset(
+    @Param('id') id: string,
+    @Param('assetId') assetId: string,
+    @CurrentUser() user: client.User,
+  ) {
+    try {
+      const result = await this.mediaService.deleteAsset(
+        id,
+        assetId,
+        user.id,
+        user.role,
+      );
+      return { status: 'success', message: result.message };
+    } catch (error) {
+      if (error instanceof HttpException) throw error;
+
+      throw new HttpException(
+        { status: 'error', message: 'Failed to remove image' },
+        HttpStatus.INTERNAL_SERVER_ERROR,
+      );
+    }
+  }
+
   @Delete(':id')
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles(...MediaRoles)

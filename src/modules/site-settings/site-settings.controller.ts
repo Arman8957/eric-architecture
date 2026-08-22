@@ -6,7 +6,7 @@ import {
   UseGuards,
   BadRequestException,
 } from '@nestjs/common';
-import { SiteSettingsService } from './site-settings.service';
+import { SiteSettingsService, parseTimeToMinutes } from './site-settings.service';
 import { JwtAuthGuard } from 'src/common/guards/auth.guard';
 import { RolesGuard } from 'src/common/guards/roles.guard';
 import { Roles } from 'src/common/decorators/roles.decorator';
@@ -36,5 +36,64 @@ export class SiteSettingsController {
     }
     const updated = await this.siteSettingsService.setConsultationFeeUsd(feeUsd);
     return { success: true, data: { feeUsd: updated } };
+  }
+
+  // ── Office hours ───────────────────────────────────────────────────────
+  // Readable by any signed-in user, because the client booking form has to
+  // know the window. Only a super admin can change it.
+
+  @Get('office-hours')
+  @UseGuards(JwtAuthGuard)
+  async getOfficeHours() {
+    const hours = await this.siteSettingsService.getOfficeHours();
+    return { success: true, data: hours };
+  }
+
+  @Patch('office-hours')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(client.UserRole.SUPER_ADMIN)
+  async updateOfficeHours(
+    @Body('start') start: string,
+    @Body('end') end: string,
+  ) {
+    const startMinutes = parseTimeToMinutes(start);
+    const endMinutes = parseTimeToMinutes(end);
+
+    if (startMinutes === null || endMinutes === null) {
+      throw new BadRequestException(
+        'start and end must be times in HH:MM 24-hour format',
+      );
+    }
+
+    if (endMinutes <= startMinutes) {
+      throw new BadRequestException('Office hours must end after they start');
+    }
+
+    const hours = await this.siteSettingsService.setOfficeHours({ start, end });
+    return { success: true, data: hours };
+  }
+
+  // ── Media quick-add tags ───────────────────────────────────────────────
+
+  @Get('media-quick-tags')
+  @UseGuards(JwtAuthGuard)
+  async getMediaQuickTags() {
+    const tags = await this.siteSettingsService.getMediaQuickTags();
+    return { success: true, data: tags };
+  }
+
+  @Patch('media-quick-tags')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(
+    client.UserRole.SUPER_ADMIN,
+    client.UserRole.ADMIN,
+    client.UserRole.MEDIA_MANAGER,
+  )
+  async updateMediaQuickTags(@Body('tags') tags: string[]) {
+    if (!Array.isArray(tags)) {
+      throw new BadRequestException('tags must be an array of strings');
+    }
+    const saved = await this.siteSettingsService.setMediaQuickTags(tags);
+    return { success: true, data: saved };
   }
 }

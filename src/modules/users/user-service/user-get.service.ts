@@ -273,9 +273,45 @@ export class UsersGetService {
     const user = await this.prisma.user.findUnique({ where: { id } });
     if (!user) throw new NotFoundException('User not found');
 
+    // A project manager's projects must not disappear with them. Hand them back
+    // to the owner (super admin) for reassignment, and detach — never delete —
+    // their timecards so the hours they accrued stay on record against them
+    // rather than being absorbed into the owner's totals.
+    const reassignedTo = await this.prisma.user.findFirst({
+      where: { role: UserRole.SUPER_ADMIN, isActive: true, id: { not: id } },
+      select: { id: true },
+      orderBy: { createdAt: 'asc' },
+    });
+
+    const releasedProjects = await this.prisma.projectRequest.count({
+      where: { assignedManagerId: id },
+    });
+
+    if (releasedProjects > 0) {
+      await this.prisma.projectRequest.updateMany({
+        where: { assignedManagerId: id },
+        // Null when there is no super admin to hand them to — the project
+        // simply shows as Unassigned rather than blocking the deletion.
+        data: { assignedManagerId: reassignedTo?.id ?? null },
+      });
+    }
+
+    // Phases assigned to them are released the same way.
+    await this.prisma.projectStage.updateMany({
+      where: { assignedToId: id },
+      data: { assignedToId: null },
+    });
+
     try {
       await this.prisma.user.delete({ where: { id } });
-      return { success: true, message: 'Team member deleted', deactivated: false };
+      return {
+        success: true,
+        message: releasedProjects
+          ? `Team member deleted. ${releasedProjects} project${releasedProjects === 1 ? '' : 's'} released for reassignment.`
+          : 'Team member deleted',
+        deactivated: false,
+        releasedProjects,
+      };
     } catch (error) {
       const isForeignKeyBlock =
         error instanceof Prisma.PrismaClientKnownRequestError &&
@@ -289,7 +325,7 @@ export class UsersGetService {
       return {
         success: true,
         message:
-          'This member has project history, so their account was deactivated instead of deleted.',
+          'This member still has records that reference them (timecards, proposals), so their account was deactivated instead of deleted. Their hours stay on their own record.',
         deactivated: true,
       };
     }

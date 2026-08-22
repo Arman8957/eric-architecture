@@ -78,13 +78,11 @@ enum ClimateType {
 enum ProjectCategory {
   RESIDENTIAL
   COMMERCIAL
-  INSTITUTIONAL
-  LANDSCAPE
   INTERIOR
-  URBAN_PLANNING
   MIXED_USE
   TENANT_IMPROVEMENT
-  REMODEL_ADDITION
+  REMODEL
+  ADDITION
   OTHER
 }
 
@@ -100,6 +98,7 @@ enum AssetType {
 enum ServiceType {
   NEW_CONSTRUCTION
   RENOVATION
+  TENANT_IMPROVEMENT
   ADDITION
   INTERIOR_DESIGN
   LANDSCAPE_DESIGN
@@ -378,8 +377,9 @@ model MediaContent {
   
 
   // Portfolio specific
-  category    ProjectCategory?
-  projectTags String[] // e.g., ["luxury", "eco-friendly"]
+  category      ProjectCategory?
+  categoryOther String? // free text when category is OTHER
+  projectTags   String[] // e.g., ["luxury", "eco-friendly"]
 
   // Article specific
   author      String? // Author name (different from creator)
@@ -600,7 +600,9 @@ model ProjectRequest {
   projectAptSuiteUnit         String?
   projectZipCode              String?
   serviceType                 ServiceType      @default(NEW_CONSTRUCTION)
+  serviceTypeOther            String? // free text when serviceType is OTHER
   projectCategory             ProjectCategory?
+  projectCategoryOther        String? // free text when projectCategory is OTHER
   projectSize                 String? // e.g., "2000 sq ft" or Float for area
   budgetRange                 String? // e.g., "100k-250k"
   // Architectural Preferences
@@ -613,6 +615,7 @@ model ProjectRequest {
   appointmentDate             DateTime?
   appointmentTime             String? // e.g., "10:00 AM"
   appointmentType             String? // e.g., "Initial Consultation"
+  meetingLocation             String? // address, only set for in-person appointments
   additionalNotes             String?
   consultationPaymentId       String? // Stripe PaymentIntent ID for the $250 fee
   driveLink                   String?  // Google Drive link for internal project files
@@ -1363,8 +1366,12 @@ model TimecardEntry {
   // Overhead category (Bereavement, Holiday, Sick, etc.)
   category    String
   
-  // Optional association with a project/phase for direct overhead tracking
+  // Optional association with a project/contract/phase for direct overhead
+  // tracking. See TimecardBillableEntry for why the contract is recorded.
   projectRequestId String?
+  proposalId       String?
+  proposalNumber   String?
+  stageId          String?
   phaseName        String?
 
   entryWeek   Int      @default(1)
@@ -1380,6 +1387,7 @@ model TimecardEntry {
 
   @@index([timecardId])
   @@index([projectRequestId])
+  @@index([proposalId])
   @@map("timecard_entries")
 }
 
@@ -1392,6 +1400,12 @@ model TimecardBillableEntry {
   timecard         Timecard @relation(fields: [timecardId], references: [id], onDelete: Cascade)
   projectRequestId String   // which project
   projectName      String   // cached project name
+  // Which contract the phase belongs to — the original proposal or one of its
+  // amendments. Phase names repeat across contracts, so the name alone can't
+  // say which one the hours were booked against.
+  proposalId       String?
+  proposalNumber   String? // cached label, e.g. "PROP-2026-0039-AMD-001"
+  stageId          String? // the exact phase row, when it is a real stage
   phaseName        String   // phase name
   description      String?  @db.Text
   entryWeek        Int      @default(1) // 1 = Week 1, 2 = Week 2 of bi-weekly period
@@ -1408,6 +1422,7 @@ model TimecardBillableEntry {
 
   @@index([timecardId])
   @@index([projectRequestId])
+  @@index([proposalId])
   @@map("timecard_billable_entries")
 }
 model Team {
