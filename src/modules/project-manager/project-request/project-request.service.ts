@@ -2266,7 +2266,10 @@ export class ProjectRequestService {
       dto.scheduledAt,
       dto.endsAt,
     );
+<<<<<<< HEAD
     await this.assertWithinOfficeHours(start, end);
+=======
+>>>>>>> 647fd1a3608cd8b6e3d8c2e5154103a745db5b6b
     const scheduleOwnerId = await this.resolveScheduleOwnerId(projectRequestId);
     await this.assertSlotAvailable(scheduleOwnerId, start, end);
 
@@ -2630,6 +2633,7 @@ export class ProjectRequestService {
    * Refuse a booking that collides with anything already on the manager's
    * calendar. Called from both directions — PM-proposed and client-requested.
    */
+<<<<<<< HEAD
   /**
    * Clients may only book inside the firm's office hours, set by a super admin
    * in Site Settings. Staff booking on a client's behalf are not restricted —
@@ -2661,6 +2665,8 @@ export class ProjectRequestService {
     }
   }
 
+=======
+>>>>>>> 647fd1a3608cd8b6e3d8c2e5154103a745db5b6b
   private async assertSlotAvailable(
     ownerId: string | null,
     start: Date,
@@ -2927,6 +2933,7 @@ export class ProjectRequestService {
     };
   }
 
+<<<<<<< HEAD
   /**
    * Edit an existing block — narrow an all-day block to specific hours, or move
    * it to another date. Only the fields sent are touched; `allDay` re-snaps the
@@ -2990,6 +2997,8 @@ export class ProjectRequestService {
     return { success: true, message: 'Time off updated.', data: updated };
   }
 
+=======
+>>>>>>> 647fd1a3608cd8b6e3d8c2e5154103a745db5b6b
   async deleteScheduleBlock(id: string, user: User) {
     if (!this.canManageRequests(user)) {
       throw new ForbiddenException('Access denied');

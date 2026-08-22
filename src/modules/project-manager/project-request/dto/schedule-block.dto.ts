@@ -40,6 +40,7 @@ export class CreateScheduleBlockDto {
   @IsOptional()
   allDay?: boolean;
 }
+<<<<<<< HEAD
 
 /**
  * Editing an existing block — narrowing an all-day block to specific hours, or
@@ -68,3 +69,5 @@ export class UpdateScheduleBlockDto {
   @IsOptional()
   allDay?: boolean;
 }
+=======
+>>>>>>> 647fd1a3608cd8b6e3d8c2e5154103a745db5b6b
