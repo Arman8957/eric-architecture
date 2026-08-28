@@ -3,11 +3,15 @@ import { Type } from 'class-transformer';
 
 export class EmployeeTaxDto {
   @IsString()
-  taxType!: string; // FITWH, MED, SOC, CA, CASDI, OTHERS
+  taxType!: string; // FITWH, MED, SOC, ST, SDI, OTHERS
 
   @IsString()
   @IsOptional()
   customName?: string; // custom name when taxType is OTHERS
+
+  @IsString()
+  @IsOptional()
+  state?: string; // US state for a state-specific tax (ST / SDI)
 
   @IsNumber()
   percentage!: number;

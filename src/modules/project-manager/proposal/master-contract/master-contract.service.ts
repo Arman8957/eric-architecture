@@ -311,6 +311,8 @@ Interior Design & Planning: $75.00/Hour`,
             clientContractSignature: dto.clientSignature,
             clientContractSignedAt: new Date(),
             status: ProposalStatus.ACCEPTED,
+            // The client signing the contract is their response to the proposal.
+            ...(proposal.respondedAt ? {} : { respondedAt: new Date() }),
             contractSections: contractSections as any,
           },
           include: {

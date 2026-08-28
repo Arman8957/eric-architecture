@@ -62,7 +62,13 @@ const PAYROLL_USER_SELECT = {
       utilizationRate: true,
       taxPercentage: true,
       taxes: {
-        select: { id: true, taxType: true, customName: true, percentage: true },
+        select: {
+          id: true,
+          taxType: true,
+          customName: true,
+          state: true,
+          percentage: true,
+        },
       },
     },
   },
@@ -129,6 +135,11 @@ export class FinancialService {
             employeeProfileId: profile.id,
             taxType: tax.taxType,
             customName: tax.customName || null,
+            // Only state-specific taxes carry a state.
+            state:
+              tax.taxType === 'ST' || tax.taxType === 'SDI'
+                ? tax.state || null
+                : null,
             percentage: tax.percentage,
           })),
         });
@@ -209,23 +220,6 @@ export class FinancialService {
     const yearStart = new Date(year, 0, 1);
     const yearEnd = new Date(year, 11, 31, 23, 59, 59, 999);
 
-    // A project counts toward a year by its completion date, falling back to
-    // when it started while it is still in flight.
-    const projectYearFilter: any = isYearScope
-      ? {
-          OR: [
-            { projectCompletedAt: { gte: yearStart, lte: yearEnd } },
-            {
-              projectCompletedAt: null,
-              OR: [
-                { projectStartedAt: { gte: yearStart, lte: yearEnd } },
-                { projectStartedAt: null, createdAt: { gte: yearStart, lte: yearEnd } },
-              ],
-            },
-          ],
-        }
-      : {};
-
     // 1. Labor comes from APPROVED timecards - what the firm actually paid for
     // hours worked - not from headline salaries on the employee profile.
     const approvedTimecards = await this.prisma.timecard.findMany({
@@ -233,7 +227,10 @@ export class FinancialService {
         status: TimecardStatus.APPROVED,
         ...(isYearScope ? { payYear: year } : {}),
       },
-      include: { user: { select: PAYROLL_USER_SELECT } },
+      include: {
+        user: { select: PAYROLL_USER_SELECT },
+        entries: { select: { totalHours: true } },
+      },
     });
 
     const employees = await this.prisma.employeeProfile.findMany({
@@ -317,13 +314,131 @@ export class FinancialService {
     const billingRateRes = await this.getBillingRate();
     const firmBillingRate = billingRateRes.billingRate || 0;
 
-    // Calculate project-level overhead, burned, and labor from ACTIVE projects only
-    // Active = non-archived project requests with accepted proposals
+    // ─── Pro-rata revenue ───────────────────────────────────────────────
+    // A project's contract is spread across the calendar years its active
+    // life touches, by day-overlap. In year scope a year picks up only the
+    // slice of every contract that overlapped it, so a project running
+    // Oct 2025 → Mar 2026 lands ~55% in 2025 and ~45% in 2026 automatically
+    // and nobody has to archive anything. Archived state is ignored on
+    // purpose — archive is a display flag only.
+    const DAY_MS = 24 * 60 * 60 * 1000;
+    const startOfDayMs = (d: Date) =>
+      new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
+    const inclusiveDays = (aMs: number, bMs: number) =>
+      Math.round((bMs - aMs) / DAY_MS) + 1;
+    const todayMs = startOfDayMs(new Date());
+
+    /** Fraction of a project's contract that belongs to the scope year. */
+    const yearShareOf = (
+      startedAt: Date | null,
+      completedAt: Date | null,
+      createdAt: Date,
+    ): number => {
+      if (!isYearScope) return 1;
+      const spanStartMs = startOfDayMs(startedAt || createdAt);
+      // A still-running project accrues up to today; a closed year re-settles
+      // only once the project finally completes.
+      const spanEndMs = Math.max(
+        spanStartMs,
+        completedAt ? startOfDayMs(completedAt) : todayMs,
+      );
+      const totalDays = inclusiveDays(spanStartMs, spanEndMs);
+      const oStart = Math.max(spanStartMs, startOfDayMs(yearStart));
+      const oEnd = Math.min(spanEndMs, startOfDayMs(yearEnd));
+      if (oEnd < oStart) return 0;
+      return totalDays > 0 ? inclusiveDays(oStart, oEnd) / totalDays : 0;
+    };
+
+    // Every project that ever had an accepted proposal contributes its
+    // contract (original + amendments), pro-rated to the scope year.
+    const contractProjects = await this.prisma.projectRequest.findMany({
+      where: {
+        deletedAt: null,
+        proposals: { some: { status: 'ACCEPTED' } },
+      },
+      select: {
+        id: true,
+        status: true,
+        projectStartedAt: true,
+        projectCompletedAt: true,
+        createdAt: true,
+        proposals: {
+          where: { status: 'ACCEPTED' },
+          select: { totalAmount: true, proposalType: true },
+        },
+      },
+    });
+
+    const shareByProject = new Map<string, number>();
+    let grossRevenue = 0;
+    let amendmentRevenue = 0;
+    let amendmentProposalCount = 0;
+    let acceptedProposalCount = 0;
+    const scopeProjectIds: string[] = [];
+
+    for (const pr of contractProjects) {
+      const share = yearShareOf(
+        pr.projectStartedAt,
+        pr.projectCompletedAt,
+        pr.createdAt,
+      );
+      shareByProject.set(pr.id, share);
+      if (share <= 0) continue;
+      scopeProjectIds.push(pr.id);
+      for (const p of pr.proposals) {
+        acceptedProposalCount++;
+        const amt = Number(p.totalAmount || 0) * share;
+        grossRevenue += amt;
+        if (p.proposalType === 'AMENDMENT') {
+          amendmentRevenue += amt;
+          amendmentProposalCount++;
+        }
+      }
+    }
+    const originalRevenue = grossRevenue - amendmentRevenue;
+
+    // Refunds ride the same day-overlap split as the contract they reduce.
+    const approvedRefundRows = await this.prisma.refundRequest.findMany({
+      where: { refundStatus: 'APPROVED' },
+      select: { amount: true, projectRequestId: true },
+    });
+    const totalRefunds = approvedRefundRows.reduce((sum, r) => {
+      const share = r.projectRequestId
+        ? (shareByProject.get(r.projectRequestId) ?? (isYearScope ? 0 : 1))
+        : isYearScope
+          ? 0
+          : 1;
+      return sum + Number(r.amount || 0) * share;
+    }, 0);
+
+    const totalRevenue = grossRevenue - totalRefunds;
+
+    // ─── Labor overhead ─────────────────────────────────────────────────
+    // The wage cost of every non-billable (overhead-category) hour on
+    // approved timecards, at each employee's own hourly rate, tracked by the
+    // year the timecard was approved for.
+    let laborOverhead = 0;
+    for (const tc of approvedTimecards) {
+      const rate = Number((tc.user?.employeeProfile as any)?.hourlyRate || 0);
+      const nonBillableHours = ((tc as any).entries || []).reduce(
+        (s: number, e: any) => s + Number(e.totalHours || 0),
+        0,
+      );
+      laborOverhead += nonBillableHours * rate;
+    }
+
+    const totalOverhead = annualOverheadExpenses + laborOverhead;
+
+    // ─── Project financials (currently-active projects) ─────────────────
+    // "Total Burned" / "Total Project Labor" for the projects that are ACTIVE
+    // right now (and, in year scope, overlapped the scope year). Timecard
+    // hours are counted only for the scope year.
     const activeProjectRequests = await this.prisma.projectRequest.findMany({
       where: {
-        // All Time keeps every project in the calculator, archived included.
-        ...(isYearScope ? { ...projectYearFilter } : {}),
+        deletedAt: null,
+        status: 'ACTIVE',
         proposals: { some: { status: 'ACCEPTED' } },
+        ...(isYearScope ? { id: { in: scopeProjectIds } } : {}),
       },
       include: {
         assignedManager: {
@@ -338,121 +453,68 @@ export class FinancialService {
       },
     });
 
-    let totalProjectOverhead = 0;
     let totalProjectBurned = 0;
     let totalProjectLabor = 0;
 
     for (const pr of activeProjectRequests) {
-      // Calculate total unique staff hourly rate for this project
       const staffMap = new Map<string, number>();
       if (pr.assignedManager) {
         staffMap.set(pr.assignedManager.id, Number(pr.assignedManager.employeeProfile?.hourlyRate || 0));
       }
-      pr.stages.forEach(s => {
-        if (s.assignedTo) {
-          staffMap.set(s.assignedTo.id, Number(s.assignedTo.employeeProfile?.hourlyRate || 0));
-        }
+      pr.stages.forEach((s) => {
+        if (s.assignedTo) staffMap.set(s.assignedTo.id, Number(s.assignedTo.employeeProfile?.hourlyRate || 0));
       });
-      pr.teams.forEach(t => {
-        t.members.forEach(m => {
-          staffMap.set(m.id, Number(m.employeeProfile?.hourlyRate || 0));
-        });
+      pr.teams.forEach((t) => {
+        t.members.forEach((m) => staffMap.set(m.id, Number(m.employeeProfile?.hourlyRate || 0)));
       });
-      const totalStaffRate = Array.from(staffMap.values()).reduce((sum, r) => sum + r, 0);
+      const totalStaffRate = Array.from(staffMap.values()).reduce((s, r) => s + r, 0);
 
-      // Only APPROVED timecards count. Including SUBMITTED ones meant Total
-      // Burned (and the labor/overhead figures below it) moved on hours nobody
-      // had signed off yet, and dropped again if a timecard was rejected.
       const projBillableEntries = await this.prisma.timecardBillableEntry.findMany({
         where: {
           projectRequestId: pr.id,
-          timecard: { status: TimecardStatus.APPROVED },
+          timecard: {
+            status: TimecardStatus.APPROVED,
+            ...(isYearScope ? { payYear: year } : {}),
+          },
         },
       });
-
-      // Calculate project billable hours and burned
       const projBillableHours = projBillableEntries.reduce(
         (sum, be) => sum + Number(be.totalHours || 0), 0,
       );
-      const projBurned = projBillableHours * firmBillingRate;
-      totalProjectBurned += projBurned;
-
-      // Calculate project labor cost (Sum of Rates × Total Hours)
-      const projLabor = projBillableHours * totalStaffRate;
-      totalProjectLabor += projLabor;
-
-      // Calculate actual project non-billable hours (Direct from TimecardEntry)
-      const projNonBillableEntries = await this.prisma.timecardEntry.findMany({
-        where: {
-          projectRequestId: pr.id,
-          timecard: { status: TimecardStatus.APPROVED },
-        } as any,
-      });
-
-      const projNonBillableHours = projNonBillableEntries.reduce(
-        (sum, e) => sum + Number(e.totalHours || 0), 0,
-      );
-
-      // Project overhead = firm rate × non-billable hours
-      totalProjectOverhead += firmBillingRate * projNonBillableHours;
+      totalProjectBurned += projBillableHours * firmBillingRate;
+      totalProjectLabor += projBillableHours * totalStaffRate;
     }
 
-    const totalOverhead = annualOverheadExpenses + totalProjectOverhead;
-
-    // 3. Calculate Revenue from active (non-archived) project phases (includes amendments)
-    const activeProjectIds = activeProjectRequests.map((p) => p.id);
-    const activeProposals = await this.prisma.proposal.findMany({
-      where: {
-        status: 'ACCEPTED',
-        ...(isYearScope
-          ? { projectRequestId: { in: activeProjectIds } }
-          : {}),
-      },
-      select: { totalAmount: true, projectName: true, proposalType: true },
-    });
-    const grossRevenue = activeProposals.reduce(
-      (sum, p) => sum + Number(p.totalAmount || 0),
-      0,
-    );
-
-    // Separate amendment revenue for reporting
-    const amendmentRevenue = activeProposals
-      .filter((p) => p.proposalType === 'AMENDMENT')
-      .reduce((sum, p) => sum + Number(p.totalAmount || 0), 0);
-    const originalRevenue = grossRevenue - amendmentRevenue;
-
-    // 3b. Calculate Total Approved Refunds (only from non-archived projects)
-    const approvedRefunds = await this.prisma.refundRequest.findMany({
-      where: {
-        refundStatus: 'APPROVED',
-        ...(isYearScope ? { projectRequestId: { in: activeProjectIds } } : {}),
-      },
-      select: { amount: true },
-    });
-    const totalRefunds = approvedRefunds.reduce(
-      (sum, r) => sum + Number(r.amount || 0),
-      0,
-    );
-
-    const totalRevenue = grossRevenue - totalRefunds;
-
-    // 4. Calculate Profit
-    const totalProfit = totalRevenue - totalOverhead - totalLaborCost;
-
-    // 5. Expense breakdown by category
-    // Same monthly-equivalent basis as above, so the percentages here match the
-    // modal's Category Breakdown (one-time costs were previously dropped).
+    // Expense breakdown by category (monthly-equivalent basis).
     const categoryBreakdown: Record<string, number> = {};
     overheadExpenses.forEach((exp) => {
       categoryBreakdown[exp.category] =
         (categoryBreakdown[exp.category] || 0) + monthlyEquivalentOf(exp);
     });
 
-    // Completed projects inside the current scope.
+    // 4. Profit
+    const totalProfit = totalRevenue - totalOverhead - totalLaborCost;
+
+    // ─── Project counts ────────────────────────────────────────────────
+    // Active   = ACTIVE and started in the scope year.
+    // Completed = COMPLETED and finished in the scope year.
+    // Archived projects are included.
+    const activeProjectCount = await this.prisma.projectRequest.count({
+      where: {
+        deletedAt: null,
+        status: 'ACTIVE',
+        ...(isYearScope
+          ? { projectStartedAt: { gte: yearStart, lte: yearEnd } }
+          : {}),
+      },
+    });
     const completedProjectCount = await this.prisma.projectRequest.count({
       where: {
+        deletedAt: null,
         status: 'COMPLETED',
-        ...(isYearScope ? { ...projectYearFilter } : {}),
+        ...(isYearScope
+          ? { projectCompletedAt: { gte: yearStart, lte: yearEnd } }
+          : {}),
       },
     });
 
@@ -475,7 +537,9 @@ export class FinancialService {
         total: totalOverhead,
         monthlyExpenses: monthlyOverheadExpenses,
         annualExpenses: annualOverheadExpenses,
-        projectOverhead: totalProjectOverhead,
+        // "Labor overhead" — the wage cost of non-billable time.
+        projectOverhead: laborOverhead,
+        laborOverhead,
         categoryBreakdown,
         expenseCount: overheadExpenses.length,
       },
@@ -485,15 +549,15 @@ export class FinancialService {
         originalRevenue,
         amendmentRevenue,
         totalRefunds,
-        activeProjectCount: activeProjectRequests.length,
+        activeProjectCount,
         completedProjectCount,
-        proposalCount: activeProposals.length,
-        amendmentCount: activeProposals.filter((p) => p.proposalType === 'AMENDMENT').length,
+        proposalCount: acceptedProposalCount,
+        amendmentCount: amendmentProposalCount,
       },
       projectFinancials: {
         totalBurned: totalProjectBurned,
         totalLabor: totalProjectLabor,
-        totalProjectOverhead: totalProjectOverhead,
+        totalProjectOverhead: laborOverhead,
         firmBillingRate,
       },
       profit: {
@@ -621,13 +685,23 @@ export class FinancialService {
       },
     });
 
+    // The financial picture is always anchored on the ORIGINAL contract; its
+    // amendments are folded in as their own phase group below. If an amendment
+    // proposal id was passed, resolve back to the project it belongs to.
+    if (proposal && proposal.proposalType === 'AMENDMENT' && proposal.projectRequestId) {
+      projectId = proposal.projectRequestId;
+      proposal = null;
+    }
+
     if (!proposal) {
-      // Try finding by projectRequestId - find the first accepted proposal
+      // Try finding by projectRequestId - the original accepted proposal.
       const proposals = await this.prisma.proposal.findMany({
         where: {
           projectRequestId: projectId,
           status: 'ACCEPTED',
+          proposalType: { not: 'AMENDMENT' },
         },
+        orderBy: { createdAt: 'asc' },
         include: {
           services: true,
           projectStages: {
@@ -688,6 +762,17 @@ export class FinancialService {
         services: {
           select: { id: true, name: true, amount: true },
           orderBy: { order: 'asc' },
+        },
+        projectStages: {
+          select: {
+            id: true,
+            name: true,
+            order: true,
+            status: true,
+            progress: true,
+            accumulatedTime: true,
+            assignedTo: { select: { id: true, name: true, email: true } },
+          },
         },
       },
       orderBy: { createdAt: 'asc' },
@@ -763,26 +848,48 @@ export class FinancialService {
       },
     });
 
-    // Group by employee for the labor breakdown
+    // ─── Amendment vs original attribution ───
+    // Phase names repeat across the original contract and its amendments, so a
+    // timesheet line is tied to a phase by its stage id where it carries one,
+    // and otherwise by (contract, phase name). Legacy lines that never recorded
+    // a contract are counted as original-contract work.
+    const amendmentProposalIdSet = new Set(amendmentProposals.map((ap) => ap.id));
+    const isAmendmentProposalId = (pid?: string | null) =>
+      !!pid && amendmentProposalIdSet.has(pid);
+
+    // Direct labor breakdown — one row per employee, each employee's billable
+    // and non-billable hours split into original vs amendment work.
     const employeeMap = new Map<string, any>();
+    const ensureEmployee = (u: any) => {
+      if (!u?.id || employeeMap.has(u.id)) return;
+      employeeMap.set(u.id, {
+        id: u.id,
+        name: u.name,
+        email: u.email,
+        role: u.role || 'EMPLOYEE',
+        hourlyRate: Number(u.employeeProfile?.hourlyRate || 0),
+        totalBillableHours: 0,
+        billableHoursOriginal: 0,
+        billableHoursAmendment: 0,
+        nonBillableHours: 0,
+        nonBillableHoursOriginal: 0,
+        nonBillableHoursAmendment: 0,
+        laborCost: 0,
+        overheadCost: 0,
+        costIncurred: 0,
+        cost: 0,
+      });
+    };
+
     billableEntries.forEach((entry: any) => {
-      if (!entry.timecard?.user) return;
-      const userId = entry.timecard.user.id;
-      if (!employeeMap.has(userId)) {
-        employeeMap.set(userId, {
-          id: userId,
-          name: entry.timecard.user.name,
-          email: entry.timecard.user.email,
-          role: entry.timecard.user.role || 'EMPLOYEE',
-          hourlyRate: Number(entry.timecard.user.employeeProfile?.hourlyRate || 0),
-          totalBillableHours: 0,
-          cost: 0,
-        });
-      }
-      const emp = employeeMap.get(userId);
-      const entryHours = Number(entry.totalHours || 0);
-      emp.totalBillableHours += entryHours;
-      emp.cost = emp.totalBillableHours * emp.hourlyRate;
+      const user = entry.timecard?.user;
+      if (!user) return;
+      ensureEmployee(user);
+      const emp = employeeMap.get(user.id);
+      const hrs = Number(entry.totalHours || 0);
+      emp.totalBillableHours += hrs;
+      if (isAmendmentProposalId(entry.proposalId)) emp.billableHoursAmendment += hrs;
+      else emp.billableHoursOriginal += hrs;
     });
 
     // ─── Include ALL assigned employees (manager, stage assignees, team members) ───
@@ -819,135 +926,210 @@ export class FinancialService {
     });
 
     if (projectWithTeam) {
-      const addEmployeeIfMissing = (user: any) => {
-        if (!user || employeeMap.has(user.id)) return;
-        employeeMap.set(user.id, {
-          id: user.id,
-          name: user.name,
-          email: user.email,
-          role: user.role || 'EMPLOYEE',
-          hourlyRate: Number(user.employeeProfile?.hourlyRate || 0),
-          totalBillableHours: 0,
-          cost: 0,
-        });
-      };
-
-      // Add project manager
-      if (projectWithTeam.assignedManager) {
-        addEmployeeIfMissing(projectWithTeam.assignedManager);
-      }
-      // Add stage assignees (drafters, employees)
+      if (projectWithTeam.assignedManager) ensureEmployee(projectWithTeam.assignedManager);
       for (const stage of projectWithTeam.stages) {
-        if (stage.assignedTo) {
-          addEmployeeIfMissing(stage.assignedTo);
-        }
+        if (stage.assignedTo) ensureEmployee(stage.assignedTo);
       }
-      // Add team members
       for (const team of projectWithTeam.teams) {
-        for (const member of team.members) {
-          addEmployeeIfMissing(member);
-        }
+        for (const member of team.members) ensureEmployee(member);
       }
     }
 
-    const employees = Array.from(employeeMap.values());
-    const totalProjectBillableHours = billableEntries.reduce((sum, entry) => sum + Number(entry.totalHours || 0), 0);
-    const totalStaffHourlyRate = employees.reduce((sum, e) => sum + e.hourlyRate, 0);
-
-    // Update each employee's cost contribution based on the new logic (TheirRate * TotalProjectHours)
-    employees.forEach(e => {
-      e.cost = e.hourlyRate * totalProjectBillableHours;
-    });
-
-    const totalLaborCost = totalStaffHourlyRate * totalProjectBillableHours;
-
-    // ─── Calculate actual project non-billable hours (Direct) ───
+    // ─── Actual project non-billable (overhead) hours, from approved timecards ───
     const projNonBillableEntries = await this.prisma.timecardEntry.findMany({
       where: {
         projectRequestId,
-        timecard: {
-          status: TimecardStatus.APPROVED,
-        },
+        timecard: { status: TimecardStatus.APPROVED },
       } as any,
+      include: {
+        timecard: {
+          select: {
+            user: {
+              select: {
+                id: true, name: true, email: true, role: true,
+                employeeProfile: { select: { hourlyRate: true } },
+              },
+            },
+          },
+        },
+      },
     });
 
     const totalProjectNonBillableHours = projNonBillableEntries.reduce(
       (sum, e) => sum + Number(e.totalHours || 0), 0,
     );
 
-    // Group by phase
-    const phaseNonBillableMap = new Map<string, number>();
     projNonBillableEntries.forEach((e: any) => {
-      if (e.phaseName) {
-        phaseNonBillableMap.set(
-          e.phaseName,
-          (phaseNonBillableMap.get(e.phaseName) || 0) + Number(e.totalHours || 0),
-        );
-      }
+      const user = e.timecard?.user;
+      if (!user) return;
+      ensureEmployee(user);
+      const emp = employeeMap.get(user.id);
+      const hrs = Number(e.totalHours || 0);
+      emp.nonBillableHours += hrs;
+      if (isAmendmentProposalId(e.proposalId)) emp.nonBillableHoursAmendment += hrs;
+      else emp.nonBillableHoursOriginal += hrs;
     });
 
-    // ─── Project Overhead = Firm Rate × Non-Billable Hours ───
-    const totalProjectOverhead = firmBillingRate * totalProjectNonBillableHours;
+    const totalProjectBillableHours = billableEntries.reduce(
+      (sum, entry) => sum + Number(entry.totalHours || 0), 0,
+    );
 
-    // ─── Burn Rate = Billable Hours × Firm Rate ───
-    const burnedFee = totalProjectBillableHours * firmBillingRate;
-    const remainingBudget = projectCost - burnedFee;
-
-    // Get phases with pricing and calculate phase-level financials
-    const phases = (proposal.projectStages || []).map((stage: any) => {
-      const matchingService = (proposal.services || []).find(
-        (s: any) => s.name === stage.name,
-      );
-      const phasePrice = matchingService ? Number(matchingService.amount || 0) : 0;
-
-      // Phase billable hours
-      const phaseBillableEntries = billableEntries.filter(be => be.phaseName === stage.name);
-      const phaseBillableHours = phaseBillableEntries.reduce((sum, be) => sum + Number(be.totalHours || 0), 0);
-
-      // Phase labor cost
-      const phaseLaborCost = totalStaffHourlyRate * phaseBillableHours;
-
-      // Phase overhead = firm rate × direct non-billable hours for this phase
-      const phaseNonBillableHours = phaseNonBillableMap.get(stage.name) || 0;
-      const phaseOverhead = phaseNonBillableHours * firmBillingRate;
-
-      // Phase burned = billable hours × firm rate
-      const phaseBurned = phaseBillableHours * firmBillingRate;
-
-      const phaseProfit = phasePrice - phaseLaborCost - phaseOverhead;
-
-      return {
-        id: stage.id,
-        name: stage.name,
-        price: phasePrice,
-        accumulatedTime: stage.accumulatedTime || 0,
-        actualHours: phaseBillableHours,
-        nonBillableHours: phaseNonBillableHours,
-        status: stage.status,
-        progress: stage.progress,
-        assignedTo: stage.assignedTo,
-        burned: phaseBurned,
-        laborCost: phaseLaborCost,
-        overhead: phaseOverhead,
-        profit: phaseProfit,
-        profitMargin: phasePrice > 0 ? (phaseProfit / phasePrice) * 100 : 0
-      };
+    // ─── Per-employee cost — their own rate, applied to their own hours ───
+    //   Labor Cost    = hourly rate × billable hours
+    //   Overhead Cost = hourly rate × non-billable hours
+    //   Cost Incurred = Labor Cost + Overhead Cost
+    const employees = Array.from(employeeMap.values());
+    employees.forEach((e) => {
+      e.laborCost = e.hourlyRate * e.totalBillableHours;
+      e.overheadCost = e.hourlyRate * e.nonBillableHours;
+      e.costIncurred = e.laborCost + e.overheadCost;
+      e.cost = e.costIncurred; // the "Cost Incurred" column reads emp.cost
     });
 
-    // Grand totals (sum of all phases)
-    const grandTotals = {
-      price: phases.reduce((sum, p) => sum + p.price, 0),
-      burned: phases.reduce((sum, p) => sum + p.burned, 0),
-      laborCost: phases.reduce((sum, p) => sum + p.laborCost, 0),
-      overhead: phases.reduce((sum, p) => sum + p.overhead, 0),
-      profit: phases.reduce((sum, p) => sum + p.profit, 0),
-      actualHours: phases.reduce((sum, p) => sum + p.actualHours, 0),
-      nonBillableHours: phases.reduce((sum, p) => sum + p.nonBillableHours, 0),
-      profitMargin: 0,
+    const totalLaborCost = employees.reduce((s, e) => s + e.laborCost, 0);
+    const totalOverheadCost = employees.reduce((s, e) => s + e.overheadCost, 0);
+    const totalCostIncurred = totalLaborCost + totalOverheadCost;
+
+    const laborBreakdownTotals = {
+      billableHours: employees.reduce((s, e) => s + e.totalBillableHours, 0),
+      nonBillableHours: employees.reduce((s, e) => s + e.nonBillableHours, 0),
+      laborCost: totalLaborCost,
+      overheadCost: totalOverheadCost,
+      costIncurred: totalCostIncurred,
+      billableHoursOriginal: employees.reduce((s, e) => s + e.billableHoursOriginal, 0),
+      billableHoursAmendment: employees.reduce((s, e) => s + e.billableHoursAmendment, 0),
+      nonBillableHoursOriginal: employees.reduce((s, e) => s + e.nonBillableHoursOriginal, 0),
+      nonBillableHoursAmendment: employees.reduce((s, e) => s + e.nonBillableHoursAmendment, 0),
     };
-    grandTotals.profitMargin = grandTotals.price > 0 ? (grandTotals.profit / grandTotals.price) * 100 : 0;
 
-    const totalProjectCost = totalLaborCost + totalProjectOverhead;
+    // ─── Burn — at the firm billing rate ───
+    const totalOverheadBurned = firmBillingRate * totalProjectNonBillableHours;
+    const burnedFee = totalProjectBillableHours * firmBillingRate; // labor burned
+    const amountBurned = burnedFee + totalOverheadBurned; // top "Amount Burned" card
+
+    // ─── Phase profit tracking, grouped by contract ───
+    // A timesheet line belongs to a phase when it points at the phase's stage
+    // id, or (no stage id) names the phase on the right contract.
+    const phaseHoursFor = (
+      entries: any[],
+      stage: any,
+      contractProposalId: string,
+      isOriginal: boolean,
+    ) =>
+      entries.reduce((sum, ent: any) => {
+        const hrs = Number(ent.totalHours || 0);
+        if (ent.stageId) return ent.stageId === stage.id ? sum + hrs : sum;
+        const onThisContract = isOriginal
+          ? !ent.proposalId || ent.proposalId === contractProposalId
+          : ent.proposalId === contractProposalId;
+        return onThisContract && ent.phaseName === stage.name ? sum + hrs : sum;
+      }, 0);
+
+    const buildPhaseGroup = (
+      stages: any[],
+      services: any[],
+      contractProposalId: string,
+      contractProposalNumber: string,
+      isAmendment: boolean,
+    ) =>
+      (stages || [])
+        .slice()
+        .sort((a, b) => (a.order ?? 0) - (b.order ?? 0))
+        .map((stage: any) => {
+          const svc = (services || []).find((s: any) => s.name === stage.name);
+          const price = svc ? Number(svc.amount || 0) : 0;
+          const billableHours = phaseHoursFor(billableEntries, stage, contractProposalId, !isAmendment);
+          const nonBillableHours = phaseHoursFor(projNonBillableEntries, stage, contractProposalId, !isAmendment);
+          const laborBurned = billableHours * firmBillingRate;
+          const overheadBurned = nonBillableHours * firmBillingRate;
+          const profit = price - laborBurned - overheadBurned;
+          return {
+            id: stage.id,
+            name: stage.name,
+            contractLabel: isAmendment
+              ? `Amendment · ${contractProposalNumber}`
+              : 'Original Contract',
+            contractProposalId,
+            contractProposalNumber,
+            isAmendment,
+            price,
+            accumulatedTime: stage.accumulatedTime || 0,
+            billableHours,
+            nonBillableHours,
+            laborBurned,
+            overheadBurned,
+            profit,
+            profitMargin: price > 0 ? (profit / price) * 100 : 0,
+            status: stage.status,
+            progress: stage.progress,
+            assignedTo: stage.assignedTo,
+            // back-compat aliases for older readers
+            actualHours: billableHours,
+            burned: laborBurned,
+            overhead: overheadBurned,
+            laborCost: laborBurned,
+          };
+        });
+
+    const originalPhaseRows = buildPhaseGroup(
+      proposal.projectStages || [],
+      proposal.services || [],
+      proposal.id,
+      proposal.proposalNumber,
+      false,
+    );
+    const amendmentPhaseRows: any[] = [];
+    for (const ap of amendmentProposals as any[]) {
+      amendmentPhaseRows.push(
+        ...buildPhaseGroup(
+          ap.projectStages || [],
+          ap.services || [],
+          ap.id,
+          ap.proposalNumber,
+          true,
+        ),
+      );
+    }
+    const phases = [...originalPhaseRows, ...amendmentPhaseRows];
+
+    const sumBy = (arr: any[], key: string) =>
+      arr.reduce((s, x) => s + (Number(x[key]) || 0), 0);
+
+    // The Grand Total is the authoritative row: it uses the project-wide hour
+    // totals (which always reconcile with the Direct Labor Breakdown), not the
+    // per-phase sums, which fall short when a timesheet line never named a
+    // phase. Its original/amendment split comes from the same entry-level
+    // contract tag the labor breakdown uses.
+    const grandPrice = sumBy(phases, 'price'); // every phase, original + amendments
+    const grandLaborBurned = burnedFee; // totalProjectBillableHours × firmRate
+    const grandOverheadBurned = totalOverheadBurned; // totalProjectNonBillableHours × firmRate
+    const grandProfit = grandPrice - grandLaborBurned - grandOverheadBurned;
+
+    const grandTotals = {
+      price: grandPrice,
+      billableHours: totalProjectBillableHours,
+      nonBillableHours: totalProjectNonBillableHours,
+      laborBurned: grandLaborBurned,
+      overheadBurned: grandOverheadBurned,
+      profit: grandProfit,
+      profitMargin: grandPrice > 0 ? (grandProfit / grandPrice) * 100 : 0,
+      // original vs amendment hour split
+      originalBillableHours: laborBreakdownTotals.billableHoursOriginal,
+      amendmentBillableHours: laborBreakdownTotals.billableHoursAmendment,
+      originalNonBillableHours: laborBreakdownTotals.nonBillableHoursOriginal,
+      amendmentNonBillableHours: laborBreakdownTotals.nonBillableHoursAmendment,
+      // back-compat aliases
+      burned: grandLaborBurned,
+      overhead: grandOverheadBurned,
+      laborCost: grandLaborBurned,
+      actualHours: totalProjectBillableHours,
+    };
+
+    // Remaining Budget = Total Contract Fee (every phase) − Total Cost Incurred
+    const totalContractFee = grandPrice;
+    const remainingBudget = totalContractFee - totalCostIncurred;
+
+    const totalProjectCost = totalCostIncurred;
     const profit = projectCost - totalProjectCost;
 
     return {
@@ -959,21 +1141,34 @@ export class FinancialService {
       totalAmendmentAmount,
       totalAmendmentPaid,
       totalProjectRefunds,
-      burnedFee,
+
+      // Burn — at the firm billing rate
+      burnedFee, // labor burned
+      totalOverheadBurned, // overhead burned
+      amountBurned, // labor burned + overhead burned
+
+      // Cost incurred — at each employee's own hourly rate
+      totalLaborCost, // Σ rate × billable hours
+      totalOverheadCost, // Σ rate × non-billable hours
+      totalCostIncurred, // Σ rate × (billable + non-billable)
+
+      totalContractFee,
       remainingBudget,
-      totalLaborCost,
-      projectOverheadAllocation: totalProjectOverhead,
+
+      projectOverheadAllocation: totalOverheadBurned, // back-compat
       totalProjectBillableHours,
       totalProjectNonBillableHours,
       totalProjectCost,
       profit,
       profitMargin: projectCost > 0 ? (profit / projectCost) * 100 : 0,
+
       phases,
       grandTotals,
       employees,
+      laborBreakdownTotals,
       amendments: amendmentDetails,
       assignedManager: proposal.projectRequest?.assignedManager || null,
-      firmBillingRate
+      firmBillingRate,
     };
   }
 
@@ -1537,7 +1732,7 @@ export class FinancialService {
    * Total Project Months so the chart always agrees with the stat cards:
    *
    *   Avg Monthly Revenue = Total Contract / Total Project Months
-   *   Avg Monthly Cost    = (Labor Cost + Project Overhead) / Total Project Months
+   *   Avg Monthly Cost    = Total Cost Incurred / Total Project Months
    *   Avg Monthly Profit  = Avg Monthly Revenue - Avg Monthly Cost
    *   Avg Utilization     = Billable Hours / (Billable + Non-Billable Hours)
    */
@@ -1553,9 +1748,12 @@ export class FinancialService {
     }
 
     const totalContract = Number(details?.projectCost || 0);
+    // Cost is the actual cost incurred — each employee's own rate applied to
+    // their billable AND non-billable hours — not the firm-rate burn.
     const laborCost = Number(details?.totalLaborCost || 0);
-    const projectOverhead = Number(details?.projectOverheadAllocation || 0);
-    const totalCost = laborCost + projectOverhead;
+    const projectOverhead = Number(details?.totalOverheadCost || 0);
+    const totalCost =
+      Number(details?.totalCostIncurred ?? laborCost + projectOverhead);
 
     const billableHours = Number(details?.totalProjectBillableHours || 0);
     const nonBillableHours = Number(details?.totalProjectNonBillableHours || 0);

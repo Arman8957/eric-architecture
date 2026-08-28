@@ -247,6 +247,15 @@ export class MailerService {
     return this.config.get('APP_NAME', 'Architecture Simple');
   }
 
+  /** First configured frontend origin, without a trailing slash. */
+  private getFrontendUrl(): string {
+    const raw = this.config.get<string>(
+      'FRONTEND_URL',
+      'http://localhost:5173',
+    );
+    return raw.split(',')[0].trim().replace(/\/$/, '');
+  }
+
   private getCurrentYear(): number {
     return new Date().getFullYear();
   }
@@ -259,6 +268,8 @@ export class MailerService {
     recipientName: string,
     details: {
       meetingTitle: string;
+      /** MeetingLink id — the email links through a payment-gated redirect. */
+      meetingId: string;
       meetingUrl: string;
       scheduledAt: Date;
       projectName: string;
@@ -268,6 +279,11 @@ export class MailerService {
     },
   ): Promise<void> {
     const appName = this.getAppName();
+
+    // The email never links straight to the video room. It goes through the
+    // app, which checks the client has paid the consultation fee before
+    // forwarding them — otherwise it drops them on the payment section.
+    const joinUrl = `${this.getFrontendUrl()}/meetings/${details.meetingId}/join`;
 
     const formattedDate = details.scheduledAt.toLocaleDateString('en-US', {
       weekday: 'long',
@@ -352,12 +368,12 @@ export class MailerService {
         <!-- Join Button -->
         <div style="text-align: center; background: linear-gradient(135deg, #eef5ff, #e8f0fe); border-radius: 10px; padding: 28px 20px; margin-bottom: 24px;">
           <p style="font-size: 14px; color: #475569; margin: 0 0 16px;">Click the button below to join the meeting at the scheduled time.</p>
-          <a href="${details.meetingUrl}" style="display: inline-block; background: linear-gradient(135deg, #0f3460, #1a5276); color: #fff; text-decoration: none; padding: 14px 40px; border-radius: 8px; font-size: 15px; font-weight: 600; letter-spacing: 0.3px;">
+          <a href="${joinUrl}" style="display: inline-block; background: linear-gradient(135deg, #0f3460, #1a5276); color: #fff; text-decoration: none; padding: 14px 40px; border-radius: 8px; font-size: 15px; font-weight: 600; letter-spacing: 0.3px;">
             Join Meeting
           </a>
           <div style="margin-top: 14px; font-size: 11px; color: #94a3b8; word-break: break-all;">
             Or copy this link:<br/>
-            <strong>${details.meetingUrl}</strong>
+            <strong>${joinUrl}</strong>
           </div>
         </div>
       </div>
@@ -394,7 +410,7 @@ Invited by: ${details.senderName}
 ${details.notes ? `Notes from ${details.senderName}:\n${details.notes}\n` : ''}
 
 Join the meeting using this link:
-${details.meetingUrl}
+${joinUrl}
 
 This invitation was sent by ${details.senderName}.
 If you did not expect this email, please ignore it.

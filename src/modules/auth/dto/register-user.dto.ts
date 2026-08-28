@@ -22,6 +22,10 @@ export class RegisterUserDto {
   @IsNotEmpty({ message: 'Last name is required' })
   lastName!: string;
 
+  @IsString()
+  @IsOptional()
+  companyName?: string;
+
   // ── Optional address details ────────────────────────────────────────────
   @IsString()
   @IsOptional()
@@ -38,6 +42,10 @@ export class RegisterUserDto {
   @IsString()
   @IsOptional()
   streetAddress?: string;
+
+  @IsString()
+  @IsOptional()
+  aptSuiteUnit?: string;
 
   @IsString()
   @IsOptional()

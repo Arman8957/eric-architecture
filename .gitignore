@@ -59,3 +59,7 @@ report.[0-9]*.[0-9]*.[0-9]*.[0-9]*.json
 branch_structure.json
 temp_auto_push.bat
 temp_interactive_push.bat
+
+# Prisma migration-history backup (baseline squash 2026-08-27)
+prisma/_migrations_backup_*/
+prisma/_prisma_migrations_backup_*.json

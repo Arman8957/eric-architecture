@@ -2,6 +2,7 @@ import {
   Injectable,
   NotFoundException,
   ForbiddenException,
+  BadRequestException,
 } from '@nestjs/common';
 import { User, UserRole } from '@prisma/client';
 import { PrismaService } from 'src/prisma/prisma.service';
@@ -20,21 +21,31 @@ export class ProjectAttachmentService {
     return this.MANAGE_ROLES.has(user.role);
   }
 
-  private async assertCanRead(projectRequestId: string, user: User) {
-    if (this.canManage(user)) return;
-
+  /**
+   * A client may view, add and manage documents for their own project, but
+   * only once the consultation fee is paid — the same gate the meetings and
+   * deliverables use. Managers are never gated.
+   */
+  private async assertClientAccess(projectRequestId: string, user: User) {
     const project = await this.prisma.projectRequest.findUnique({
       where: { id: projectRequestId },
-      select: { userId: true },
+      select: { userId: true, consultationPaymentId: true },
     });
 
     if (!project || project.userId !== user.id) {
       throw new ForbiddenException('Access denied');
     }
+    if (!project.consultationPaymentId) {
+      throw new ForbiddenException(
+        'Pay the consultation fee to access project documents',
+      );
+    }
   }
 
   async getForProject(projectRequestId: string, user: User) {
-    await this.assertCanRead(projectRequestId, user);
+    if (!this.canManage(user)) {
+      await this.assertClientAccess(projectRequestId, user);
+    }
 
     return this.prisma.projectAttachment.findMany({
       where: { projectRequestId },
@@ -50,20 +61,20 @@ export class ProjectAttachmentService {
     dto: { title: string; url: string },
     user: User,
   ) {
-    if (!this.canManage(user)) {
-      throw new ForbiddenException('Access denied');
-    }
-
     if (!dto.title?.trim() || !dto.url?.trim()) {
-      throw new ForbiddenException('Title and URL are required');
+      throw new BadRequestException('Title and URL are required');
     }
 
-    const project = await this.prisma.projectRequest.findUnique({
-      where: { id: projectRequestId },
-    });
-
-    if (!project) {
-      throw new NotFoundException('Project request not found');
+    if (this.canManage(user)) {
+      const project = await this.prisma.projectRequest.findUnique({
+        where: { id: projectRequestId },
+        select: { id: true },
+      });
+      if (!project) {
+        throw new NotFoundException('Project request not found');
+      }
+    } else {
+      await this.assertClientAccess(projectRequestId, user);
     }
 
     return this.prisma.projectAttachment.create({
@@ -84,16 +95,20 @@ export class ProjectAttachmentService {
     dto: { title?: string; url?: string },
     user: User,
   ) {
-    if (!this.canManage(user)) {
-      throw new ForbiddenException('Access denied');
-    }
-
     const existing = await this.prisma.projectAttachment.findUnique({
       where: { id: attachmentId },
     });
 
     if (!existing) {
       throw new NotFoundException('Attachment not found');
+    }
+
+    if (!this.canManage(user)) {
+      // Clients may only manage the rows they added themselves.
+      if (existing.createdById !== user.id) {
+        throw new ForbiddenException('Access denied');
+      }
+      await this.assertClientAccess(existing.projectRequestId, user);
     }
 
     return this.prisma.projectAttachment.update({
@@ -109,16 +124,19 @@ export class ProjectAttachmentService {
   }
 
   async remove(attachmentId: string, user: User) {
-    if (!this.canManage(user)) {
-      throw new ForbiddenException('Access denied');
-    }
-
     const existing = await this.prisma.projectAttachment.findUnique({
       where: { id: attachmentId },
     });
 
     if (!existing) {
       throw new NotFoundException('Attachment not found');
+    }
+
+    if (!this.canManage(user)) {
+      if (existing.createdById !== user.id) {
+        throw new ForbiddenException('Access denied');
+      }
+      await this.assertClientAccess(existing.projectRequestId, user);
     }
 
     await this.prisma.projectAttachment.delete({ where: { id: attachmentId } });

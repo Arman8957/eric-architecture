@@ -24,7 +24,7 @@ export class UsersGetService {
     createdAt: true,
     lastLoginAt: true,
     emailVerified: true,
-    employeeProfile: true,
+    employeeProfile: { include: { taxes: true } },
     // Profile fields — safe to expose to the owning user and staff.
     firstName: true,
     middleInitial: true,

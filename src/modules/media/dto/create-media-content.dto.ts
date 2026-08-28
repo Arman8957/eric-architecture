@@ -102,8 +102,19 @@ export class CreateMediaContentDto {
   @IsOptional()
   author?: string;
 
+  @IsString()
+  @IsOptional()
+  publisher?: string;
+
+  @IsString()
+  @IsOptional()
+  source?: string;
+
   @IsOptional()
   publishDate?: Date;
+
+  @IsOptional()
+  uploadDate?: Date;
 
   // Common
   @IsBoolean()

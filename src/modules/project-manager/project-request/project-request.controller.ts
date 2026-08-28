@@ -253,6 +253,19 @@ export class ProjectRequestController {
     return this.projectRequestService.respondToMeeting(id, action, user);
   }
 
+  /**
+   * Payment gate for the "Join Meeting" link in the invitation email. Returns
+   * the real room URL only when the caller is allowed in (staff, or a client
+   * who has paid the consultation fee).
+   */
+  @Get('meetings/:id/join')
+  async getMeetingJoinAccess(
+    @Param('id') id: string,
+    @CurrentUser() user: client.User,
+  ) {
+    return this.projectRequestService.getMeetingJoinAccess(id, user);
+  }
+
   // ========================================
   // USER ROUTES
   // ========================================
@@ -495,6 +508,7 @@ export class ProjectRequestController {
         projectDescription?: string;
         additionalContext?: string;
         streetAddress?: string;
+        aptSuiteUnit?: string;
         city?: string;
         state?: string;
         zip?: string;

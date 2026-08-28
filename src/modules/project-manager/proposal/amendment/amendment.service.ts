@@ -17,6 +17,7 @@ import {
 import { PrismaService } from 'src/prisma/prisma.service';
 import { MailerService } from 'src/utils/email/email.service';
 import { NotificationService } from 'src/modules/notification/notification.service';
+import { staffProjectLink } from 'src/common/notification-links';
 import { CreateAmendmentProposalDto, CreateAmendmentRequestDto, ReviewAmendmentDto } from '../dto/amendment.dto';
 
 
@@ -145,6 +146,11 @@ async createAmendmentRequest(
       type: 'NEW_AMENDMENT_REQUEST',
       title: 'New Amendment Request',
       message: `${amendment.proposal.clientName || user.name || 'A client'} requested an amendment on ${amendment.proposal.proposalNumber}: ${amendment.projectName}`,
+      // Opens the project's details modal on the Contracts tab, where the
+      // pending amendment is listed for review.
+      link: proposal.projectRequestId
+        ? staffProjectLink(proposal.projectRequestId, 'contracts')
+        : undefined,
       projectRequestId: proposal.projectRequestId ?? undefined,
     });
   } catch (notifError) {

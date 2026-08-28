@@ -204,6 +204,7 @@ model User {
   companyName   String?
   bio           String?  @db.Text
   streetAddress String?
+  aptSuiteUnit  String?
   city          String?
   stateRegion   String?
   zipCode       String?
@@ -383,7 +384,10 @@ model MediaContent {
 
   // Article specific
   author      String? // Author name (different from creator)
+  publisher   String? // Publishing outlet / organisation (e.g. "The Independent")
+  source      String? // Original source name / attribution
   publishDate DateTime?
+  uploadDate  DateTime  @default(now()) // When the article was added to the system
   readTime    Int? // in minutes
 
   // SEO
@@ -1044,8 +1048,10 @@ model EmployeeTax {
   id                String          @id @default(uuid())
   employeeProfileId String
   employeeProfile   EmployeeProfile @relation(fields: [employeeProfileId], references: [id], onDelete: Cascade)
-  taxType           String          // FITWH, MED, SOC, CA, CASDI, OTHERS
+  taxType           String          // FITWH, MED, SOC, ST, SDI, OTHERS
   customName        String?         // custom name when taxType is OTHERS
+  // The US state a state-specific tax applies to (taxType ST or SDI).
+  state             String?
   percentage        Decimal         @db.Decimal(5, 2)
   createdAt         DateTime        @default(now())
   updatedAt         DateTime        @updatedAt

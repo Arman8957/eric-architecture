@@ -420,47 +420,70 @@ export class ProjectRequestService {
       throw new ForbiddenException('Access denied');
     }
 
-    const globalWhere: Prisma.ProjectRequestWhereInput = {
-      deletedAt: null,
-      isArchived: false,
-    };
+    // 1. Global Stats - For "all projects visible to this user".
+    //
+    // Inquiry + Bidding are live pipeline counts (archived rows excluded).
+    // Active + Done are scoped to the current calendar year — Active = started
+    // this year, Done = completed this year — and DO include archived projects
+    // (archive is a display flag only). Total = Active + Done for the year.
+    const now = new Date();
+    const yearStart = new Date(now.getFullYear(), 0, 1);
+    const yearEnd = new Date(now.getFullYear(), 11, 31, 23, 59, 59, 999);
 
+    const baseGlobal: Prisma.ProjectRequestWhereInput = { deletedAt: null };
     if (isStaff && !canManage) {
-      globalWhere.teams = { some: { members: { some: { id: user.id } } } };
+      baseGlobal.teams = { some: { members: { some: { id: user.id } } } };
     }
 
-    // 1. Global Stats - For "all projects visible to this user"
-    const [globalCounts, globalTotal] = await Promise.all([
+    const [pipelineCounts, activeThisYear, doneThisYear] = await Promise.all([
       this.prisma.projectRequest.groupBy({
         by: ['status'],
-        where: globalWhere,
+        where: {
+          ...baseGlobal,
+          isArchived: false,
+          status: {
+            in: [
+              RequestStatus.PENDING,
+              RequestStatus.REVIEWED,
+              RequestStatus.SCHEDULED,
+            ],
+          },
+        },
         _count: true,
       }),
       this.prisma.projectRequest.count({
-        where: globalWhere,
+        where: {
+          ...baseGlobal,
+          status: RequestStatus.ACTIVE,
+          projectStartedAt: { gte: yearStart, lte: yearEnd },
+        },
+      }),
+      this.prisma.projectRequest.count({
+        where: {
+          ...baseGlobal,
+          status: RequestStatus.COMPLETED,
+          projectCompletedAt: { gte: yearStart, lte: yearEnd },
+        },
       }),
     ]);
 
     const globalStats = {
-      total: globalTotal,
+      total: activeThisYear + doneThisYear,
       inquiry: 0,
       bidding: 0,
-      active: 0,
-      done: 0,
+      active: activeThisYear,
+      done: doneThisYear,
     };
 
-    globalCounts.forEach((item) => {
-      const status = item.status;
+    pipelineCounts.forEach((item) => {
       const count = item._count;
-
-      if (status === RequestStatus.PENDING || status === RequestStatus.REVIEWED) {
+      if (
+        item.status === RequestStatus.PENDING ||
+        item.status === RequestStatus.REVIEWED
+      ) {
         globalStats.inquiry += count;
-      } else if (status === RequestStatus.SCHEDULED) {
+      } else if (item.status === RequestStatus.SCHEDULED) {
         globalStats.bidding += count;
-      } else if (status === RequestStatus.ACTIVE) {
-        globalStats.active += count;
-      } else if (status === RequestStatus.COMPLETED) {
-        globalStats.done += count;
       }
     });
 
@@ -1317,6 +1340,7 @@ export class ProjectRequestService {
         projectRequest.user.name || 'Client',
         {
           meetingTitle: dto.title,
+          meetingId: meetingLink.id,
           meetingUrl: dto.meetingUrl,
           scheduledAt: start,
           projectName: projectRequest.projectName,
@@ -1350,6 +1374,77 @@ export class ProjectRequestService {
         : 'Meeting link created but email delivery failed',
       emailSent,
       data: meetingLink,
+    };
+  }
+
+  /**
+   * Payment gate for joining a meeting's video room.
+   *
+   * The meeting-invitation email links here rather than straight to the room,
+   * so an unpaid client can't join a kickoff call just by clicking the email.
+   * The client must have paid the one-time consultation fee for the project
+   * (phase meetings are additionally gated on their phase payment when they
+   * are booked). Staff are never gated. Returns the real room URL only when
+   * the caller is actually allowed in; otherwise the frontend sends them to
+   * the payment section of the project card.
+   */
+  async getMeetingJoinAccess(meetingId: string, user: User) {
+    const meeting = await this.prisma.meetingLink.findUnique({
+      where: { id: meetingId },
+      select: {
+        id: true,
+        meetingUrl: true,
+        sentToUserId: true,
+        projectRequest: {
+          select: { id: true, userId: true, consultationPaymentId: true },
+        },
+      },
+    });
+
+    if (!meeting || !meeting.projectRequest) {
+      throw new NotFoundException('Meeting not found');
+    }
+
+    const pr = meeting.projectRequest;
+    const isManager = this.canManageRequests(user);
+    const isClient =
+      pr.userId === user.id || meeting.sentToUserId === user.id;
+
+    if (!isManager && !isClient) {
+      throw new ForbiddenException('Access denied');
+    }
+
+    if (isManager) {
+      return {
+        allowed: !!meeting.meetingUrl,
+        meetingUrl: meeting.meetingUrl,
+        projectRequestId: pr.id,
+        reason: meeting.meetingUrl ? undefined : 'no_link',
+      };
+    }
+
+    if (!pr.consultationPaymentId) {
+      return {
+        allowed: false,
+        meetingUrl: null,
+        projectRequestId: pr.id,
+        reason: 'consultation_unpaid',
+      };
+    }
+
+    if (!meeting.meetingUrl) {
+      return {
+        allowed: false,
+        meetingUrl: null,
+        projectRequestId: pr.id,
+        reason: 'no_link',
+      };
+    }
+
+    return {
+      allowed: true,
+      meetingUrl: meeting.meetingUrl,
+      projectRequestId: pr.id,
     };
   }
 
@@ -1489,6 +1584,7 @@ export class ProjectRequestService {
           client.name || 'Client',
           {
             meetingTitle: updated.title,
+            meetingId: meetingId,
             meetingUrl: dto.meetingUrl,
             scheduledAt: start,
             projectName: meeting.projectRequest.projectName,
@@ -1852,6 +1948,7 @@ export class ProjectRequestService {
         projectDescription?: string;
         additionalContext?: string;
         streetAddress?: string;
+        aptSuiteUnit?: string;
         city?: string;
         state?: string;
         zip?: string;
@@ -2011,6 +2108,7 @@ export class ProjectRequestService {
           projectName: projectInfo.projectName,
           additionalNotes: projectInfo.additionalContext || projectInfo.projectDescription || null,
           projectStreetAddress: projectInfo.streetAddress || null,
+          projectAptSuiteUnit: projectInfo.aptSuiteUnit || null,
           projectCity: projectInfo.city || null,
           projectState: projectInfo.state || null,
           projectZipCode: projectInfo.zip || null,
