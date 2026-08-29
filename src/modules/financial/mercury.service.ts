@@ -86,8 +86,24 @@ export class MercuryService {
       if (!response.ok) {
         const errorBody = await response.text();
         this.logger.error(`Mercury API error ${response.status}: ${errorBody}`);
+
+        // Pass Mercury's own message through — a bare "401 Unauthorized"
+        // hides that the token is missing/malformed.
+        let detail = response.statusText;
+        try {
+          const parsed = JSON.parse(errorBody);
+          detail = parsed?.errors?.message || parsed?.message || detail;
+        } catch {
+          /* not JSON — keep statusText */
+        }
+
+        const hint =
+          response.status === 401
+            ? ' Check MERCURY_API_KEY: it must be the full "secret-token:mercury_production_..." value from mercury.com/settings/tokens.'
+            : '';
+
         throw new InternalServerErrorException(
-          `Mercury API returned ${response.status}: ${response.statusText}`,
+          `Mercury API error ${response.status}: ${detail}.${hint}`,
         );
       }
 
