@@ -42,6 +42,17 @@ export class PaymentController {
     return { success: true, data: result };
   }
 
+  /**
+   * Consultation-fee intent for a visitor with no account (public New Project
+   * flow). Deliberately unauthenticated — the intent is bound to the typed
+   * email, and the project request that consumes it is checked separately.
+   */
+  @Post('create-consultation-intent/public')
+  async createConsultationIntentPublic(@Body('email') email: string) {
+    const result = await this.paymentService.createConsultationIntentPublic(email);
+    return { success: true, data: result };
+  }
+
   @Post('webhook')
   async handleWebhook(
     @Req() req: any,

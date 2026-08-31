@@ -120,6 +120,27 @@ enum RequestStatus {
   CANCELLED
 }
 
+// Lifecycle of an inquiry submitted WITHOUT an account (public New Project
+// flow). Regular, account-linked requests leave this null.
+//   AWAITING_DECISION → studio locks every tab but Project Information and
+//                       shows Accept / Decline
+//   ACCEPTED          → signup invite emailed; tabs stay locked until the
+//                       client claims the link
+//   DECLINED          → filtered out of the active pipeline; a ConsultationRefund
+//                       is raised when a fee was paid
+//   CONVERTED         → the claim link was used, a User now owns the request
+enum InquiryStatus {
+  AWAITING_DECISION
+  ACCEPTED
+  DECLINED
+  CONVERTED
+}
+
+enum ConsultationRefundStatus {
+  PENDING
+  PROCESSED
+}
+
 enum MeetingType {
   INITIAL_CONSULTATION // the first call — either side may propose it
   PROJECT_KICKOFF // always set by the architect
@@ -261,6 +282,9 @@ model User {
   bankDetails          UserBankDetails?
   refundRequests       RefundRequest[]
   approvedRefunds      RefundRequest[]    @relation("ApprovedRefunds")
+  decidedInquiries             ProjectRequest[]     @relation("DecidedInquiries")
+  requestedConsultationRefunds ConsultationRefund[] @relation("RequestedConsultationRefunds")
+  processedConsultationRefunds ConsultationRefund[] @relation("ProcessedConsultationRefunds")
   payments             Payment[]
   createdAttachments   ProjectAttachment[]
   scheduleBlocks       ScheduleBlock[]     @relation("ScheduleBlockOwner")
@@ -635,6 +659,24 @@ model ProjectRequest {
   archiverId                String?
   archivedAt                DateTime?
 
+  // ── Account-less inquiry lifecycle ─────────────────────────────────────
+  // Only set when the request was submitted through the public New Project
+  // flow (userId is null at creation). Drives the studio Accept/Decline gate
+  // and the token-based signup invite.
+  inquiryStatus         InquiryStatus?
+  inquiryDecidedAt      DateTime?
+  inquiryDecidedById    String?
+  inquiryDecidedBy      User?          @relation("DecidedInquiries", fields: [inquiryDecidedById], references: [id])
+  // Hashed one-time signup-claim token. 1:1 with the request.
+  claimTokenHash        String?        @unique
+  claimTokenExpiresAt   DateTime?
+  claimInviteSentAt     DateTime?
+  claimInviteCount      Int            @default(0)
+  // Last time the stale-acceptance cron nudged staff about this one.
+  claimStaleRemindedAt  DateTime?
+
+  consultationRefund    ConsultationRefund?
+
   // Assigned Project Manager (only SUPER_ADMIN can assign)
   assignedManagerId String?
   assignedManager   User?          @relation("AssignedProjects", fields: [assignedManagerId], references: [id])
@@ -666,7 +708,50 @@ model ProjectRequest {
   @@index([createdAt])
   @@index([isArchived])
   @@index([assignedManagerId])
+  @@index([inquiryStatus])
   @@map("project_requests")
+}
+
+// ──────────────────────────────────────────────────────────────
+// Consultation Refunds – the $250 consultation fee refunded to a client
+// whose account-less inquiry the studio DECLINED. Deliberately separate from
+// RefundRequest (which is per-phase, client-initiated, needs bank details and
+// a userId). This one is studio-initiated, self-contained via snapshot fields,
+// and paid straight back to the card through Stripe.
+// ──────────────────────────────────────────────────────────────
+model ConsultationRefund {
+  id String @id @default(uuid())
+
+  projectRequestId String         @unique
+  projectRequest   ProjectRequest @relation(fields: [projectRequestId], references: [id])
+
+  // Snapshot at creation — survives any later change to (or deletion of) the
+  // inquiry, and means the refund list never has to join back to it.
+  clientName            String
+  email                 String
+  projectName           String
+  amount                Decimal @db.Decimal(10, 2)
+  consultationPaymentId String  @unique // Stripe PaymentIntent — one refund per fee
+
+  status ConsultationRefundStatus @default(PENDING)
+
+  // The staff member whose Decline raised this record.
+  requestedById String
+  requestedBy   User   @relation("RequestedConsultationRefunds", fields: [requestedById], references: [id])
+
+  // Set together, in one click, when finance processes the payout.
+  stripeRefundId String?
+  processedById  String?
+  processedBy    User?     @relation("ProcessedConsultationRefunds", fields: [processedById], references: [id])
+  processedAt    DateTime?
+  notes          String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([status])
+  @@index([email])
+  @@map("consultation_refunds")
 }
 
 model ProjectAttachment {

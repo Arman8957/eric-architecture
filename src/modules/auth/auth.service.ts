@@ -21,6 +21,10 @@ import { VerifyEmailDto } from './dto/verify-email.dto';
 import { AuthResponseDto } from './dto/auth-response.dto';
 import { MailerService } from 'src/utils/email/email.service';
 import { FindAllOptions } from './constant';
+import {
+  hashClaimToken,
+  issueClaimToken,
+} from 'src/common/claim-token.util';
 
 @Injectable()
 export class AuthService {
@@ -136,6 +140,28 @@ export class AuthService {
       },
     });
 
+    // Signup from an "Inquiry Accepted" email: the token in the link proves
+    // control of the inbox we sent it to, so the account adopts that inquiry
+    // and is verified without a second round-trip.
+    if (dto.claimToken) {
+      const { converted } = await this.adoptInquiries(
+        user.id,
+        normalizedEmail,
+        dto.claimToken,
+      );
+      if (converted) {
+        const verified = await this.prisma.user.update({
+          where: { id: user.id },
+          data: { emailVerified: true },
+        });
+        return {
+          message:
+            'Account created and linked to your project. You can log in now.',
+          user: this.sanitizeUser(verified),
+        };
+      }
+    }
+
     try {
       await this.sendVerificationEmail(user, frontendUrl);
       return {
@@ -148,6 +174,172 @@ export class AuthService {
         'Failed to send verification email. Try again later.',
       );
     }
+  }
+
+  /**
+   * Link every account-less inquiry that belongs to this person to their new
+   * account. With a claim token (from the accepted-inquiry email) the match is
+   * the token itself; without one — post email-verification — it is the
+   * verified address. AWAITING_DECISION and DECLINED inquiries are never
+   * adopted this way.
+   */
+  private async adoptInquiries(
+    userId: string,
+    email: string,
+    claimToken?: string,
+  ): Promise<{ converted: boolean }> {
+    const normalizedEmail = email.toLowerCase().trim();
+    let tokenEmail: string | null = null;
+
+    if (claimToken) {
+      const request = await this.prisma.projectRequest.findUnique({
+        where: { claimTokenHash: hashClaimToken(claimToken) },
+        select: {
+          email: true,
+          inquiryStatus: true,
+          claimTokenExpiresAt: true,
+          deletedAt: true,
+        },
+      });
+      if (
+        request &&
+        !request.deletedAt &&
+        request.inquiryStatus === 'ACCEPTED' &&
+        request.claimTokenExpiresAt &&
+        request.claimTokenExpiresAt > new Date()
+      ) {
+        tokenEmail = request.email;
+      }
+    }
+
+    const emailToAdopt = tokenEmail ?? normalizedEmail;
+
+    const converted = await this.prisma.projectRequest.updateMany({
+      where: {
+        userId: null,
+        email: emailToAdopt,
+        inquiryStatus: { in: ['ACCEPTED', 'CONVERTED'] },
+      },
+      data: {
+        userId,
+        inquiryStatus: 'CONVERTED',
+        claimTokenHash: null,
+        claimTokenExpiresAt: null,
+      },
+    });
+
+    // Legacy plain orphans (predating the accept/decline flow) on the user's
+    // own verified address.
+    await this.prisma.projectRequest.updateMany({
+      where: { userId: null, email: normalizedEmail, inquiryStatus: null },
+      data: { userId },
+    });
+
+    return { converted: !!tokenEmail || converted.count > 0 };
+  }
+
+  /**
+   * Prefill + validity for the signup form when it is opened from a claim link.
+   */
+  async getClaimInfo(token: string) {
+    if (!token) return { valid: false as const };
+
+    const request = await this.prisma.projectRequest.findUnique({
+      where: { claimTokenHash: hashClaimToken(token) },
+      select: {
+        email: true,
+        clientFirstName: true,
+        clientLastName: true,
+        companyName: true,
+        projectName: true,
+        inquiryStatus: true,
+        claimTokenExpiresAt: true,
+        deletedAt: true,
+        country: true,
+        state: true,
+        city: true,
+        streetAddress: true,
+        aptSuiteUnit: true,
+        zipCode: true,
+      },
+    });
+
+    if (
+      !request ||
+      request.deletedAt ||
+      request.inquiryStatus === 'CONVERTED' ||
+      request.inquiryStatus === 'DECLINED'
+    ) {
+      return { valid: false as const };
+    }
+
+    const expired =
+      !request.claimTokenExpiresAt ||
+      request.claimTokenExpiresAt < new Date();
+
+    return {
+      valid: !expired && request.inquiryStatus === 'ACCEPTED',
+      expired,
+      email: request.email,
+      firstName: request.clientFirstName,
+      lastName: request.clientLastName,
+      companyName: request.companyName,
+      projectName: request.projectName,
+      country: request.country,
+      state: request.state,
+      city: request.city,
+      streetAddress: request.streetAddress,
+      aptSuiteUnit: request.aptSuiteUnit,
+      zipCode: request.zipCode,
+    };
+  }
+
+  /**
+   * "My link expired" — re-issue a claim token for the most recent ACCEPTED
+   * inquiry on this email and re-send the invite. Response is intentionally
+   * generic so this cannot be used to probe for accepted inquiries.
+   */
+  async resendClaimByEmail(email: string) {
+    const genericMessage =
+      'If an accepted inquiry exists for that email, a new signup link has been sent.';
+    const normalizedEmail = (email || '').toLowerCase().trim();
+    if (!normalizedEmail) return { message: genericMessage };
+
+    const request = await this.prisma.projectRequest.findFirst({
+      where: {
+        email: normalizedEmail,
+        inquiryStatus: 'ACCEPTED',
+        deletedAt: null,
+      },
+      orderBy: { inquiryDecidedAt: 'desc' },
+    });
+    if (!request) return { message: genericMessage };
+
+    const { raw, hash, expiresAt } = issueClaimToken();
+    await this.prisma.projectRequest.update({
+      where: { id: request.id },
+      data: {
+        claimTokenHash: hash,
+        claimTokenExpiresAt: expiresAt,
+        claimInviteSentAt: new Date(),
+        claimInviteCount: { increment: 1 },
+      },
+    });
+
+    try {
+      await this.mailer.sendInquiryAccepted(
+        request.email,
+        `${request.clientFirstName} ${request.clientLastName}`.trim(),
+        { projectName: request.projectName, claimToken: raw },
+      );
+    } catch (err) {
+      this.logger.error(
+        `Failed to resend claim link to ${normalizedEmail}`,
+        err,
+      );
+    }
+
+    return { message: genericMessage };
   }
 
   async registerStaff(
@@ -278,6 +470,16 @@ export class AuthService {
         emailVerifyExpiry: null,
       },
     });
+
+    // Address is now proven — adopt any account-less inquiries on it.
+    try {
+      await this.adoptInquiries(user.id, user.email);
+    } catch (err) {
+      this.logger.error(
+        `Failed to adopt inquiries for ${user.email} after verification`,
+        err,
+      );
+    }
 
     return { message: 'Email verified! You can now log in.' };
   }

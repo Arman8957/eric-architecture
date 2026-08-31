@@ -14,6 +14,7 @@ import { UpdateProjectRequestDto } from '../dto/update-project-request.dto';
 import { NotificationService } from '../../notification/notification.service';
 import { Express } from 'express';
 import { PaymentService } from '../../payment/payment.service';
+import { staffProjectLink } from 'src/common/notification-links';
 
 @Injectable()
 export class ProjectRequestService {
@@ -141,6 +142,123 @@ export class ProjectRequestService {
       this.logger.error('Create project request failed', err.stack);
       throw new BadRequestException('Failed to create project request');
     }
+  }
+
+  /**
+   * Public New Project submission — the visitor has NO account. They have
+   * already paid the consultation fee against their typed email; we verify
+   * that, then store an account-less project request that lands in the studio
+   * as an inquiry AWAITING_DECISION.
+   */
+  async createPublic(
+    dto: CreateProjectRequestDto,
+    _files: Express.Multer.File[],
+  ) {
+    if (!dto.paymentIntentId) {
+      throw new BadRequestException('Consultation fee payment is required');
+    }
+    if (!dto.email) {
+      throw new BadRequestException('Email is required');
+    }
+
+    // Throws a descriptive BadRequestException on any problem (unpaid, wrong
+    // amount, wrong email, or the intent already consumed by another request).
+    await this.paymentService.verifyConsultationPaymentAnonymous(
+      dto.paymentIntentId,
+      dto.email,
+    );
+
+    const projectData = dto.projectLocationSameAsClient
+      ? {
+          projectCountry: dto.country || 'United States',
+          projectState: dto.state,
+          projectCity: dto.city,
+          projectStreetAddress: dto.streetAddress,
+          projectAptSuiteUnit: dto.aptSuiteUnit,
+          projectZipCode: dto.zipCode?.trim(),
+        }
+      : {
+          projectCountry: dto.projectCountry,
+          projectState: dto.projectState,
+          projectCity: dto.projectCity,
+          projectStreetAddress: dto.projectStreetAddress,
+          projectAptSuiteUnit: dto.projectAptSuiteUnit,
+          projectZipCode: dto.projectZipCode?.trim(),
+        };
+
+    const request = await this.prisma.projectRequest.create({
+      data: {
+        clientFirstName: dto.clientFirstName.trim(),
+        clientMiddleName: dto.clientMiddleName?.trim(),
+        clientLastName: dto.clientLastName.trim(),
+        companyName: dto.companyName?.trim(),
+        email: dto.email.toLowerCase().trim(),
+        phone: dto.phone?.trim(),
+        country: dto.country || 'United States',
+        state: dto.state?.trim(),
+        city: dto.city?.trim(),
+        streetAddress: dto.streetAddress?.trim(),
+        aptSuiteUnit: dto.aptSuiteUnit?.trim(),
+        zipCode: dto.zipCode?.trim(),
+        additionalComments: dto.additionalComments?.trim(),
+        projectName: dto.projectName.trim(),
+        projectLocationSameAsClient: dto.projectLocationSameAsClient ?? false,
+        ...projectData,
+        serviceType: dto.serviceType,
+        serviceTypeOther: dto.serviceTypeOther?.trim(),
+        projectCategory: dto.projectCategory,
+        projectCategoryOther: dto.projectCategoryOther?.trim(),
+        projectSize: dto.projectSize?.trim(),
+        budgetRange: dto.budgetRange?.trim(),
+        preferredArchitecturalStyle: dto.preferredArchitecturalStyle?.trim(),
+        siteConstraints: dto.siteConstraints?.trim(),
+        sustainabilityGoals: dto.sustainabilityGoals?.trim(),
+        specialRequirements: dto.specialRequirements?.trim(),
+        appointmentDate: dto.appointmentDate
+          ? new Date(dto.appointmentDate)
+          : null,
+        appointmentTime: dto.appointmentTime?.trim(),
+        appointmentType: dto.appointmentType?.trim(),
+        meetingLocation: dto.appointmentType
+          ?.toLowerCase()
+          .includes('in-person')
+          ? dto.meetingLocation?.trim()
+          : null,
+        additionalNotes: dto.additionalNotes?.trim(),
+        consultationPaymentId: dto.paymentIntentId,
+        // Account-less: no user yet, and it needs the studio's Accept/Decline.
+        userId: null,
+        inquiryStatus: 'AWAITING_DECISION',
+        status: StatusEnum.PENDING,
+        isApproved: false,
+      },
+    });
+
+    this.logger.log(
+      `Public project request created: ${request.id} (${request.email}, no account)`,
+    );
+
+    try {
+      // A distinct type — the notification popover's inline accept/reject is
+      // only for account-linked NEW_PROJECT_REQUEST. This one deep-links to the
+      // studio modal, where the account-less Accept/Decline gate lives.
+      await this.notificationService.createNotificationsForAdminsAndPMs({
+        type: 'NEW_INQUIRY_NO_ACCOUNT',
+        title: 'New Inquiry (no account)',
+        message: `${dto.clientFirstName} ${dto.clientLastName} submitted "${dto.projectName}" and paid the consultation fee. Awaiting your accept/decline.`,
+        link: staffProjectLink(request.id, 'information'),
+        projectRequestId: request.id,
+      });
+    } catch (notifError) {
+      this.logger.error('Failed to send notifications', notifError);
+    }
+
+    return {
+      success: true,
+      message:
+        'Your project inquiry has been submitted. Our team will review it and email you the next steps.',
+      data: { id: request.id },
+    };
   }
 
   async uploadFile(

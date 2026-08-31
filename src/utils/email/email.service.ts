@@ -759,6 +759,149 @@ The ${appName} Team
     });
   }
 
+  /**
+   * Sent when the studio ACCEPTS an account-less inquiry. Carries the one-time
+   * token-based signup link; claiming it creates the client's account and
+   * hands them ownership of the inquiry.
+   */
+  async sendInquiryAccepted(
+    to: string,
+    clientName: string,
+    data: { projectName: string; claimToken: string },
+  ): Promise<void> {
+    const appName = this.getAppName();
+    const signupLink = `${this.getFrontendUrl()}/signup?claim=${encodeURIComponent(data.claimToken)}`;
+
+    const html = `
+    <div style="font-family: 'Segoe UI', Arial, Helvetica, sans-serif; max-width: 600px; margin: 0 auto; background: #fff; border-radius: 12px; overflow: hidden; box-shadow: 0 4px 24px rgba(0,0,0,0.08);">
+      <div style="background: linear-gradient(135deg, #1a1a2e 0%, #16213e 50%, #0f3460 100%); padding: 36px; text-align: center;">
+        <h1 style="color: #fff; font-size: 22px; font-weight: 600; margin: 0;">Your Inquiry Has Been Accepted</h1>
+      </div>
+      <div style="padding: 32px 36px; color: #334155; font-size: 15px; line-height: 1.7;">
+        <p>Hi ${clientName || 'there'},</p>
+        <p>Thank you for submitting your project inquiry for
+          "<strong>${data.projectName}</strong>". We&rsquo;re pleased to let you know that your inquiry has been accepted.</p>
+        <p>To move forward, please create your account using the link below:</p>
+        <div style="text-align: center; margin: 32px 0;">
+          <a href="${signupLink}" style="display: inline-block; background: #0f3460; color: #fff; text-decoration: none; padding: 14px 40px; border-radius: 8px; font-size: 16px; font-weight: 600;">
+            Sign Up Here
+          </a>
+        </div>
+        <p style="font-size: 13px; color: #64748b;">Or paste this link into your browser:<br/>
+          <a href="${signupLink}" style="color: #0f3460; word-break: break-all;">${signupLink}</a>
+        </p>
+        <p>Once you&rsquo;ve signed up, you&rsquo;ll be added to our client list and we can begin working together.</p>
+        <p>If you have any questions, feel free to reach out at
+          <a href="mailto:contactus@architecturesimple.com" style="color: #0f3460;">contactus@architecturesimple.com</a>.</p>
+        <p>Looking forward to working with you.</p>
+        <p style="margin-top: 28px;">Best,<br/>
+          <strong>Eric Rivera</strong><br/>
+          Principal/Founder<br/>
+          Architecture Simple Inc.</p>
+      </div>
+      <div style="background: #f8fafc; border-top: 1px solid #e2e8f0; padding: 20px 36px; text-align: center;">
+        <p style="font-size: 12px; color: #94a3b8; margin: 0;">
+          If you did not submit this inquiry, please ignore this email.<br/>
+          &copy; ${this.getCurrentYear()} ${appName}. All rights reserved.
+        </p>
+      </div>
+    </div>`;
+
+    const text = `Your Inquiry Has Been Accepted – Next Steps
+
+Hi ${clientName || 'there'},
+
+Thank you for submitting your project inquiry. We're pleased to let you know that your inquiry has been accepted.
+
+To move forward, please create your account using the link below:
+${signupLink}
+
+Once you've signed up, you'll be added to our client list and we can begin working together.
+
+If you have any questions, feel free to reach out at contactus@architecturesimple.com.
+
+Looking forward to working with you.
+
+Best,
+Eric Rivera
+Principal/Founder
+Architecture Simple Inc.`;
+
+    await this.sendMail({
+      to,
+      subject: 'Your Inquiry Has Been Accepted – Next Steps',
+      html,
+      text,
+    });
+  }
+
+  /**
+   * Sent when the studio DECLINES an inquiry. When a consultation fee was
+   * paid, `amount` is passed and the refund paragraph is included.
+   */
+  async sendInquiryDeclined(
+    to: string,
+    clientName: string,
+    data: { projectName: string; amount?: number },
+  ): Promise<void> {
+    const appName = this.getAppName();
+    const refundHtml =
+      data.amount && data.amount > 0
+        ? `<p>Your consultation fee of <strong>$${Number(data.amount).toLocaleString('en-US')}</strong> is being fully refunded and should appear back in your account within 5&ndash;10 business days.</p>`
+        : '';
+    const refundText =
+      data.amount && data.amount > 0
+        ? `\nYour consultation fee of $${Number(data.amount).toLocaleString('en-US')} is being fully refunded and should appear back in your account within 5–10 business days.\n`
+        : '';
+
+    const html = `
+    <div style="font-family: 'Segoe UI', Arial, Helvetica, sans-serif; max-width: 600px; margin: 0 auto; background: #fff; border-radius: 12px; overflow: hidden; box-shadow: 0 4px 24px rgba(0,0,0,0.08);">
+      <div style="background: #1e293b; padding: 32px 36px; text-align: center;">
+        <h1 style="color: #fff; font-size: 20px; font-weight: 600; margin: 0;">Update on Your Project Inquiry</h1>
+      </div>
+      <div style="padding: 32px 36px; color: #334155; font-size: 15px; line-height: 1.7;">
+        <p>Hi ${clientName || 'there'},</p>
+        <p>Thank you for your interest and for submitting your project inquiry${data.projectName ? ` for "<strong>${data.projectName}</strong>"` : ''}.</p>
+        <p>After careful review, we&rsquo;re unable to move forward with your inquiry at this time.</p>
+        ${refundHtml}
+        <p>We appreciate you considering us and wish you the best with your project. If you&rsquo;d like to discuss this further or submit a different inquiry in the future, feel free to reach out at
+          <a href="mailto:contactus@architecturesimple.com" style="color: #0f3460;">contactus@architecturesimple.com</a>. Thank you for your understanding.</p>
+        <p style="margin-top: 28px;">Best,<br/>
+          <strong>Eric Rivera</strong><br/>
+          Principal/Founder<br/>
+          Architecture Simple Inc.</p>
+      </div>
+      <div style="background: #f8fafc; border-top: 1px solid #e2e8f0; padding: 20px 36px; text-align: center;">
+        <p style="font-size: 12px; color: #94a3b8; margin: 0;">
+          &copy; ${this.getCurrentYear()} ${appName}. All rights reserved.
+        </p>
+      </div>
+    </div>`;
+
+    const text = `Update on Your Project Inquiry
+
+Hi ${clientName || 'there'},
+
+Thank you for your interest and for submitting your project inquiry.
+
+After careful review, we're unable to move forward with your inquiry at this time.
+${refundText}
+We appreciate you considering us and wish you the best with your project.
+If you'd like to discuss this further or submit a different inquiry in the future, feel free to reach out at contactus@architecturesimple.com. Thank you for your understanding.
+
+Best,
+Eric Rivera
+Principal/Founder
+Architecture Simple Inc.`;
+
+    await this.sendMail({
+      to,
+      subject: 'Update on Your Project Inquiry',
+      html,
+      text,
+    });
+  }
+
   async sendGeneralNotification(
     to: string,
     recipientName: string,

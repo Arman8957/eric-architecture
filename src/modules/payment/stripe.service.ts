@@ -106,4 +106,21 @@ export class StripeService {
   async retrievePaymentIntent(id: string): Promise<any> {
     return this.stripe.paymentIntents.retrieve(id);
   }
+
+  /**
+   * Refund a succeeded PaymentIntent back to the original card.
+   * Used for the consultation fee when the studio declines an inquiry.
+   */
+  async refundPaymentIntent(
+    paymentIntentId: string,
+  ): Promise<{ id: string; status: string | null }> {
+    const refund = await this.stripe.refunds.create({
+      payment_intent: paymentIntentId,
+      reason: 'requested_by_customer',
+    });
+    this.logger.log(
+      `Stripe refund created: ${refund.id} for PaymentIntent ${paymentIntentId} (${refund.status})`,
+    );
+    return { id: refund.id, status: refund.status };
+  }
 }

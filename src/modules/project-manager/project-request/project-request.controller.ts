@@ -420,6 +420,10 @@ export class ProjectRequestController {
     });
   }
 
+  // ── PHASE PROGRESS MEETINGS — TEMPORARILY DISABLED (2026-08-31) ────────────
+  // Per-phase meeting bypass / requirement toggles. Re-enable alongside the
+  // phase-meeting logic in project-request.service.ts.
+  /*
   @Patch('stages/:stageId/bypass-meeting')
   @HttpCode(HttpStatus.OK)
   async bypassPhaseMeeting(
@@ -452,6 +456,7 @@ export class ProjectRequestController {
       user,
     );
   }
+  */
 
   @Post(':id/pay-consultation')
   @HttpCode(HttpStatus.OK)
@@ -461,6 +466,39 @@ export class ProjectRequestController {
     @CurrentUser() user: client.User,
   ) {
     return this.projectRequestService.attachConsultationPayment(id, paymentIntentId, user);
+  }
+
+  // ========================================
+  // ACCOUNT-LESS INQUIRY DECISION
+  // ========================================
+
+  @Patch(':id/inquiry-decision')
+  @Roles(
+    client.UserRole.SUPER_ADMIN,
+    client.UserRole.ADMIN,
+    client.UserRole.PROJECT_MANAGER,
+  )
+  @HttpCode(HttpStatus.OK)
+  async decideInquiry(
+    @Param('id') id: string,
+    @Body('decision') decision: 'ACCEPT' | 'DECLINE',
+    @CurrentUser() user: client.User,
+  ) {
+    return this.projectRequestService.decideInquiry(id, decision, user);
+  }
+
+  @Post(':id/resend-invite')
+  @Roles(
+    client.UserRole.SUPER_ADMIN,
+    client.UserRole.ADMIN,
+    client.UserRole.PROJECT_MANAGER,
+  )
+  @HttpCode(HttpStatus.OK)
+  async resendClaimInvite(
+    @Param('id') id: string,
+    @CurrentUser() user: client.User,
+  ) {
+    return this.projectRequestService.resendClaimInvite(id, user);
   }
 
   // ========================================

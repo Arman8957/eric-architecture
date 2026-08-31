@@ -302,21 +302,91 @@ export class UsersGetService {
       data: { assignedToId: null },
     });
 
+    // A client's projects and signed contracts must outlive them. The studio
+    // history and every financial report are built from the project / proposal
+    // / payment rows, never from the client account — and the project already
+    // stores the client's name, email and address as its own columns, so
+    // detaching loses nothing from the reports. (The FK is SET NULL on a hard
+    // delete anyway; doing it up front makes the deactivation fallback below
+    // behave identically.)
+    const isClient = user.role === UserRole.USER;
+    let detachedProjects = 0;
+    if (isClient) {
+      detachedProjects = await this.prisma.projectRequest.count({
+        where: { userId: id },
+      });
+      await this.prisma.projectRequest.updateMany({
+        where: { userId: id },
+        data: { userId: null },
+      });
+      await this.prisma.proposal.updateMany({
+        where: { userId: id },
+        data: { userId: null },
+      });
+    }
+
     try {
       await this.prisma.user.delete({ where: { id } });
       return {
         success: true,
-        message: releasedProjects
-          ? `Team member deleted. ${releasedProjects} project${releasedProjects === 1 ? '' : 's'} released for reassignment.`
-          : 'Team member deleted',
+        message: isClient
+          ? detachedProjects
+            ? `Client deleted. ${detachedProjects} project${detachedProjects === 1 ? '' : 's'} and all financial records were kept.`
+            : 'Client deleted.'
+          : releasedProjects
+            ? `Team member deleted. ${releasedProjects} project${releasedProjects === 1 ? '' : 's'} released for reassignment.`
+            : 'Team member deleted',
         deactivated: false,
         releasedProjects,
+        detachedProjects,
       };
     } catch (error) {
       const isForeignKeyBlock =
         error instanceof Prisma.PrismaClientKnownRequestError &&
         error.code === 'P2003';
       if (!isForeignKeyBlock) throw error;
+
+      // Payment / refund / meeting rows carry a non-nullable link back to the
+      // user, so a hard delete is impossible. Anonymise the account instead:
+      // it drops out of the Client Directory, frees the email for reuse, and
+      // can no longer be logged into — while the rows that reference it (and
+      // therefore every financial total) stay exactly as they were.
+      if (isClient) {
+        await this.prisma.userBankDetails.deleteMany({ where: { userId: id } });
+        await this.prisma.user.update({
+          where: { id },
+          data: {
+            isActive: false,
+            email: `deleted-${id}@deleted.invalid`,
+            name: 'Deleted Client',
+            firstName: null,
+            lastName: null,
+            middleInitial: null,
+            phoneNumber: null,
+            companyName: null,
+            bio: null,
+            avatar: null,
+            googleId: null,
+            streetAddress: null,
+            aptSuiteUnit: null,
+            city: null,
+            stateRegion: null,
+            zipCode: null,
+            country: null,
+            password: null,
+            refreshToken: null,
+            emailVerifyToken: null,
+            passwordResetToken: null,
+          },
+        });
+        return {
+          success: true,
+          message:
+            'Client removed. They had payment or meeting history, so the account was anonymised and deactivated instead of hard-deleted — their projects and every financial record stay intact.',
+          deactivated: true,
+          detachedProjects,
+        };
+      }
 
       await this.prisma.user.update({
         where: { id },
@@ -337,7 +407,9 @@ export class UsersGetService {
    */
   async getClientUsersWithDetails() {
     const users = await this.prisma.user.findMany({
-      where: { role: 'USER' },
+      // Deleted clients are deactivated + anonymised, never truly removed when
+      // they have payment history — keep them out of the directory.
+      where: { role: 'USER', isActive: true },
       select: {
         id: true,
         email: true,

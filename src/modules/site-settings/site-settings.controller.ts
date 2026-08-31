@@ -16,8 +16,9 @@ import * as client from '@prisma/client';
 export class SiteSettingsController {
   constructor(private readonly siteSettingsService: SiteSettingsService) {}
 
+  // Public: the New Project wizard shows the fee before a visitor has an
+  // account (account-less inquiry flow). It's just a price, not sensitive.
   @Get('consultation-fee')
-  @UseGuards(JwtAuthGuard)
   async getConsultationFee() {
     const feeUsd = await this.siteSettingsService.getConsultationFeeUsd();
     return { success: true, data: { feeUsd } };

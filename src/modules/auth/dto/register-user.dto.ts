@@ -50,4 +50,11 @@ export class RegisterUserDto {
   @IsString()
   @IsOptional()
   zipCode?: string;
+
+  // One-time token from an "Inquiry Accepted" email. When valid, the new
+  // account adopts the accepted inquiry (and any sibling account-less requests
+  // on the same email) and is auto-verified.
+  @IsString()
+  @IsOptional()
+  claimToken?: string;
 }

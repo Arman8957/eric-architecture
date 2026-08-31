@@ -24,6 +24,7 @@ import { FinancialModule } from './modules/financial/financial.module';
 
 import { TeamModule } from './modules/project-manager/team/team.module';
 import { RefundModule } from './modules/refund/refund.module';
+import { ConsultationRefundModule } from './modules/consultation-refund/consultation-refund.module';
 import { PaymentModule } from './modules/payment/payment.module';
 import { SiteSettingsModule } from './modules/site-settings/site-settings.module';
 import { ContactModule } from './modules/contact/contact.module';
@@ -61,6 +62,7 @@ import { ProjectAttachmentModule } from './modules/project-manager/project-attac
     FinancialModule,
     TeamModule,
     RefundModule,
+    ConsultationRefundModule,
     PaymentModule,
     SiteSettingsModule,
     ContactModule,

@@ -501,7 +501,7 @@ export class PaymentService {
   async verifyConsultationPayment(paymentIntentId: string, userId: string) {
     try {
       const intent = await this.stripeService.retrievePaymentIntent(paymentIntentId);
-      
+
       if (intent.status !== 'succeeded') {
         throw new BadRequestException('Payment has not succeeded yet');
       }
@@ -520,6 +520,122 @@ export class PaymentService {
       if (err instanceof BadRequestException) throw err;
       this.logger.error(`Failed to verify payment intent ${paymentIntentId}`, err);
       throw new BadRequestException('Invalid payment intent');
+    }
+  }
+
+  /**
+   * Consultation-fee PaymentIntent for a visitor who has NO account yet
+   * (public New Project flow). The intent carries the typed email instead of a
+   * userId; verification later matches on that email.
+   */
+  async createConsultationIntentPublic(email: string) {
+    const normalizedEmail = (email || '').toLowerCase().trim();
+    if (!normalizedEmail) {
+      throw new BadRequestException('Email is required');
+    }
+
+    const amount = await this.getConsultationFeeUsd();
+    const { clientSecret, id } = await this.stripeService.createPaymentIntent({
+      amount,
+      metadata: {
+        type: 'CONSULTATION_FEE',
+        email: normalizedEmail,
+        anonymous: 'true',
+      },
+      description: `Consultation Fee — ${normalizedEmail} (no account)`,
+    });
+
+    return { clientSecret, paymentIntentId: id, amount };
+  }
+
+  /**
+   * Verify an account-less consultation payment. Checks status, amount, that
+   * the intent was raised for this email, and — the replay guard — that no
+   * other project request has already consumed it.
+   */
+  async verifyConsultationPaymentAnonymous(
+    paymentIntentId: string,
+    email: string,
+  ) {
+    const normalizedEmail = (email || '').toLowerCase().trim();
+
+    let intent: any;
+    try {
+      intent = await this.stripeService.retrievePaymentIntent(paymentIntentId);
+    } catch (err) {
+      this.logger.error(`Failed to retrieve payment intent ${paymentIntentId}`, err);
+      throw new BadRequestException('Invalid payment intent');
+    }
+
+    if (intent.status !== 'succeeded') {
+      throw new BadRequestException('Payment has not succeeded yet');
+    }
+
+    const expectedFeeUsd = await this.getConsultationFeeUsd();
+    if (intent.amount !== Math.round(expectedFeeUsd * 100)) {
+      throw new BadRequestException('Incorrect payment amount');
+    }
+
+    if (intent.metadata?.type !== 'CONSULTATION_FEE') {
+      throw new BadRequestException('Payment is not a consultation fee');
+    }
+
+    if (
+      normalizedEmail &&
+      intent.metadata?.email &&
+      intent.metadata.email.toLowerCase().trim() !== normalizedEmail
+    ) {
+      throw new BadRequestException(
+        'This payment was made for a different email address',
+      );
+    }
+
+    const alreadyUsed = await this.prisma.projectRequest.findFirst({
+      where: { consultationPaymentId: paymentIntentId },
+      select: { id: true },
+    });
+    if (alreadyUsed) {
+      throw new BadRequestException(
+        'This payment has already been used for another project request',
+      );
+    }
+
+    return true;
+  }
+
+  /**
+   * The dollar amount actually charged on a consultation PaymentIntent — the
+   * figure to snapshot on a ConsultationRefund and refund back to the card.
+   */
+  async getPaidConsultationAmount(paymentIntentId: string): Promise<number> {
+    try {
+      const intent = await this.stripeService.retrievePaymentIntent(paymentIntentId);
+      return (intent.amount ?? 0) / 100;
+    } catch (err) {
+      this.logger.error(
+        `Failed to read amount for PaymentIntent ${paymentIntentId}`,
+        err,
+      );
+      // Fall back to the configured fee so a refund record can still be raised.
+      return this.getConsultationFeeUsd();
+    }
+  }
+
+  /**
+   * Refund a consultation fee to the card. Returns the Stripe refund id so the
+   * caller can record it against the ConsultationRefund row.
+   */
+  async refundConsultationPayment(paymentIntentId: string) {
+    try {
+      return await this.stripeService.refundPaymentIntent(paymentIntentId);
+    } catch (err) {
+      this.logger.error(
+        `Failed to refund consultation PaymentIntent ${paymentIntentId}`,
+        err,
+      );
+      throw new BadRequestException(
+        (err as Error)?.message || 'Stripe refund failed',
+      );
     }
   }
 }

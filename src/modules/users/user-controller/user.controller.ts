@@ -49,6 +49,22 @@ export class ProjectRequestController {
     return this.projectRequestService.create(dto, files, user.id);
   }
 
+  /**
+   * Public New Project submission — no account required. The consultation fee
+   * must already be paid (against the typed email); the studio then accepts or
+   * declines the resulting inquiry.
+   */
+  @Post('public')
+  @Public()
+  @UseInterceptors(FilesInterceptor('files', 10))
+  @HttpCode(HttpStatus.CREATED)
+  async createPublic(
+    @Body() dto: CreateProjectRequestDto,
+    @UploadedFiles() files: Express.Multer.File[] = [],
+  ) {
+    return this.projectRequestService.createPublic(dto, files);
+  }
+
 
   @Get('stats')
   @UseGuards(JwtAuthGuard)

@@ -6,7 +6,9 @@ import {
   UnauthorizedException,
   Logger,
 } from '@nestjs/common';
+import { Cron, CronExpression } from '@nestjs/schedule';
 import * as bcrypt from 'bcrypt';
+import { issueClaimToken as mintClaimToken } from 'src/common/claim-token.util';
 
 import {
   RequestStatus,
@@ -200,6 +202,9 @@ export class ProjectRequestService {
     const conditions: Prisma.ProjectRequestWhereInput[] = [
       { deletedAt: null },
       { isArchived: query.includeArchived ? undefined : false },
+      // A declined account-less inquiry stays in the DB (for the refund
+      // snapshot and audit) but drops out of the working pipeline.
+      { OR: [{ inquiryStatus: null }, { NOT: { inquiryStatus: 'DECLINED' } }] },
     ];
 
     // If staff (Drafter/Employee), only show projects assigned to their teams
@@ -366,6 +371,7 @@ export class ProjectRequestService {
         stages: {
           orderBy: { order: 'asc' },
         },
+        consultationRefund: true,
         proposals: {
           orderBy: { createdAt: 'desc' },
           include: {
@@ -430,7 +436,11 @@ export class ProjectRequestService {
     const yearStart = new Date(now.getFullYear(), 0, 1);
     const yearEnd = new Date(now.getFullYear(), 11, 31, 23, 59, 59, 999);
 
-    const baseGlobal: Prisma.ProjectRequestWhereInput = { deletedAt: null };
+    const baseGlobal: Prisma.ProjectRequestWhereInput = {
+      deletedAt: null,
+      // Declined account-less inquiries are out of the pipeline.
+      OR: [{ inquiryStatus: null }, { NOT: { inquiryStatus: 'DECLINED' } }],
+    };
     if (isStaff && !canManage) {
       baseGlobal.teams = { some: { members: { some: { id: user.id } } } };
     }
@@ -1245,6 +1255,11 @@ export class ProjectRequestService {
       );
     }
 
+    // ── PHASE PROGRESS MEETINGS — TEMPORARILY DISABLED (2026-08-31) ──────────
+    // Only Initial Consultation and Project Kick-off meetings are in use for
+    // now. To bring phase meetings back: uncomment this validation block AND
+    // restore `stageId` / `meetingType` in the create below.
+    /*
     // 3b. Phase-scoped meetings: only allowed post-acceptance, and gated on
     // payment for INSTALLMENT proposals (LUMP_SUM proposals are unrestricted).
     if (dto.stageId) {
@@ -1295,6 +1310,7 @@ export class ProjectRequestService {
         );
       }
     }
+    */
 
     // 3c. Quantise the requested window to the 30-minute grid and make sure
     // the manager's calendar is actually free for it.
@@ -1321,9 +1337,11 @@ export class ProjectRequestService {
         notes: dto.notes || null,
         emailSent: false,
         status: 'PENDING_RESPONSE',
-        stageId: dto.stageId || null,
-        meetingType:
-          dto.meetingType ?? (dto.stageId ? 'PHASE_PROGRESS' : 'GENERAL'),
+        // PHASE PROGRESS MEETINGS DISABLED (2026-08-31) — was:
+        //   stageId: dto.stageId || null,
+        //   meetingType: dto.meetingType ?? (dto.stageId ? 'PHASE_PROGRESS' : 'GENERAL'),
+        stageId: null,
+        meetingType: dto.meetingType ?? 'GENERAL',
       },
       include: {
         sentByUser: { select: { id: true, name: true, email: true, role: true } },
@@ -2266,6 +2284,331 @@ export class ProjectRequestService {
     };
   }
 
+  // ========================================
+  // ACCOUNT-LESS INQUIRY DECISION (Accept / Decline)
+  // ========================================
+
+  /** Cap on automatic invite resends before staff must step in. */
+  private readonly MAX_CLAIM_INVITE_COUNT = 5;
+  /** An ACCEPTED inquiry older than this with no signup is "stale". */
+  private readonly STALE_ACCEPTED_DAYS = 4;
+
+  /** Fresh raw token + the row fields that store its hash and lifetime. */
+  private issueClaimToken() {
+    const { raw, hash, expiresAt } = mintClaimToken();
+    return {
+      raw,
+      data: {
+        claimTokenHash: hash,
+        claimTokenExpiresAt: expiresAt,
+        claimInviteSentAt: new Date(),
+      },
+    };
+  }
+
+  private inquiryClientName(request: {
+    clientFirstName: string;
+    clientLastName: string;
+  }): string {
+    return `${request.clientFirstName} ${request.clientLastName}`.trim();
+  }
+
+  /**
+   * Studio accepts or declines an account-less inquiry.
+   *
+   * ACCEPT  → issue a one-time signup-claim token and email the invite.
+   * DECLINE → raise a ConsultationRefund (if a fee was paid) and email the
+   *           client. The inquiry stays in the table as DECLINED, filtered
+   *           out of the active pipeline.
+   *
+   * The AWAITING_DECISION guard is what blocks accept-after-decline and
+   * decline-after-accept.
+   */
+  async decideInquiry(
+    id: string,
+    decision: 'ACCEPT' | 'DECLINE',
+    staff: User,
+  ) {
+    if (!this.canManageRequests(staff)) {
+      throw new ForbiddenException('Access denied');
+    }
+
+    const request = await this.prisma.projectRequest.findUnique({
+      where: { id, deletedAt: null },
+    });
+    if (!request) {
+      throw new NotFoundException('Inquiry not found');
+    }
+    if (!request.inquiryStatus) {
+      throw new BadRequestException(
+        'This is not an account-less inquiry — it does not use the accept/decline flow.',
+      );
+    }
+    if (request.inquiryStatus !== 'AWAITING_DECISION') {
+      throw new BadRequestException(
+        `This inquiry has already been ${request.inquiryStatus.toLowerCase()}.`,
+      );
+    }
+
+    const clientName = this.inquiryClientName(request);
+
+    if (decision === 'ACCEPT') {
+      const { raw, data } = this.issueClaimToken();
+      const updated = await this.prisma.projectRequest.update({
+        where: { id },
+        data: {
+          inquiryStatus: 'ACCEPTED',
+          inquiryDecidedAt: new Date(),
+          inquiryDecidedById: staff.id,
+          claimInviteCount: 1,
+          claimStaleRemindedAt: null,
+          ...data,
+        },
+      });
+
+      try {
+        await this.mailer.sendInquiryAccepted(request.email, clientName, {
+          projectName: request.projectName,
+          claimToken: raw,
+        });
+      } catch (err) {
+        this.logger.error(
+          `Failed to send inquiry-accepted email for ${id}`,
+          err,
+        );
+      }
+
+      this.logger.log(`Inquiry ${id} ACCEPTED by ${staff.email}`);
+      return {
+        success: true,
+        message: 'Inquiry accepted. A signup invitation has been emailed to the client.',
+        data: updated,
+      };
+    }
+
+    // DECLINE
+    let refund: { amount: number } | null = null;
+    if (request.consultationPaymentId) {
+      const existing = await this.prisma.consultationRefund.findUnique({
+        where: { projectRequestId: id },
+      });
+      if (!existing) {
+        const amount = await this.paymentService.getPaidConsultationAmount(
+          request.consultationPaymentId,
+        );
+        await this.prisma.consultationRefund.create({
+          data: {
+            projectRequestId: id,
+            clientName,
+            email: request.email,
+            projectName: request.projectName,
+            amount,
+            consultationPaymentId: request.consultationPaymentId,
+            requestedById: staff.id,
+          },
+        });
+        refund = { amount };
+
+        // Nudge finance that a payout is waiting.
+        try {
+          const financeUsers = await this.prisma.user.findMany({
+            where: {
+              role: { in: ['FINANCE', 'SUPER_ADMIN', 'ADMIN'] },
+              isActive: true,
+            },
+            select: { id: true },
+          });
+          await Promise.all(
+            financeUsers.map((f) =>
+              this.notificationService.createNotification({
+                userId: f.id,
+                type: 'CONSULTATION_REFUND_REQUEST',
+                title: 'Consultation Refund Pending',
+                message: `${clientName}'s inquiry "${request.projectName}" was declined. A $${Number(amount).toLocaleString('en-US')} consultation refund is awaiting processing.`,
+                link: '/dashboard/consultation-refunds',
+                projectRequestId: id,
+              }),
+            ),
+          );
+        } catch (err) {
+          this.logger.error('Failed to notify finance of consultation refund', err);
+        }
+      } else {
+        refund = { amount: Number(existing.amount) };
+      }
+    }
+
+    const updated = await this.prisma.projectRequest.update({
+      where: { id },
+      data: {
+        inquiryStatus: 'DECLINED',
+        inquiryDecidedAt: new Date(),
+        inquiryDecidedById: staff.id,
+        claimTokenHash: null,
+        claimTokenExpiresAt: null,
+      },
+    });
+
+    try {
+      await this.mailer.sendInquiryDeclined(request.email, clientName, {
+        projectName: request.projectName,
+        amount: refund?.amount,
+      });
+    } catch (err) {
+      this.logger.error(`Failed to send inquiry-declined email for ${id}`, err);
+    }
+
+    this.logger.log(
+      `Inquiry ${id} DECLINED by ${staff.email}${refund ? ` (refund $${refund.amount})` : ''}`,
+    );
+    return {
+      success: true,
+      message: refund
+        ? `Inquiry declined. The client has been emailed and a $${Number(refund.amount).toLocaleString('en-US')} consultation refund is now pending.`
+        : 'Inquiry declined. The client has been emailed.',
+      data: updated,
+    };
+  }
+
+  /**
+   * Re-send the signup invite for an ACCEPTED inquiry that hasn't been claimed
+   * yet — a fresh token each time so old links stop working.
+   */
+  async resendClaimInvite(id: string, staff: User) {
+    if (!this.canManageRequests(staff)) {
+      throw new ForbiddenException('Access denied');
+    }
+
+    const request = await this.prisma.projectRequest.findUnique({
+      where: { id, deletedAt: null },
+    });
+    if (!request) {
+      throw new NotFoundException('Inquiry not found');
+    }
+    if (request.inquiryStatus !== 'ACCEPTED') {
+      throw new BadRequestException(
+        request.inquiryStatus === 'CONVERTED'
+          ? 'This client has already signed up.'
+          : 'Only accepted inquiries have a signup invite to resend.',
+      );
+    }
+
+    const { raw, data } = this.issueClaimToken();
+    await this.prisma.projectRequest.update({
+      where: { id },
+      data: {
+        ...data,
+        claimInviteCount: { increment: 1 },
+        claimStaleRemindedAt: null,
+      },
+    });
+
+    await this.mailer.sendInquiryAccepted(
+      request.email,
+      this.inquiryClientName(request),
+      { projectName: request.projectName, claimToken: raw },
+    );
+
+    this.logger.log(`Resent signup invite for inquiry ${id} by ${staff.email}`);
+    return { success: true, message: 'Signup invitation re-sent to the client.' };
+  }
+
+  /**
+   * Daily sweep: an ACCEPTED inquiry the client never claimed. Auto-resend the
+   * invite up to the cap, then flag finance once so an abandoned-but-paid
+   * inquiry can be refunded.
+   */
+  @Cron(CronExpression.EVERY_DAY_AT_10AM)
+  async remindStaleAcceptedInquiries() {
+    const cutoff = new Date(
+      Date.now() - this.STALE_ACCEPTED_DAYS * 24 * 60 * 60 * 1000,
+    );
+
+    const stale = await this.prisma.projectRequest.findMany({
+      where: {
+        inquiryStatus: 'ACCEPTED',
+        deletedAt: null,
+        inquiryDecidedAt: { lte: cutoff },
+      },
+    });
+    if (stale.length === 0) return { processed: 0 };
+
+    const financeAndAdmins = await this.prisma.user.findMany({
+      where: {
+        role: { in: ['SUPER_ADMIN', 'ADMIN', 'FINANCE'] },
+        isActive: true,
+      },
+      select: { id: true },
+    });
+
+    let resent = 0;
+    let flagged = 0;
+    const weekAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
+
+    for (const request of stale) {
+      const clientName = this.inquiryClientName(request);
+
+      // Auto-resend while under the cap and the last invite is > 2 days old.
+      const lastSent = request.claimInviteSentAt ?? request.inquiryDecidedAt;
+      const staleInvite =
+        !lastSent ||
+        lastSent.getTime() < Date.now() - 2 * 24 * 60 * 60 * 1000;
+
+      if (
+        request.claimInviteCount < this.MAX_CLAIM_INVITE_COUNT &&
+        staleInvite
+      ) {
+        try {
+          const { raw, data } = this.issueClaimToken();
+          await this.prisma.projectRequest.update({
+            where: { id: request.id },
+            data: { ...data, claimInviteCount: { increment: 1 } },
+          });
+          await this.mailer.sendInquiryAccepted(request.email, clientName, {
+            projectName: request.projectName,
+            claimToken: raw,
+          });
+          resent++;
+        } catch (err) {
+          this.logger.error(
+            `Stale-inquiry auto-resend failed for ${request.id}`,
+            err,
+          );
+        }
+        continue;
+      }
+
+      // Cap reached — flag finance at most once a week.
+      if (
+        !request.claimStaleRemindedAt ||
+        request.claimStaleRemindedAt < weekAgo
+      ) {
+        await this.prisma.projectRequest.update({
+          where: { id: request.id },
+          data: { claimStaleRemindedAt: new Date() },
+        });
+        await Promise.all(
+          financeAndAdmins.map((u) =>
+            this.notificationService.createNotification({
+              userId: u.id,
+              type: 'INQUIRY_ACCEPTED_UNCLAIMED',
+              title: 'Accepted inquiry never claimed',
+              message: `${clientName} was accepted ${this.STALE_ACCEPTED_DAYS}+ days ago for "${request.projectName}" but never signed up. Consider refunding the consultation fee.`,
+              link: `/dashboard?project=${request.id}`,
+              projectRequestId: request.id,
+            }),
+          ),
+        );
+        flagged++;
+      }
+    }
+
+    this.logger.log(
+      `[Stale inquiries] ${stale.length} checked — ${resent} re-invited, ${flagged} flagged`,
+    );
+    return { processed: stale.length, resent, flagged };
+  }
+
   async requestMeeting(
     projectRequestId: string,
     dto: {
@@ -2292,9 +2635,16 @@ export class ProjectRequestService {
       );
     }
 
+    // ── PHASE PROGRESS MEETINGS — TEMPORARILY DISABLED (2026-08-31) ──────────
+    // Every client meeting request is treated as an Initial Consultation for
+    // now. To bring phase meetings back: uncomment this block, re-add
+    //   let stage: { id: string; name: string; status: string } | null = null;
+    // above it, and restore the `stage`-dependent `stageId` / `title` /
+    // `meetingType` in the meetingLink.create below.
+    /*
+    let stage: { id: string; name: string; status: string } | null = null;
     // 1b. A phase progress meeting has extra preconditions: the phase must be
     // finished, and on an installment plan the client must have paid for it.
-    let stage: { id: string; name: string; status: string } | null = null;
     if (dto.stageId) {
       stage = await this.prisma.projectStage.findFirst({
         where: { id: dto.stageId, projectRequestId },
@@ -2357,6 +2707,7 @@ export class ProjectRequestService {
         );
       }
     }
+    */
 
     // 1c. Quantise to the 30-minute grid and reject a slot the assigned
     // manager already has taken (or has blocked off).
@@ -2383,18 +2734,18 @@ export class ProjectRequestService {
         projectRequestId: projectRequestId,
         sentByUserId: user.id,
         sentToUserId: user.id, // placeholder - the client themselves
-        stageId: dto.stageId || null,
+        // PHASE PROGRESS MEETINGS DISABLED (2026-08-31) — was: stageId: dto.stageId || null
+        stageId: null,
         meetingUrl: null,
         status: 'PENDING_CLIENT_REQUEST',
-        title: stage
-          ? `${stage.name} — Progress Meeting Requested`
-          : 'Meeting Requested by Client',
+        // PHASE PROGRESS MEETINGS DISABLED (2026-08-31) — was:
+        //   title: stage ? `${stage.name} — Progress Meeting Requested` : 'Meeting Requested by Client',
+        //   meetingType: dto.meetingType ?? (stage ? 'PHASE_PROGRESS' : 'INITIAL_CONSULTATION'),
+        title: 'Meeting Requested by Client',
         scheduledAt: start,
         endsAt: end,
         notes: dto.notes || 'No additional notes provided.',
-        meetingType:
-          dto.meetingType ??
-          (stage ? 'PHASE_PROGRESS' : 'INITIAL_CONSULTATION'),
+        meetingType: dto.meetingType ?? 'INITIAL_CONSULTATION',
       },
     });
 
@@ -3113,10 +3464,15 @@ export class ProjectRequestService {
     return { success: true, message: 'Time off removed.' };
   }
 
-  /**
-   * Client opts out of (or back into) the progress meeting for a phase.
-   * This never affects what they owe — an installment is still due.
-   */
+  // ── PHASE PROGRESS MEETINGS — TEMPORARILY DISABLED (2026-08-31) ────────────
+  // Only Initial Consultation and Project Kick-off meetings are in use. The
+  // per-phase bypass / requirement toggles below are unreachable while their
+  // controller routes are commented out; kept here for a clean re-enable.
+  /*
+  //
+  // Client opts out of (or back into) the progress meeting for a phase.
+  // This never affects what they owe — an installment is still due.
+  //
   async setPhaseMeetingBypass(stageId: string, bypassed: boolean, user: User) {
     const stage = await this.prisma.projectStage.findUnique({
       where: { id: stageId },
@@ -3149,9 +3505,9 @@ export class ProjectRequestService {
     };
   }
 
-  /**
-   * PM includes or excludes the progress meeting requirement for a phase.
-   */
+  //
+  // PM includes or excludes the progress meeting requirement for a phase.
+  //
   async setPhaseMeetingRequired(
     stageId: string,
     meetingRequired: boolean,
@@ -3182,6 +3538,7 @@ export class ProjectRequestService {
         : 'Progress meeting is no longer required for this phase.',
     };
   }
+  */
 
   /**
    * Lets a client pay the consultation fee for a project that was created

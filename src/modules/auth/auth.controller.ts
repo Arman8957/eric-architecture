@@ -123,6 +123,24 @@ export class AuthController {
     });
   }
 
+  // ── Token-based signup claim (account-less inquiries) ──────────────────
+
+  @Get('claim/:token')
+  @Public()
+  @HttpCode(HttpStatus.OK)
+  async getClaimInfo(@Param('token') token: string) {
+    const data = await this.authService.getClaimInfo(token);
+    return { success: true, data };
+  }
+
+  @Post('claim/resend')
+  @Public()
+  @HttpCode(HttpStatus.OK)
+  async resendClaim(@Body('email') email: string) {
+    const result = await this.authService.resendClaimByEmail(email);
+    return { success: true, message: result.message };
+  }
+
   @Post('resend-verification')
   @Public()
   @HttpCode(HttpStatus.OK)
