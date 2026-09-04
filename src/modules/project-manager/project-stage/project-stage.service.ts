@@ -114,7 +114,6 @@ export class ProjectStageService {
       dueDate: dto.dueDate ? new Date(dto.dueDate) : undefined,
       assignedTo: dto.assignedToId ? { connect: { id: dto.assignedToId } } : undefined,
       notes: dto.notes,
-      driveLink: dto.driveLink,
       status: StageStatus.NOT_STARTED,
     };
 
@@ -204,6 +203,12 @@ export class ProjectStageService {
       order: dto.order,
       status,
       progress,
+      // A phase finished through this route records when it finished, the same
+      // as the Complete button does — the project's end date is derived from
+      // these, so a phase without one leaves a hole.
+      ...(status === StageStatus.COMPLETED && stage.status !== StageStatus.COMPLETED
+        ? { completedAt: new Date() }
+        : {}),
       totalTasks: dto.totalTasks,
       completedTasks: dto.completedTasks,
       startDate: dto.startDate ? new Date(dto.startDate) : undefined,
@@ -212,7 +217,6 @@ export class ProjectStageService {
         ? { connect: { id: dto.assignedToId } }
         : undefined,
       notes: dto.notes,
-      driveLink: dto.driveLink,
       ...(dto.internalDeadline !== undefined && {
         internalDeadline: dto.internalDeadline ? new Date(dto.internalDeadline) : null,
       }),
@@ -313,6 +317,25 @@ export class ProjectStageService {
       } else {
         // Deadline removed: cancel pending reminders
         await this.deadlineReminderService.cancelRemindersForStageType(id, 'EXTERNAL');
+      }
+    }
+
+    // Setting the status straight to COMPLETED here finishes a phase just as
+    // the Complete button and a drag to 100% do, so it has to run the same
+    // project-wide check. Without this the last phase could be ticked off from
+    // the edit form and the project would never stop its timer.
+    if (
+      status === StageStatus.COMPLETED &&
+      stage.status !== StageStatus.COMPLETED &&
+      stage.proposal?.projectRequestId
+    ) {
+      try {
+        await this.maybeAutoCompleteProject(stage.proposal.projectRequestId);
+      } catch (error) {
+        this.logger.error(
+          `Failed auto-complete check for project ${stage.proposal.projectRequestId}`,
+          error,
+        );
       }
     }
 
@@ -487,21 +510,25 @@ export class ProjectStageService {
 
     const projectRequest = await this.prisma.projectRequest.findUnique({
       where: { id: projectRequestId },
-      select: { status: true, projectStartedAt: true },
+      select: { status: true, projectStartedAt: true, projectCompletedAt: true },
     });
 
-    if (!projectRequest || projectRequest.status === RequestStatus.COMPLETED) {
+    // Idempotency keys off the end date — the thing this method writes — and
+    // not off the status. A project can reach COMPLETED status by hand before
+    // its last phase is ticked off; keying off the status there meant this
+    // returned early and the end date was never stamped at all, so the timer
+    // ran forever and the year-end split had no date to settle on.
+    if (!projectRequest || projectRequest.projectCompletedAt) {
       return;
     }
 
     const completedAt = new Date();
-    let totalDurationMonths: number | null = null;
+    const totalDurationMonths = this.durationMonthsBetween(
+      projectRequest.projectStartedAt,
+      completedAt,
+    );
 
-    if (projectRequest.projectStartedAt) {
-      totalDurationMonths =
-        (completedAt.getTime() - projectRequest.projectStartedAt.getTime()) /
-        (1000 * 60 * 60 * 24 * 30.44);
-    } else {
+    if (totalDurationMonths === null) {
       this.logger.warn(
         `Project ${projectRequestId} auto-completed with no projectStartedAt set`,
       );
@@ -517,6 +544,12 @@ export class ProjectStageService {
     });
 
     this.logger.log(`Project ${projectRequestId} auto-completed (all phases done)`);
+  }
+
+  /** Whole months between two dates, on the 30.44-day average used elsewhere. */
+  private durationMonthsBetween(start: Date | null, end: Date): number | null {
+    if (!start) return null;
+    return (end.getTime() - start.getTime()) / (1000 * 60 * 60 * 24 * 30.44);
   }
 
 

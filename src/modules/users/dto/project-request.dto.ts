@@ -194,11 +194,38 @@ export class CreateProjectRequestDto {
   @IsOptional()
   appointmentType?: string;
 
-  // Only sent for in-person appointments
+  // ── In-person meeting address ────────────────────────────────────────────
+  // Only sent for in-person appointments. The client sends the parts; the
+  // service composes `meetingLocation` from them, so it is not accepted here.
   @IsString()
   @IsOptional()
   @MaxLength(255)
-  meetingLocation?: string;
+  meetingStreetAddress?: string;
+
+  @IsString()
+  @IsOptional()
+  @MaxLength(100)
+  meetingAptSuiteUnit?: string;
+
+  @IsString()
+  @IsOptional()
+  @MaxLength(100)
+  meetingCity?: string;
+
+  @IsString()
+  @IsOptional()
+  @MaxLength(100)
+  meetingState?: string;
+
+  @IsString()
+  @IsOptional()
+  @MaxLength(20)
+  meetingZipCode?: string;
+
+  @IsString()
+  @IsOptional()
+  @MaxLength(100)
+  meetingCountry?: string;
 
   @IsString()
   @IsOptional()

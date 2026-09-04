@@ -114,8 +114,16 @@ export class FinancialController {
   }
 
   @Get('active-projects/:id/details')
-  async getProjectFinancialDetails(@Param('id') id: string) {
-    const details = await this.financialService.getProjectFinancialDetails(id);
+  async getProjectFinancialDetails(
+    @Param('id') id: string,
+    @Query('year') year?: string,
+  ) {
+    // No year (or "all") reports the project's running totals.
+    const scopeYear = parseInt(year || '') || undefined;
+    const details = await this.financialService.getProjectFinancialDetails(
+      id,
+      scopeYear,
+    );
     return { success: true, data: details };
   }
 

@@ -16,6 +16,55 @@ import { Express } from 'express';
 import { PaymentService } from '../../payment/payment.service';
 import { staffProjectLink } from 'src/common/notification-links';
 
+/**
+ * The meeting address columns for a create, derived from the submitted DTO.
+ *
+ * A video call has nowhere to meet, so every column is cleared rather than
+ * left holding an address the client typed and then switched away from.
+ * `meetingLocation` is composed here rather than accepted from the client:
+ * it is the one-line rendering of the parts, kept so that rows written before
+ * the address was split — and anything still reading that single column —
+ * stay valid.
+ */
+function buildMeetingAddress(dto: CreateProjectRequestDto) {
+  const isInPerson = dto.appointmentType?.toLowerCase().includes('in-person');
+
+  if (!isInPerson) {
+    return {
+      meetingLocation: null,
+      meetingStreetAddress: null,
+      meetingAptSuiteUnit: null,
+      meetingCity: null,
+      meetingState: null,
+      meetingZipCode: null,
+      meetingCountry: null,
+    };
+  }
+
+  const address = {
+    meetingStreetAddress: dto.meetingStreetAddress?.trim() || null,
+    meetingAptSuiteUnit: dto.meetingAptSuiteUnit?.trim() || null,
+    meetingCity: dto.meetingCity?.trim() || null,
+    meetingState: dto.meetingState?.trim() || null,
+    meetingZipCode: dto.meetingZipCode?.trim() || null,
+    meetingCountry: dto.meetingCountry?.trim() || null,
+  };
+
+  const meetingLocation =
+    [
+      address.meetingStreetAddress,
+      address.meetingAptSuiteUnit,
+      address.meetingCity,
+      address.meetingState,
+      address.meetingZipCode,
+      address.meetingCountry,
+    ]
+      .filter(Boolean)
+      .join(', ') || null;
+
+  return { ...address, meetingLocation };
+}
+
 @Injectable()
 export class ProjectRequestService {
   private readonly logger = new Logger(ProjectRequestService.name);
@@ -105,10 +154,7 @@ export class ProjectRequestService {
           appointmentTime: dto.appointmentTime?.trim(),
           appointmentType: dto.appointmentType?.trim(),
           // Location is meaningless for a video call, so only keep it for in-person
-          meetingLocation:
-            dto.appointmentType?.toLowerCase().includes('in-person')
-              ? dto.meetingLocation?.trim()
-              : null,
+          ...buildMeetingAddress(dto),
           additionalNotes: dto.additionalNotes?.trim(),
           consultationPaymentId: dto.paymentIntentId,
           userId: userId || null,
@@ -219,11 +265,7 @@ export class ProjectRequestService {
           : null,
         appointmentTime: dto.appointmentTime?.trim(),
         appointmentType: dto.appointmentType?.trim(),
-        meetingLocation: dto.appointmentType
-          ?.toLowerCase()
-          .includes('in-person')
-          ? dto.meetingLocation?.trim()
-          : null,
+        ...buildMeetingAddress(dto),
         additionalNotes: dto.additionalNotes?.trim(),
         consultationPaymentId: dto.paymentIntentId,
         // Account-less: no user yet, and it needs the studio's Accept/Decline.

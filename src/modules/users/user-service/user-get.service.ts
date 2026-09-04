@@ -5,7 +5,7 @@ import {
   ForbiddenException,
 } from '@nestjs/common';
 import * as bcrypt from 'bcrypt';
-import { Prisma, User, UserRole } from '@prisma/client';
+import { Prisma, RequestStatus, User, UserRole } from '@prisma/client';
 import { FindAllOptions } from 'src/modules/auth/constant';
 import { PrismaService } from 'src/prisma/prisma.service';
 import { SafeUser } from '../types/user.type';
@@ -309,35 +309,75 @@ export class UsersGetService {
     // detaching loses nothing from the reports. (The FK is SET NULL on a hard
     // delete anyway; doing it up front makes the deactivation fallback below
     // behave identically.)
-    const isClient = user.role === UserRole.USER;
-    let detachedProjects = 0;
-    if (isClient) {
-      detachedProjects = await this.prisma.projectRequest.count({
-        where: { userId: id },
-      });
-      await this.prisma.projectRequest.updateMany({
-        where: { userId: id },
-        data: { userId: null },
-      });
-      await this.prisma.proposal.updateMany({
-        where: { userId: id },
-        data: { userId: null },
-      });
+    if (user.role === UserRole.USER) {
+      const result = await this.detachAndRemoveClient(id);
+      return { ...result, releasedProjects };
     }
 
     try {
       await this.prisma.user.delete({ where: { id } });
       return {
         success: true,
-        message: isClient
-          ? detachedProjects
-            ? `Client deleted. ${detachedProjects} project${detachedProjects === 1 ? '' : 's'} and all financial records were kept.`
-            : 'Client deleted.'
-          : releasedProjects
-            ? `Team member deleted. ${releasedProjects} project${releasedProjects === 1 ? '' : 's'} released for reassignment.`
-            : 'Team member deleted',
+        message: releasedProjects
+          ? `Team member deleted. ${releasedProjects} project${releasedProjects === 1 ? '' : 's'} released for reassignment.`
+          : 'Team member deleted',
         deactivated: false,
         releasedProjects,
+        detachedProjects: 0,
+      };
+    } catch (error) {
+      const isForeignKeyBlock =
+        error instanceof Prisma.PrismaClientKnownRequestError &&
+        error.code === 'P2003';
+      if (!isForeignKeyBlock) throw error;
+
+      await this.prisma.user.update({
+        where: { id },
+        data: { isActive: false },
+      });
+      return {
+        success: true,
+        message:
+          'This member still has records that reference them (timecards, proposals), so their account was deactivated instead of deleted. Their hours stay on their own record.',
+        deactivated: true,
+      };
+    }
+  }
+
+  /**
+   * Remove a client account while keeping everything the studio bills from.
+   *
+   * Their projects and signed contracts must outlive them: the studio history
+   * and every financial report are built from the project / proposal / payment
+   * rows, never from the client account — and the project already stores the
+   * client's name, email and address as its own columns, so detaching loses
+   * nothing from the reports. (The FK is SET NULL on a hard delete anyway;
+   * doing it up front makes the deactivation fallback below behave the same.)
+   *
+   * Shared by an admin removing a client and a client closing their own
+   * account, so both leave the books in exactly the same state.
+   */
+  private async detachAndRemoveClient(id: string) {
+    const detachedProjects = await this.prisma.projectRequest.count({
+      where: { userId: id },
+    });
+    await this.prisma.projectRequest.updateMany({
+      where: { userId: id },
+      data: { userId: null },
+    });
+    await this.prisma.proposal.updateMany({
+      where: { userId: id },
+      data: { userId: null },
+    });
+
+    try {
+      await this.prisma.user.delete({ where: { id } });
+      return {
+        success: true,
+        message: detachedProjects
+          ? `Account closed. ${detachedProjects} project${detachedProjects === 1 ? '' : 's'} and all financial records were kept.`
+          : 'Account closed.',
+        deactivated: false,
         detachedProjects,
       };
     } catch (error) {
@@ -351,54 +391,118 @@ export class UsersGetService {
       // it drops out of the Client Directory, frees the email for reuse, and
       // can no longer be logged into — while the rows that reference it (and
       // therefore every financial total) stay exactly as they were.
-      if (isClient) {
-        await this.prisma.userBankDetails.deleteMany({ where: { userId: id } });
-        await this.prisma.user.update({
-          where: { id },
-          data: {
-            isActive: false,
-            email: `deleted-${id}@deleted.invalid`,
-            name: 'Deleted Client',
-            firstName: null,
-            lastName: null,
-            middleInitial: null,
-            phoneNumber: null,
-            companyName: null,
-            bio: null,
-            avatar: null,
-            googleId: null,
-            streetAddress: null,
-            aptSuiteUnit: null,
-            city: null,
-            stateRegion: null,
-            zipCode: null,
-            country: null,
-            password: null,
-            refreshToken: null,
-            emailVerifyToken: null,
-            passwordResetToken: null,
-          },
-        });
-        return {
-          success: true,
-          message:
-            'Client removed. They had payment or meeting history, so the account was anonymised and deactivated instead of hard-deleted — their projects and every financial record stay intact.',
-          deactivated: true,
-          detachedProjects,
-        };
-      }
-
+      await this.prisma.userBankDetails.deleteMany({ where: { userId: id } });
       await this.prisma.user.update({
         where: { id },
-        data: { isActive: false },
+        data: {
+          isActive: false,
+          email: `deleted-${id}@deleted.invalid`,
+          name: 'Deleted Client',
+          firstName: null,
+          lastName: null,
+          middleInitial: null,
+          phoneNumber: null,
+          companyName: null,
+          bio: null,
+          avatar: null,
+          googleId: null,
+          streetAddress: null,
+          aptSuiteUnit: null,
+          city: null,
+          stateRegion: null,
+          zipCode: null,
+          country: null,
+          password: null,
+          refreshToken: null,
+          emailVerifyToken: null,
+          passwordResetToken: null,
+        },
       });
       return {
         success: true,
         message:
-          'This member still has records that reference them (timecards, proposals), so their account was deactivated instead of deleted. Their hours stay on their own record.',
+          'Account closed. There was payment or meeting history, so the account was anonymised and deactivated rather than erased — the projects and every financial record stay intact.',
         deactivated: true,
+        detachedProjects,
       };
     }
+  }
+
+  /**
+   * A client closing their own account.
+   *
+   * Deliberately separate from the admin path above: the password checked is
+   * the client's own, and self-deletion is the point rather than something to
+   * guard against. Everything the studio needs for its books is kept — the
+   * projects, contracts and payments are detached from the account, never
+   * removed, exactly as when an admin removes a client.
+   */
+  async deleteOwnAccount(userId: string, password?: string) {
+    if (!password?.trim())
+      throw new BadRequestException('Enter your password to confirm');
+
+    const user = await this.prisma.user.findUnique({ where: { id: userId } });
+    if (!user) throw new NotFoundException('Account not found');
+
+    // Staff accounts are managed by an admin — a project manager deleting
+    // themselves would strand their projects and timecards.
+    if (user.role !== UserRole.USER)
+      throw new ForbiddenException(
+        'Only client accounts can be closed from here. Ask an administrator.',
+      );
+
+    if (!user.password)
+      throw new ForbiddenException(
+        'This account signs in with Google. Set a password first to close it.',
+      );
+
+    const matches = await bcrypt.compare(password, user.password);
+    if (!matches) throw new ForbiddenException('Incorrect password');
+
+    const stoppedProjects = await this.stopRunningProjects(userId);
+    const result = await this.detachAndRemoveClient(userId);
+
+    return { ...result, stoppedProjects };
+  }
+
+  /**
+   * Close out any project still running for a departing client.
+   *
+   * The clock stops now: an open-ended project would otherwise keep accruing
+   * days forever against an account nobody is holding. Stamping the end date
+   * is also what fixes the contract's value in time — the financial year split
+   * is by day overlap, so a project that ran across New Year divides between
+   * those years on its own, and whatever has been paid stands as the final
+   * payment against it.
+   */
+  private async stopRunningProjects(userId: string): Promise<number> {
+    const running = await this.prisma.projectRequest.findMany({
+      where: {
+        userId,
+        deletedAt: null,
+        status: RequestStatus.ACTIVE,
+        projectCompletedAt: null,
+      },
+      select: { id: true, projectStartedAt: true },
+    });
+    if (running.length === 0) return 0;
+
+    const completedAt = new Date();
+    for (const project of running) {
+      await this.prisma.projectRequest.update({
+        where: { id: project.id },
+        data: {
+          status: RequestStatus.COMPLETED,
+          projectCompletedAt: completedAt,
+          totalDurationMonths: project.projectStartedAt
+            ? (completedAt.getTime() - project.projectStartedAt.getTime()) /
+              (1000 * 60 * 60 * 24 * 30.44)
+            : null,
+        },
+      });
+    }
+
+    return running.length;
   }
 
   /**

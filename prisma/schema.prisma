@@ -643,7 +643,17 @@ model ProjectRequest {
   appointmentDate             DateTime?
   appointmentTime             String? // e.g., "10:00 AM"
   appointmentType             String? // e.g., "Initial Consultation"
+  // In-person appointments capture a structured address, the same shape the
+  // client and project addresses use. `meetingLocation` is kept as the
+  // one-line rendering of the parts below so rows written before this split —
+  // and anything still reading that single column — stay valid.
   meetingLocation             String? // address, only set for in-person appointments
+  meetingCountry              String?
+  meetingState                String?
+  meetingCity                 String?
+  meetingStreetAddress        String?
+  meetingAptSuiteUnit         String?
+  meetingZipCode              String?
   additionalNotes             String?
   consultationPaymentId       String? // Stripe PaymentIntent ID for the $250 fee
   driveLink                   String?  // Google Drive link for internal project files
@@ -754,6 +764,13 @@ model ConsultationRefund {
   @@map("consultation_refunds")
 }
 
+/// Which half of the shared project folder a link belongs to. Both sides see
+/// every link; each side may only edit and delete its own.
+enum AttachmentSide {
+  ARCHITECT
+  CLIENT
+}
+
 model ProjectAttachment {
   id               String         @id @default(uuid())
   projectRequestId String
@@ -762,6 +779,10 @@ model ProjectAttachment {
   title String
   url   String
 
+  /// Set from the creator's role when the link is added, never from the
+  /// request body — it is what the edit and delete rules are enforced on.
+  ownerSide AttachmentSide @default(ARCHITECT)
+
   createdById String
   createdBy   User   @relation(fields: [createdById], references: [id])
 
@@ -769,6 +790,7 @@ model ProjectAttachment {
   updatedAt DateTime @updatedAt
 
   @@index([projectRequestId])
+  @@index([ownerSide])
   @@map("project_attachments")
 }
 
@@ -1023,7 +1045,6 @@ model ProjectStage {
 
   // Tracking
   notes String? @db.Text
-  driveLink String? // Optional Google Drive link for deliverables
 
   // Phase progress meeting: once the PM completes the phase (and the client has
   // paid it, on an installment plan) the client may book a walkthrough call.
@@ -1425,6 +1446,15 @@ model Timecard {
   nonBillableHours Decimal        @default(0) @db.Decimal(6, 2)
   totalHours       Decimal        @default(0) @db.Decimal(6, 2)
   totalCost     Decimal        @default(0) @db.Decimal(10, 2)
+  // ─── Rate snapshot, frozen at approval ───
+  // Approving a timecard locks in the rates it was approved under. Editing the
+  // firm billing rate, an employee's hourly rate, or their tax setup afterwards
+  // must never move money on a card that is already approved — only cards
+  // approved after the change pick the new rates up. Null on a card that has
+  // never been approved; readers fall back to the live profile there.
+  lockedBillingRate   Decimal? @db.Decimal(10, 2)
+  lockedHourlyRate    Decimal? @db.Decimal(10, 2)
+  lockedTaxPercentage Decimal? @db.Decimal(5, 2)
   submittedAt   DateTime?
   approvedAt    DateTime?
   approvedBy    String?

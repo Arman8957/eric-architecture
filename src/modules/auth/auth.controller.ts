@@ -34,6 +34,7 @@ import { LoginDto } from './dto/login.dto';
 import { RegisterSuperAdminDto } from './dto/register-super-admin.dto';
 import { ForgotPasswordDto } from './dto/forgot-password.dto';
 import { ResetPasswordDto } from './dto/reset-password.dto';
+import { ChangePasswordDto } from './dto/change-password.dto';
 
 import { CurrentUser } from 'src/common/decorators/current-user.decorator';
 import { ProjectRequestService } from '../users/user-service/project-request.service';
@@ -185,6 +186,31 @@ export class AuthController {
     @Res({ passthrough: true }) res: express.Response,
   ) {
     const result = await this.authService.resetPassword(dto.token, dto.password);
+
+    return res.status(HttpStatus.OK).json({
+      success: true,
+      message: result.message,
+    });
+  }
+
+  /**
+   * Change your own password. Authenticated deliberately — the user id comes
+   * from the session, never the body, so this can only ever change the
+   * caller's own password.
+   */
+  @Post('change-password')
+  @UseGuards(JwtAuthGuard)
+  @HttpCode(HttpStatus.OK)
+  async changePassword(
+    @CurrentUser() user: client.User,
+    @Body() dto: ChangePasswordDto,
+    @Res({ passthrough: true }) res: express.Response,
+  ) {
+    const result = await this.authService.changePassword(
+      user.id,
+      dto.currentPassword,
+      dto.newPassword,
+    );
 
     return res.status(HttpStatus.OK).json({
       success: true,

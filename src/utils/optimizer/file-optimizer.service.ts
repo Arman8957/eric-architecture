@@ -18,14 +18,24 @@ export class FileOptimizerService {
         return buffer; // Return original for non-images
       }
 
+      // Cap the *longest* edge, not both edges. `inside` against 1920x1080
+      // fitted landscape photos to the 1080 height first, so a 3:2 shot came
+      // out 1620px wide — below a retina phone's needs and well below a
+      // desktop hero's, which is why full-bleed project photos looked soft.
+      // 2560 keeps every project photo at or above the 2000-2400px the hero
+      // asks for on large displays; Cloudinary scales it back down per device
+      // at delivery, so this costs storage, not bandwidth.
       const optimized = await sharp(buffer)
-        .resize(1920, 1080, { 
+        .resize(2560, 2560, {
           fit: 'inside',
-          withoutEnlargement: true 
+          withoutEnlargement: true,
         })
-        .jpeg({ 
-          quality: 85, 
-          mozjpeg: true 
+        // This buffer is the master every delivery render is derived from, and
+        // Cloudinary re-encodes on top of it — so it is worth holding detail
+        // here and letting `q_auto` do the compressing downstream.
+        .jpeg({
+          quality: 90,
+          mozjpeg: true,
         })
         .toBuffer();
 

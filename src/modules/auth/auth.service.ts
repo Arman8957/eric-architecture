@@ -108,11 +108,23 @@ export class AuthService {
       where: { email: normalizedEmail },
     });
     if (existing) {
-      throw new BadRequestException(
-        existing.emailVerified
-          ? 'Email already registered and verified.'
-          : 'Email already registered. Check your inbox or resend verification.',
-      );
+      // A closed client account must not hold its email address hostage.
+      // Someone who left and came back is a new customer, not a locked-out
+      // one, so the old row releases the address and the signup goes ahead as
+      // a genuinely new account — new id, no link to the closed one's
+      // projects, which stay on the books exactly as they were.
+      //
+      // Clients only. A deactivated staff account is suspended by an admin,
+      // not closed, and must not be able to free its own email by signing up.
+      if (existing.role === UserRole.USER && !existing.isActive) {
+        await this.releaseClosedAccountEmail(existing.id);
+      } else {
+        throw new BadRequestException(
+          existing.emailVerified
+            ? 'Email already registered and verified.'
+            : 'Email already registered. Check your inbox or resend verification.',
+        );
+      }
     }
 
     const optional = (value?: string) => {
@@ -566,6 +578,106 @@ export class AuthService {
 
     this.logger.log(`Password reset completed for ${user.email}`);
     return { message: 'Password updated. You can now log in.' };
+  }
+
+  /**
+   * Hand a closed client account's email address back so it can be used to
+   * register again.
+   *
+   * The row itself stays — payment, refund and meeting records point at it and
+   * every financial total is built from them — but it is anonymised and its
+   * credentials cleared, so it can never be signed into and no longer holds
+   * the address. This is the same end state a properly closed account reaches;
+   * it also repairs accounts closed by older builds that only deactivated
+   * them.
+   */
+  private async releaseClosedAccountEmail(userId: string) {
+    await this.prisma.user.update({
+      where: { id: userId },
+      data: {
+        isActive: false,
+        email: `deleted-${userId}@deleted.invalid`,
+        name: 'Deleted Client',
+        firstName: null,
+        lastName: null,
+        middleInitial: null,
+        phoneNumber: null,
+        companyName: null,
+        bio: null,
+        avatar: null,
+        googleId: null,
+        streetAddress: null,
+        aptSuiteUnit: null,
+        city: null,
+        stateRegion: null,
+        zipCode: null,
+        country: null,
+        password: null,
+        refreshToken: null,
+        emailVerifyToken: null,
+        passwordResetToken: null,
+      },
+    });
+
+    this.logger.log(`Released email from closed account ${userId}`);
+  }
+
+  /**
+   * Change your own password while signed in.
+   *
+   * The current password has to be re-entered and verified: an authenticated
+   * session alone is not enough to take over an account, and it stops a
+   * machine left logged in from being used to lock the owner out. Every other
+   * session is signed out afterwards by clearing the refresh token, so a
+   * password change actually revokes access rather than just changing what
+   * the owner types next time.
+   */
+  async changePassword(
+    userId: string,
+    currentPassword: string,
+    newPassword: string,
+  ) {
+    const user = await this.prisma.user.findUnique({ where: { id: userId } });
+
+    if (!user) {
+      throw new NotFoundException('Account not found.');
+    }
+
+    // Accounts created through Google have no password to verify against, so
+    // there is nothing to "change" — they have to set one via the email flow.
+    if (!user.password) {
+      throw new BadRequestException(
+        'This account signs in with Google. Use "Forgot password" to set a password first.',
+      );
+    }
+
+    const matches = await bcrypt.compare(currentPassword, user.password);
+    if (!matches) {
+      throw new UnauthorizedException('Your current password is incorrect.');
+    }
+
+    const isSame = await bcrypt.compare(newPassword, user.password);
+    if (isSame) {
+      throw new BadRequestException(
+        'Your new password must be different from your current one.',
+      );
+    }
+
+    const hashed = await bcrypt.hash(newPassword, 12);
+
+    await this.prisma.user.update({
+      where: { id: userId },
+      data: {
+        password: hashed,
+        // Any outstanding reset link is void now the password has changed.
+        passwordResetToken: null,
+        passwordResetExpiry: null,
+        refreshToken: null,
+      },
+    });
+
+    this.logger.log(`Password changed for ${user.email}`);
+    return { message: 'Password updated.' };
   }
 
   async login(email: string, password: string): Promise<AuthResponseDto> {

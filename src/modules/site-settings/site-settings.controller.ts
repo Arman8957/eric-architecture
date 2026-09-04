@@ -97,4 +97,35 @@ export class SiteSettingsController {
     const saved = await this.siteSettingsService.setMediaQuickTags(tags);
     return { success: true, data: saved };
   }
+
+  // ── YouTube channel ────────────────────────────────────────────────────
+
+  @Get('youtube-channel')
+  @UseGuards(JwtAuthGuard)
+  async getYoutubeChannel() {
+    const url = await this.siteSettingsService.getYoutubeChannelUrl();
+    return { success: true, data: { url } };
+  }
+
+  @Patch('youtube-channel')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(
+    client.UserRole.SUPER_ADMIN,
+    client.UserRole.ADMIN,
+    client.UserRole.MEDIA_MANAGER,
+  )
+  async updateYoutubeChannel(@Body('url') url: string) {
+    const trimmed = String(url ?? '').trim();
+
+    // An empty value clears the saved channel; anything else has to be a real
+    // http(s) link, or the "Go to Channel" button would lead nowhere.
+    if (trimmed && !/^https?:\/\/[^\s]+$/i.test(trimmed)) {
+      throw new BadRequestException(
+        'Enter a full channel URL, starting with http:// or https://',
+      );
+    }
+
+    const saved = await this.siteSettingsService.setYoutubeChannelUrl(trimmed);
+    return { success: true, data: { url: saved } };
+  }
 }

@@ -55,8 +55,4 @@ export class CreateStageDto {
   @IsOptional()
   @IsString()
   notes?: string;
-
-  @IsOptional()
-  @IsString()
-  driveLink?: string;
 }

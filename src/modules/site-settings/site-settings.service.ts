@@ -11,6 +11,8 @@ const DEFAULT_OFFICE_HOURS = { start: '08:00', end: '18:00' };
 const MEDIA_QUICK_TAGS_KEY = 'media_quick_tags';
 const DEFAULT_MEDIA_QUICK_TAGS = ['ECO_FRIENDLY', 'SOLAR_POWERED', 'LUXURY'];
 
+const YOUTUBE_CHANNEL_URL_KEY = 'youtube_channel_url';
+
 export interface OfficeHours {
   /** "HH:MM", 24-hour. */
   start: string;
@@ -117,6 +119,26 @@ export class SiteSettingsService {
       'Quick-add tag suggestions offered on the media create/edit form',
     );
     return this.getMediaQuickTags();
+  }
+
+  /** The firm's YouTube channel, or "" when none has been saved yet. */
+  async getYoutubeChannelUrl(): Promise<string> {
+    return (await this.get(YOUTUBE_CHANNEL_URL_KEY)) ?? '';
+  }
+
+  /**
+   * Save the channel link. An empty string clears it, which is how the Media
+   * Center's "Go to Channel" button gets turned back into an empty input.
+   */
+  async setYoutubeChannelUrl(url: string): Promise<string> {
+    const trimmed = String(url ?? '').trim();
+
+    await this.set(
+      YOUTUBE_CHANNEL_URL_KEY,
+      trimmed,
+      "The firm's YouTube channel, linked from the Media Center",
+    );
+    return this.getYoutubeChannelUrl();
   }
 
   async setOfficeHours(hours: OfficeHours): Promise<OfficeHours> {

@@ -719,6 +719,12 @@ export class ProposalService {
             projectCity: true,
             projectState: true,
             projectCountry: true,
+            // The project's run — Start Date / End Date / Total Days on the
+            // All Proposals table, and the day-overlap split that shares a
+            // contract across the calendar years the project spans.
+            isProjectStarted: true,
+            projectStartedAt: true,
+            projectCompletedAt: true,
             // Drives the Project Manager column and its sort option.
             assignedManager: {
               select: { id: true, name: true, email: true },

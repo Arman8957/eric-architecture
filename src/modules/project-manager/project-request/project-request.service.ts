@@ -75,95 +75,6 @@ export class ProjectRequestService {
     return user.role === UserRole.SUPER_ADMIN || user.role === UserRole.ADMIN || user.role === UserRole.PROJECT_MANAGER;
   }
 
-  /**
-   * The stage ids whose deliverables a client has actually paid for.
-   *
-   * LUMP_SUM proposals unlock every phase at once, on the single payment.
-   * INSTALLMENT proposals unlock one phase at a time, each on its own payment.
-   * A project with no accepted proposal yet unlocks nothing.
-   *
-   * Only COMPLETED payments count — a checkout session that was started but
-   * never paid must not open the folder.
-   */
-  private async unlockedStageIds(
-    projectRequestIds: string[],
-  ): Promise<Set<string>> {
-    const unlocked = new Set<string>();
-    if (projectRequestIds.length === 0) return unlocked;
-
-    const [proposals, payments, stages] = await Promise.all([
-      this.prisma.proposal.findMany({
-        where: {
-          projectRequestId: { in: projectRequestIds },
-          status: 'ACCEPTED',
-          proposalType: 'NORMAL',
-        },
-        select: {
-          projectRequestId: true,
-          paymentMethod: true,
-          paymentType: true,
-        },
-        orderBy: { createdAt: 'desc' },
-      }),
-      this.prisma.payment.findMany({
-        where: {
-          projectRequestId: { in: projectRequestIds },
-          paymentStatus: 'COMPLETED',
-        },
-        select: {
-          projectRequestId: true,
-          stageId: true,
-          paymentType: true,
-        },
-      }),
-      this.prisma.projectStage.findMany({
-        where: { projectRequestId: { in: projectRequestIds } },
-        select: { id: true, projectRequestId: true, status: true },
-      }),
-    ]);
-
-    // projectRequestId -> billed as one lump sum. Newest accepted proposal wins.
-    const isLumpSumByProject = new Map<string, boolean>();
-    for (const proposal of proposals) {
-      if (!proposal.projectRequestId) continue;
-      if (isLumpSumByProject.has(proposal.projectRequestId)) continue;
-      isLumpSumByProject.set(
-        proposal.projectRequestId,
-        proposal.paymentMethod === 'lumpSum' ||
-          proposal.paymentMethod === 'LUMP_SUM' ||
-          proposal.paymentType === 'LUMP_SUM',
-      );
-    }
-
-    const lumpSumPaidProjects = new Set(
-      payments
-        .filter((p) => p.paymentType === 'LUMP_SUM' && p.projectRequestId)
-        .map((p) => p.projectRequestId as string),
-    );
-    const paidStageIds = new Set(
-      payments
-        .filter((p) => p.paymentType === 'INSTALLMENT' && p.stageId)
-        .map((p) => p.stageId as string),
-    );
-
-    for (const stage of stages) {
-      if (!stage.projectRequestId) continue;
-
-      const isLumpSum = isLumpSumByProject.get(stage.projectRequestId);
-      if (isLumpSum === undefined) continue;
-
-      const paid = isLumpSum
-        ? lumpSumPaidProjects.has(stage.projectRequestId)
-        : paidStageIds.has(stage.id);
-
-      // Both halves have to be true. Payment alone would hand over folders for
-      // phases nobody has finished yet; completion alone would hand over the
-      // deliverables before they were paid for.
-      if (paid && stage.status === 'COMPLETED') unlocked.add(stage.id);
-    }
-
-    return unlocked;
-  }
 
   private async isAssignedToProject(projectRequestId: string, user: User): Promise<boolean> {
     if (this.isAdminOrManager(user)) return true;
@@ -294,7 +205,6 @@ export class ProjectRequestService {
               name: true,
               status: true,
               progress: true,
-              driveLink: true,
               completedAt: true,
             },
             orderBy: { order: 'asc' },
@@ -723,10 +633,27 @@ export class ProjectRequestService {
 
     this.validateStatusTransition(request.status, dto.status);
 
+    // The end date belongs to the status, not alongside it. Moving a project to
+    // COMPLETED by hand has to stop its timer, and moving it back off COMPLETED
+    // has to restart it — the financial year a project's contract settles in is
+    // read from this date, so leaving it unset stranded the project with a
+    // timer that never stopped.
+    const isCompleting = dto.status === RequestStatus.COMPLETED;
+    const completedAt = isCompleting
+      ? (request.projectCompletedAt ?? new Date())
+      : null;
+    const totalDurationMonths =
+      completedAt && request.projectStartedAt
+        ? (completedAt.getTime() - request.projectStartedAt.getTime()) /
+          (1000 * 60 * 60 * 24 * 30.44)
+        : null;
+
     const updated = await this.prisma.projectRequest.update({
       where: { id },
       data: {
         status: dto.status,
+        projectCompletedAt: completedAt,
+        totalDurationMonths,
         updatedAt: new Date(),
       },
       include: {
@@ -1168,7 +1095,6 @@ export class ProjectRequestService {
               name: true,
               status: true,
               progress: true,
-              driveLink: true,
               completedAt: true,
             },
             orderBy: { order: 'asc' },
@@ -1201,15 +1127,13 @@ export class ProjectRequestService {
       this.prisma.projectRequest.count({ where }),
     ]);
 
-    // A client only gets a phase's deliverables folder URL once that phase is
-    // paid for. Stripping it here rather than in the UI is the point — a hidden
-    // button still ships the link in the response body. Staff see everything.
+    // The internal project folder is for the architect and PM only. It is
+    // stripped from the payload rather than hidden in the UI, because a hidden
+    // card still ships the URL in the response body for anyone reading the
+    // network tab. Anything meant for the client goes in the shared folder.
     if (user.role === UserRole.USER) {
-      const unlocked = await this.unlockedStageIds(requests.map((r) => r.id));
       for (const request of requests) {
-        for (const stage of request.stages) {
-          if (!unlocked.has(stage.id)) stage.driveLink = null;
-        }
+        (request as { driveLink?: string | null }).driveLink = undefined;
       }
     }
 
@@ -2728,6 +2652,25 @@ export class ProjectRequestService {
       select: { id: true, email: true, name: true },
     });
 
+    // 2b. Only the first meeting on a project is the initial consultation —
+    // the one the consultation fee covers. Everything after it is a follow-up
+    // the client may request freely, at no further charge.
+    //
+    // The type is derived from what the project already has rather than taken
+    // from the request body: a client could otherwise label any meeting
+    // however they liked, and every request was previously filed as an
+    // "Initial Consultation" regardless. A declined consultation doesn't count
+    // — that meeting never happened, so the next request is still the first.
+    const priorConsultation = await this.prisma.meetingLink.findFirst({
+      where: {
+        projectRequestId,
+        meetingType: 'INITIAL_CONSULTATION',
+        status: { not: 'DECLINED' },
+      },
+      select: { id: true },
+    });
+    const isFollowUp = !!priorConsultation;
+
     // 3. Create a MeetingLink as a client request, awaiting PM response
     await this.prisma.meetingLink.create({
       data: {
@@ -2738,14 +2681,13 @@ export class ProjectRequestService {
         stageId: null,
         meetingUrl: null,
         status: 'PENDING_CLIENT_REQUEST',
-        // PHASE PROGRESS MEETINGS DISABLED (2026-08-31) — was:
-        //   title: stage ? `${stage.name} — Progress Meeting Requested` : 'Meeting Requested by Client',
-        //   meetingType: dto.meetingType ?? (stage ? 'PHASE_PROGRESS' : 'INITIAL_CONSULTATION'),
-        title: 'Meeting Requested by Client',
+        title: isFollowUp
+          ? 'Follow-up Meeting Requested by Client'
+          : 'Initial Consultation Requested by Client',
         scheduledAt: start,
         endsAt: end,
         notes: dto.notes || 'No additional notes provided.',
-        meetingType: dto.meetingType ?? 'INITIAL_CONSULTATION',
+        meetingType: isFollowUp ? 'GENERAL' : 'INITIAL_CONSULTATION',
       },
     });
 

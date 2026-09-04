@@ -293,6 +293,20 @@ export class UsersGetController {
   }
 
   /**
+   * A client closing their own account. Declared before `:id` so the literal
+   * path wins the match, and takes no id at all — the account comes from the
+   * session, so this can only ever close the caller's own.
+   */
+  @Delete('me')
+  @UseGuards(JwtAuthGuard)
+  async deleteOwnAccount(
+    @CurrentUser() actor: { id: string },
+    @Body() body: { password?: string },
+  ) {
+    return this.usersService.deleteOwnAccount(actor.id, body?.password);
+  }
+
+  /**
    * Deleting a team member is destructive, so the acting Super Admin / Finance
    * Manager has to re-enter their own password to confirm.
    */

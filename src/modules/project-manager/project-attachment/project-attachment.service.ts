@@ -4,7 +4,7 @@ import {
   ForbiddenException,
   BadRequestException,
 } from '@nestjs/common';
-import { User, UserRole } from '@prisma/client';
+import { AttachmentSide, User, UserRole } from '@prisma/client';
 import { PrismaService } from 'src/prisma/prisma.service';
 
 @Injectable()
@@ -19,6 +19,35 @@ export class ProjectAttachmentService {
 
   private canManage(user: User): boolean {
     return this.MANAGE_ROLES.has(user.role);
+  }
+
+  /**
+   * Which half of the shared folder a user writes to. Taken from their role,
+   * never from the request body — otherwise a client could post a link into
+   * the architect's section and the architect could not remove it.
+   */
+  private sideOf(user: User): AttachmentSide {
+    return this.canManage(user)
+      ? AttachmentSide.ARCHITECT
+      : AttachmentSide.CLIENT;
+  }
+
+  /**
+   * Both sides read the whole folder; each side edits and deletes only its own
+   * links. A manager has no override here — the client's links are the
+   * client's, the same way the architect's are theirs.
+   */
+  private assertOwnSide(
+    attachment: { ownerSide: AttachmentSide },
+    user: User,
+  ): void {
+    if (attachment.ownerSide !== this.sideOf(user)) {
+      throw new ForbiddenException(
+        this.canManage(user)
+          ? 'This link was added by the client and can only be changed by them'
+          : 'This link was added by the architect and can only be changed by them',
+      );
+    }
   }
 
   /**
@@ -82,6 +111,7 @@ export class ProjectAttachmentService {
         projectRequestId,
         title: dto.title.trim(),
         url: dto.url.trim(),
+        ownerSide: this.sideOf(user),
         createdById: user.id,
       },
       include: {
@@ -103,11 +133,8 @@ export class ProjectAttachmentService {
       throw new NotFoundException('Attachment not found');
     }
 
+    this.assertOwnSide(existing, user);
     if (!this.canManage(user)) {
-      // Clients may only manage the rows they added themselves.
-      if (existing.createdById !== user.id) {
-        throw new ForbiddenException('Access denied');
-      }
       await this.assertClientAccess(existing.projectRequestId, user);
     }
 
@@ -132,10 +159,8 @@ export class ProjectAttachmentService {
       throw new NotFoundException('Attachment not found');
     }
 
+    this.assertOwnSide(existing, user);
     if (!this.canManage(user)) {
-      if (existing.createdById !== user.id) {
-        throw new ForbiddenException('Access denied');
-      }
       await this.assertClientAccess(existing.projectRequestId, user);
     }
 
