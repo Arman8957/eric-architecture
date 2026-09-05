@@ -29,6 +29,7 @@ import { PaymentModule } from './modules/payment/payment.module';
 import { SiteSettingsModule } from './modules/site-settings/site-settings.module';
 import { ContactModule } from './modules/contact/contact.module';
 import { ProjectAttachmentModule } from './modules/project-manager/project-attachment/project-attachment.module';
+import { ProjectDocumentModule } from './modules/project-manager/project-document/project-document.module';
 
 @Module({
   imports: [
@@ -67,6 +68,7 @@ import { ProjectAttachmentModule } from './modules/project-manager/project-attac
     SiteSettingsModule,
     ContactModule,
     ProjectAttachmentModule,
+    ProjectDocumentModule,
   ],
   providers: [
     // MailerService is provided and exported by MailerModule — declaring it

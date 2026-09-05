@@ -287,6 +287,7 @@ model User {
   processedConsultationRefunds ConsultationRefund[] @relation("ProcessedConsultationRefunds")
   payments             Payment[]
   createdAttachments   ProjectAttachment[]
+  uploadedProjectDocuments ProjectDocument[]
   scheduleBlocks       ScheduleBlock[]     @relation("ScheduleBlockOwner")
   createdScheduleBlocks ScheduleBlock[]    @relation("ScheduleBlockCreator")
 
@@ -710,6 +711,7 @@ model ProjectRequest {
   refundRequests       RefundRequest[]
   payments             Payment[]
   attachments          ProjectAttachment[]
+  documents            ProjectDocument[]
 
   @@index([email])
   @@index([status])
@@ -792,6 +794,41 @@ model ProjectAttachment {
   @@index([projectRequestId])
   @@index([ownerSide])
   @@map("project_attachments")
+}
+
+/// The three intake documents the New Project form asks for. A client who
+/// skipped one at submission can upload it later from their Documents tab.
+enum ProjectDocumentKind {
+  PROPERTY_BOUNDARY
+  GEOTECHNICAL_REPORT
+  PROJECT_PHOTO
+}
+
+/// A file the client uploaded against their project — as opposed to
+/// ProjectAttachment, which is an external link the architect shares.
+model ProjectDocument {
+  id               String         @id @default(uuid())
+  projectRequestId String
+  projectRequest   ProjectRequest @relation(fields: [projectRequestId], references: [id], onDelete: Cascade)
+
+  kind         ProjectDocumentKind
+  /// The client's original filename, for display.
+  fileName     String
+  url          String
+  /// Cloudinary public id, so the asset can be destroyed alongside the row.
+  publicId     String?
+  mimeType     String?
+  size         Int?
+
+  uploadedById String
+  uploadedBy   User   @relation(fields: [uploadedById], references: [id])
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([projectRequestId])
+  @@index([kind])
+  @@map("project_documents")
 }
 
 model Proposal {
