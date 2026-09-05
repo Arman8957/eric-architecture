@@ -41,6 +41,11 @@ lerna-debug.log*
 .env.test.local
 .env.production.local
 .env.local
+# Any other .env variant, plus editor/tool backups of one — a stray .env.bak
+# carries exactly the same live credentials the .env does.
+.env.*
+!.env.example
+*.bak
 
 # temp directory
 .temp

@@ -1783,6 +1783,10 @@ export class FinancialService {
     if (!EDITABLE_TIMECARD_STATUSES.includes(timecard.status))
       throw new BadRequestException('Can only submit draft or rejected timecards');
 
+    // Settle the totals against the entries so the reviewer reads the same
+    // numbers the employee typed in.
+    await this.recomputeTimecardTotals(id);
+
     return this.prisma.timecard.update({
       where: { id },
       data: {
@@ -1817,6 +1821,54 @@ export class FinancialService {
     return `Period ${timecard.payPeriod}, ${timecard.payYear}`;
   }
 
+  /**
+   * Rebuild a timecard's stored hour and cost totals from its own entries.
+   *
+   * Those columns are a cache of the entry rows. A card that was submitted or
+   * approved while the cache was stale stayed frozen at the wrong numbers for
+   * good — an approved card can no longer be edited — which is how cards ended
+   * up reporting negative overhead and utilisation above 100%. Recomputing at
+   * both hand-off points keeps the cache honest.
+   */
+  private async recomputeTimecardTotals(id: string) {
+    const timecard = await this.prisma.timecard.findUnique({
+      where: { id },
+      select: {
+        lockedHourlyRate: true,
+        user: {
+          select: { employeeProfile: { select: { hourlyRate: true } } },
+        },
+        entries: { select: { totalHours: true } },
+        billableEntries: { select: { totalHours: true } },
+      },
+    });
+    if (!timecard) return;
+
+    const sumHours = (rows: { totalHours: Prisma.Decimal | null }[]) =>
+      rows.reduce((total, row) => total + Number(row.totalHours || 0), 0);
+
+    const billableHours = sumHours(timecard.billableEntries);
+    const nonBillableHours = sumHours(timecard.entries);
+    const totalHours = billableHours + nonBillableHours;
+
+    // An approved card is valued at the rate frozen onto it; before that, the
+    // employee's live rate.
+    const hourlyRate =
+      timecard.lockedHourlyRate != null
+        ? Number(timecard.lockedHourlyRate)
+        : Number(timecard.user?.employeeProfile?.hourlyRate || 0);
+
+    await this.prisma.timecard.update({
+      where: { id },
+      data: {
+        billableHours,
+        nonBillableHours,
+        totalHours,
+        totalCost: totalHours * hourlyRate,
+      },
+    });
+  }
+
   async approveTimecard(id: string, approvedByUserId: string) {
     const timecard = await this.prisma.timecard.findUnique({
       where: { id },
@@ -1837,6 +1889,10 @@ export class FinancialService {
     if (!timecard) throw new NotFoundException('Timecard not found');
     if (timecard.status !== TimecardStatus.SUBMITTED)
       throw new BadRequestException('Can only approve submitted timecards');
+
+    // Approval is the last moment the numbers can be corrected — settle the
+    // totals against the entries before they are frozen.
+    await this.recomputeTimecardTotals(id);
 
     // Freeze the rates this card is being approved under. From here the card is
     // valued at these numbers for good — a later billing-rate or pay change
