@@ -40,11 +40,12 @@ export class SiteSettingsController {
   }
 
   // ── Office hours ───────────────────────────────────────────────────────
-  // Readable by any signed-in user, because the client booking form has to
-  // know the window. Only a super admin can change it.
+  // Public to read, for the same reason as the consultation fee above: the New
+  // Project wizard offers appointment slots before a visitor has an account, so
+  // a signed-in-only read left anonymous bookers with no times to choose from.
+  // A daily opening window is not sensitive. Only a super admin can change it.
 
   @Get('office-hours')
-  @UseGuards(JwtAuthGuard)
   async getOfficeHours() {
     const hours = await this.siteSettingsService.getOfficeHours();
     return { success: true, data: hours };

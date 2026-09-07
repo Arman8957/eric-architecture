@@ -35,6 +35,46 @@ import {
   parseTimeToMinutes,
 } from 'src/modules/site-settings/site-settings.service';
 
+/**
+ * The zone the firm's office hours are expressed in.
+ *
+ * Office hours are wall-clock times — "12:00 to 16:30" means noon to half four
+ * *at the studio*. Comparing them against an absolute instant therefore has to
+ * happen in the studio's zone; doing it in the server's meant the check moved
+ * whenever the process did, and rejected bookings that were plainly inside the
+ * advertised window.
+ *
+ * A constant rather than a setting, because the firm operates from one place
+ * (San Diego). Promote it to site settings the day that stops being true.
+ */
+const STUDIO_TIME_ZONE = 'America/Los_Angeles';
+
+/** Minutes past midnight for `date`, read in `timeZone`. */
+const zonedMinutes = (date: Date, timeZone: string): number => {
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone,
+    // h23 rather than hour12:false — the latter reports midnight as "24" on
+    // some ICU builds, which would read as the end of the day, not the start.
+    hourCycle: 'h23',
+    hour: '2-digit',
+    minute: '2-digit',
+  }).formatToParts(date);
+
+  const valueOf = (type: string) =>
+    Number(parts.find((part) => part.type === type)?.value ?? '0');
+
+  return valueOf('hour') * 60 + valueOf('minute');
+};
+
+/** `YYYY-MM-DD` for `date` in `timeZone`, for comparing calendar days. */
+const zonedDateKey = (date: Date, timeZone: string): string =>
+  new Intl.DateTimeFormat('en-CA', {
+    timeZone,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).format(date);
+
 @Injectable()
 export class ProjectRequestService {
   private readonly logger = new Logger(ProjectRequestService.name);
@@ -3030,12 +3070,19 @@ export class ProjectRequestService {
     // A malformed setting must not block every booking.
     if (openMinutes === null || closeMinutes === null) return;
 
-    const startMinutes = start.getHours() * 60 + start.getMinutes();
-    const endMinutes = end.getHours() * 60 + end.getMinutes();
+    // Read the clock in the studio's zone, not the server's. `start` is an
+    // absolute instant; `getHours()` renders it wherever the process happens to
+    // run, so a client booking 3:30 PM Pacific arrived as 22:30 on a UTC host
+    // (past closing) or 04:30 the next day on an Asia/Dhaka one (wrong day).
+    // Both were rejected despite being inside the advertised window.
+    const startMinutes = zonedMinutes(start, STUDIO_TIME_ZONE);
+    const endMinutes = zonedMinutes(end, STUDIO_TIME_ZONE);
     // An end of exactly midnight is the close of the same day, not the next.
     const normalizedEnd = endMinutes === 0 ? 24 * 60 : endMinutes;
 
-    const sameDay = start.toDateString() === end.toDateString();
+    const sameDay =
+      zonedDateKey(start, STUDIO_TIME_ZONE) ===
+      zonedDateKey(end, STUDIO_TIME_ZONE);
 
     if (
       !sameDay ||
