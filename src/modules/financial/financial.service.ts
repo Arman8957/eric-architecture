@@ -1959,7 +1959,11 @@ export class FinancialService {
       type: 'TIMECARD_REJECTED',
       title: 'Timecard denied - action needed',
       message: `Your timecard for ${this.formatPeriodLabel(timecard)} was denied: ${reason}. Correct it and resubmit.`,
-      link: '/dashboard/timecards',
+      // Straight to the card that was denied, opened for correction. This used
+      // to point at /dashboard/timecards — the payroll reviewer's list of
+      // everyone's cards, which is a finance page the employee (and any
+      // project manager who saw the link) has no business opening.
+      link: `/dashboard/my-timecard/${updated.id}`,
     });
 
     return updated;

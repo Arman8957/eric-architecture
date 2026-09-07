@@ -378,14 +378,13 @@ export class ProjectRequestService {
 
     // 1. Global Stats - For "all projects visible to this user".
     //
-    // Inquiry + Bidding are live pipeline counts (archived rows excluded).
-    // Active + Done are scoped to the current calendar year — Active = started
-    // this year, Done = completed this year — and DO include archived projects
-    // (archive is a display flag only). Total = Active + Done for the year.
-    const now = new Date();
-    const yearStart = new Date(now.getFullYear(), 0, 1);
-    const yearEnd = new Date(now.getFullYear(), 11, 31, 23, 59, 59, 999);
-
+    // All four counts describe the same population, so the Firm Projects cards
+    // agree with the tabs above the table. Active and Done used to be narrowed
+    // to the current calendar year while Inquiry and Bidding were not, which
+    // made the card disagree with its own tab: an ACTIVE project whose
+    // `projectStartedAt` was never set fell outside `>= yearStart` — SQL treats
+    // a NULL comparison as unknown, not true — so the card read one lower than
+    // the Active tab beside it. Archived rows stay excluded throughout.
     const baseGlobal: Prisma.ProjectRequestWhereInput = {
       deletedAt: null,
       // Declined account-less inquiries are out of the pipeline.
@@ -395,7 +394,7 @@ export class ProjectRequestService {
       baseGlobal.teams = { some: { members: { some: { id: user.id } } } };
     }
 
-    const [pipelineCounts, activeThisYear, doneThisYear] = await Promise.all([
+    const [pipelineCounts, activeCount, doneCount] = await Promise.all([
       this.prisma.projectRequest.groupBy({
         by: ['status'],
         where: {
@@ -414,25 +413,25 @@ export class ProjectRequestService {
       this.prisma.projectRequest.count({
         where: {
           ...baseGlobal,
+          isArchived: false,
           status: RequestStatus.ACTIVE,
-          projectStartedAt: { gte: yearStart, lte: yearEnd },
         },
       }),
       this.prisma.projectRequest.count({
         where: {
           ...baseGlobal,
+          isArchived: false,
           status: RequestStatus.COMPLETED,
-          projectCompletedAt: { gte: yearStart, lte: yearEnd },
         },
       }),
     ]);
 
     const globalStats = {
-      total: activeThisYear + doneThisYear,
+      total: activeCount + doneCount,
       inquiry: 0,
       bidding: 0,
-      active: activeThisYear,
-      done: doneThisYear,
+      active: activeCount,
+      done: doneCount,
     };
 
     pipelineCounts.forEach((item) => {

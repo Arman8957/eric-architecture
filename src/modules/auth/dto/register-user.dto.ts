@@ -9,7 +9,9 @@ export class RegisterUserDto {
   @MinLength(8, { message: 'Password must be at least 8 characters' })
   password!: string;
 
-  // Username — stored on `User.name`
+  // The username. Kept on this field name because that is what the signup form
+  // has always sent; it is written to both `User.name` (as the display name the
+  // client chose) and `User.username`, which is what login matches on.
   @IsString()
   @IsNotEmpty({ message: 'Username is required' })
   name!: string;

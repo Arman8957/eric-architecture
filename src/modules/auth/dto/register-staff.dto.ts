@@ -1,6 +1,17 @@
 // modules/auth/dto/register-staff.dto.ts
-import { IsEmail, IsString, MinLength, IsOptional, IsEnum } from 'class-validator';
+import {
+  IsEmail,
+  IsString,
+  MinLength,
+  IsOptional,
+  IsEnum,
+  IsArray,
+  IsIn,
+} from 'class-validator';
 import { UserRole } from '@prisma/client';
+
+/** The three top-level dashboard tabs, as the frontend names them. */
+export const DASHBOARD_SECTIONS = ['studio', 'media', 'financials'] as const;
 
 
 export class RegisterStaffDto {
@@ -14,6 +25,15 @@ export class RegisterStaffDto {
   @IsString()
   @IsOptional()
   name?: string;
+
+  /**
+   * Optional second handle the member can sign in with, alongside their email.
+   * Whitelisted here for the same reason as the address fields below — the
+   * global pipe rejects the whole request for an unknown property.
+   */
+  @IsString()
+  @IsOptional()
+  username?: string;
 
   @IsEnum(UserRole, {
     message: 'Invalid role. Allowed: ADMIN, FINANCE, HIGHER_MANAGER, DRAFTER, EMPLOYEE, USER',
@@ -37,6 +57,10 @@ export class RegisterStaffDto {
 
   @IsString()
   @IsOptional()
+  aptSuiteUnit?: string;
+
+  @IsString()
+  @IsOptional()
   city?: string;
 
   @IsString()
@@ -54,4 +78,14 @@ export class RegisterStaffDto {
   @IsString()
   @IsOptional()
   phoneNumber?: string;
+
+  /**
+   * Which dashboard tabs an EMPLOYEE may open. Ignored for every other role,
+   * whose access is decided by the role itself — see the service, which clears
+   * this for non-employees so a stray value can't widen someone's access.
+   */
+  @IsArray()
+  @IsIn(DASHBOARD_SECTIONS as unknown as string[], { each: true })
+  @IsOptional()
+  dashboardSections?: string[];
 }

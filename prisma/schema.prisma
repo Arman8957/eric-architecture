@@ -211,9 +211,20 @@ model User {
   id                   String             @id @default(uuid())
   email                String             @unique
   name                 String?
+  /// Second handle a client may sign in with, alongside their email. The signup
+  /// form has always asked for one but wrote it into `name`, so it could never
+  /// be used to log in. Optional because staff and Google accounts are created
+  /// without one; unique, case-normalised to lowercase before it is stored.
+  username             String?            @unique
   googleId             String?            @unique
   avatar               String?
   role                 UserRole           @default(USER)
+  /// Which dashboard tabs an EMPLOYEE may open — "studio", "media",
+  /// "financials". Every other role's access is fixed by the role itself, so
+  /// this is read only for EMPLOYEE. Empty by default: a new employee sees
+  /// nothing until someone ticks the sections meant for them, which is the
+  /// safe way round for a dashboard that carries payroll figures.
+  dashboardSections    String[]           @default([])
 
   // ── Profile ────────────────────────────────────────────────────────────
   // Maintained from Profile Settings. When a client starts a new project from

@@ -132,11 +132,28 @@ export class AuthService {
       return trimmed ? trimmed : undefined;
     };
 
+    // Stored lowercased so the login lookup is case-insensitive; `name` keeps
+    // the client's own capitalisation for display.
+    const normalizedUsername = dto.name?.toLowerCase().trim() || undefined;
+    if (normalizedUsername) {
+      const usernameTaken = await this.prisma.user.findUnique({
+        where: { username: normalizedUsername },
+      });
+      // Caught here rather than left to the unique index, so the client gets a
+      // message about the field they can actually change.
+      if (usernameTaken) {
+        throw new BadRequestException(
+          'That username is already taken. Please choose another.',
+        );
+      }
+    }
+
     const hashed = await bcrypt.hash(dto.password, 12);
     const user = await this.prisma.user.create({
       data: {
         email: normalizedEmail,
         name: dto.name?.trim() ?? undefined,
+        username: normalizedUsername,
         firstName: dto.firstName.trim(),
         lastName: dto.lastName.trim(),
         companyName: optional(dto.companyName),
@@ -386,11 +403,27 @@ export class AuthService {
     });
     if (existing) throw new BadRequestException('Email already registered.');
 
+    // Lowercased so the login lookup is case-insensitive, and checked here so
+    // a clash reports the field the manager can actually change rather than
+    // surfacing as a raw unique-constraint error.
+    const normalizedUsername = dto.username?.toLowerCase().trim() || undefined;
+    if (normalizedUsername) {
+      const taken = await this.prisma.user.findUnique({
+        where: { username: normalizedUsername },
+      });
+      if (taken) {
+        throw new BadRequestException(
+          'That username is already taken. Please choose another.',
+        );
+      }
+    }
+
     const hashed = await bcrypt.hash(dto.password, 12);
     const user = await this.prisma.user.create({
       data: {
         email: normalizedEmail,
         name: dto.name?.trim() ?? undefined,
+        username: normalizedUsername,
         password: hashed,
         role: dto.role,
         emailVerified: false,
@@ -398,10 +431,16 @@ export class AuthService {
         // dropped, leaving a new staff member with no address on file.
         phoneNumber: dto.phoneNumber ?? dto.phone ?? undefined,
         streetAddress: dto.streetAddress ?? dto.address ?? undefined,
+        aptSuiteUnit: dto.aptSuiteUnit ?? undefined,
         city: dto.city ?? undefined,
         stateRegion: dto.stateRegion ?? undefined,
         zipCode: dto.zipCode ?? undefined,
         country: dto.country ?? undefined,
+        // Only an EMPLOYEE's access is picked per person. Every other role has
+        // its sections fixed, so anything sent for them is discarded here
+        // rather than stored and later mistaken for a grant.
+        dashboardSections:
+          dto.role === UserRole.EMPLOYEE ? (dto.dashboardSections ?? []) : [],
         employeeProfile: {
           create: {
             employeeId: `EMP-${Date.now()}`,
@@ -598,6 +637,10 @@ export class AuthService {
         isActive: false,
         email: `deleted-${userId}@deleted.invalid`,
         name: 'Deleted Client',
+        // Released alongside the email: both are sign-in identifiers, and a
+        // closed account holding either one hostage would block the same person
+        // from registering again.
+        username: null,
         firstName: null,
         lastName: null,
         middleInitial: null,
@@ -680,15 +723,33 @@ export class AuthService {
     return { message: 'Password updated.' };
   }
 
-  async login(email: string, password: string): Promise<AuthResponseDto> {
-    const normalizedEmail = email.toLowerCase().trim();
+  /**
+   * `identifier` is whatever was typed into the "Email / Username" box — the
+   * login form has offered both for a long time, but only the email was ever
+   * looked up. Both are stored lowercased, so one normalised comparison serves
+   * either and the match stays case-insensitive without a functional index.
+   */
+  async login(identifier: string, password: string): Promise<AuthResponseDto> {
+    const normalized = identifier.toLowerCase().trim();
 
-    const user = await this.prisma.user.findUnique({
-      where: { email: normalizedEmail },
+    const user = await this.prisma.user.findFirst({
+      where: {
+        OR: [{ email: normalized }, { username: normalized }],
+      },
     });
 
     if (!user) {
       throw new UnauthorizedException('Invalid credentials.');
+    }
+
+    // Checked here as well as in the JWT guard. Removing a member who has
+    // payroll history deactivates their account rather than deleting it, so
+    // this is now the ordinary way a former colleague is turned away — without
+    // it they sign in successfully and then 401 on every request that follows.
+    if (!user.isActive) {
+      throw new UnauthorizedException(
+        'This account has been deactivated. Contact an administrator.',
+      );
     }
 
     if (!user.emailVerified) {
@@ -746,6 +807,11 @@ export class AuthService {
         role: user.role,
         avatar: user.avatar || null,
         isEmailVerified: user.emailVerified,
+
+        // Drives which dashboard tabs the client renders for an EMPLOYEE. It
+        // has to ride along with the login response because the navbar decides
+        // what to show before any other request has been made.
+        dashboardSections: user.dashboardSections ?? [],
 
         // Profile details, including anything supplied at sign-up. The client
         // replaces its stored user with this payload on every login, so

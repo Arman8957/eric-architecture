@@ -60,8 +60,17 @@ export class TeamService {
             role: true,
           },
         },
+        // The team cards list the work each team is on, not just a count.
+        // Deleted requests are excluded so a card never advertises a project
+        // that no longer exists — and so the list agrees with `_count`, which
+        // is filtered the same way.
+        projects: {
+          where: { deletedAt: null },
+          select: { id: true, projectName: true, status: true },
+          orderBy: { createdAt: 'desc' },
+        },
         _count: {
-          select: { projects: true },
+          select: { projects: { where: { deletedAt: null } } },
         },
       },
     });

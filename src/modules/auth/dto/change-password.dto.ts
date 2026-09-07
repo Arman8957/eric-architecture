@@ -1,5 +1,5 @@
 // modules/auth/dto/change-password.dto.ts
-import { IsNotEmpty, IsString, MinLength } from 'class-validator';
+import { IsNotEmpty, IsString, Matches, MinLength } from 'class-validator';
 
 /**
  * Changing your own password while signed in. Unlike the reset flow this
@@ -12,7 +12,10 @@ export class ChangePasswordDto {
   @IsNotEmpty({ message: 'Your current password is required' })
   currentPassword!: string;
 
+  /** Chosen by the account's owner, so it carries the full rule. */
   @IsString()
   @MinLength(8, { message: 'Password must be at least 8 characters' })
+  @Matches(/[A-Z]/, { message: 'Password needs at least 1 capital letter' })
+  @Matches(/[0-9]/, { message: 'Password needs at least 1 number' })
   newPassword!: string;
 }

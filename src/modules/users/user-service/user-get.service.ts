@@ -5,10 +5,17 @@ import {
   ForbiddenException,
 } from '@nestjs/common';
 import * as bcrypt from 'bcrypt';
-import { Prisma, RequestStatus, User, UserRole } from '@prisma/client';
+import {
+  Prisma,
+  RequestStatus,
+  TimecardStatus,
+  User,
+  UserRole,
+} from '@prisma/client';
 import { FindAllOptions } from 'src/modules/auth/constant';
 import { PrismaService } from 'src/prisma/prisma.service';
 import { SafeUser } from '../types/user.type';
+import { DASHBOARD_SECTIONS } from 'src/modules/auth/dto/register-staff.dto';
 
 @Injectable()
 export class UsersGetService {
@@ -18,8 +25,12 @@ export class UsersGetService {
     id: true,
     email: true,
     name: true,
+    username: true,
     role: true,
     avatar: true,
+    // Which dashboard tabs an EMPLOYEE may open. Needed by the Edit Team
+    // Member form so the checkboxes come back ticked as they were saved.
+    dashboardSections: true,
     isActive: true,
     createdAt: true,
     lastLoginAt: true,
@@ -33,6 +44,7 @@ export class UsersGetService {
     companyName: true,
     bio: true,
     streetAddress: true,
+    aptSuiteUnit: true,
     city: true,
     stateRegion: true,
     zipCode: true,
@@ -128,6 +140,48 @@ export class UsersGetService {
   }
 
 
+  /**
+   * All-time utilization per person: approved billable hours over approved
+   * total hours.
+   *
+   * Only APPROVED cards count — a draft or a card still waiting on the
+   * accountant is not yet a fact about how the time was spent, and letting
+   * either in would move the number every time someone typed in a timesheet.
+   *
+   * This replaces `employeeProfile.utilizationRate`, a column nothing ever
+   * wrote to, which is why the column read 0% for everyone.
+   */
+  private async utilizationByUser(
+    userIds: string[],
+  ): Promise<Record<string, { billableHours: number; totalHours: number; rate: number }>> {
+    if (userIds.length === 0) return {};
+
+    const totals = await this.prisma.timecard.groupBy({
+      by: ['userId'],
+      where: { userId: { in: userIds }, status: TimecardStatus.APPROVED },
+      _sum: { billableHours: true, totalHours: true },
+    });
+
+    const byUser: Record<
+      string,
+      { billableHours: number; totalHours: number; rate: number }
+    > = {};
+
+    for (const row of totals) {
+      const billableHours = Number(row._sum.billableHours ?? 0);
+      const totalHours = Number(row._sum.totalHours ?? 0);
+      byUser[row.userId] = {
+        billableHours,
+        totalHours,
+        // No approved hours yet means no ratio to report — 0 here would read
+        // as "worked, billed nothing", which is a different thing.
+        rate: totalHours > 0 ? (billableHours / totalHours) * 100 : 0,
+      };
+    }
+
+    return byUser;
+  }
+
   async listUsers({ page, take, roleFilter, search, cursor }: FindAllOptions) {
     // Sanitize inputs
     const pageNum = Math.max(1, page);
@@ -157,7 +211,7 @@ export class UsersGetService {
       const total = await this.prisma.user.count({ where });
 
       return {
-        data: users,
+        data: await this.withUtilization(users),
         meta: {
           total,
           nextCursor:
@@ -180,7 +234,7 @@ export class UsersGetService {
     ]);
 
     return {
-      data: users,
+      data: await this.withUtilization(users),
       meta: {
         total,
         page: pageNum,
@@ -188,6 +242,19 @@ export class UsersGetService {
         pages: Math.ceil(total / limit),
       },
     };
+  }
+
+  /** Attach each person's all-time utilization to their row. */
+  private async withUtilization<T extends { id: string }>(users: T[]) {
+    const byUser = await this.utilizationByUser(users.map((u) => u.id));
+    return users.map((user) => ({
+      ...user,
+      utilization: byUser[user.id] ?? {
+        billableHours: 0,
+        totalHours: 0,
+        rate: 0,
+      },
+    }));
   }
 
   async findById(id: string): Promise<SafeUser> {
@@ -224,6 +291,46 @@ export class UsersGetService {
   async update(id: string, data: Prisma.UserUpdateInput) {
     const user = await this.prisma.user.findUnique({ where: { id } });
     if (!user) throw new NotFoundException('User not found');
+
+    // Usernames are a login identifier, so they are normalised the same way
+    // the signup paths do — stored lowercase, which is what makes the login
+    // lookup case-insensitive. An empty string clears it rather than trying to
+    // store "", which the unique index would treat as a real value and let
+    // only one account hold.
+    if (typeof data.username === 'string') {
+      const normalized = data.username.toLowerCase().trim();
+      data.username = normalized || null;
+
+      if (normalized) {
+        const taken = await this.prisma.user.findUnique({
+          where: { username: normalized },
+        });
+        // Caught here so the caller gets a message naming the field, rather
+        // than a raw unique-constraint error from Prisma.
+        if (taken && taken.id !== id) {
+          throw new BadRequestException(
+            'That username is already taken. Please choose another.',
+          );
+        }
+      }
+    }
+
+    // Per-member tab access only means anything for an EMPLOYEE; every other
+    // role's sections are fixed by the role. Promoting someone out of
+    // EMPLOYEE therefore clears the list, so it can't sit there stale and come
+    // back into effect if they are later moved back.
+    if ('dashboardSections' in data) {
+      const effectiveRole = (data.role as UserRole | undefined) ?? user.role;
+      const requested = Array.isArray(data.dashboardSections)
+        ? (data.dashboardSections as string[])
+        : [];
+      data.dashboardSections =
+        effectiveRole === UserRole.EMPLOYEE
+          ? requested.filter((s) => DASHBOARD_SECTIONS.includes(s as any))
+          : [];
+    } else if (data.role && data.role !== UserRole.EMPLOYEE) {
+      data.dashboardSections = [];
+    }
 
     return this.prisma.user.update({
       where: { id },
@@ -273,15 +380,21 @@ export class UsersGetService {
     const user = await this.prisma.user.findUnique({ where: { id } });
     if (!user) throw new NotFoundException('User not found');
 
-    // A project manager's projects must not disappear with them. Hand them back
-    // to the owner (super admin) for reassignment, and detach — never delete —
-    // their timecards so the hours they accrued stay on record against them
-    // rather than being absorbed into the owner's totals.
-    const reassignedTo = await this.prisma.user.findFirst({
-      where: { role: UserRole.SUPER_ADMIN, isActive: true, id: { not: id } },
+    // A project manager's projects must not disappear with them. They go back
+    // to the super admin doing the removal, so whoever pressed the button is
+    // the one holding them for reassignment. If some other role is removing
+    // the account, they fall to the firm's oldest active owner instead.
+    const actorIsOwner = await this.prisma.user.findFirst({
+      where: { id: actorId, role: UserRole.SUPER_ADMIN },
       select: { id: true },
-      orderBy: { createdAt: 'asc' },
     });
+    const reassignedTo =
+      actorIsOwner ??
+      (await this.prisma.user.findFirst({
+        where: { role: UserRole.SUPER_ADMIN, isActive: true, id: { not: id } },
+        select: { id: true },
+        orderBy: { createdAt: 'asc' },
+      }));
 
     const releasedProjects = await this.prisma.projectRequest.count({
       where: { assignedManagerId: id },
@@ -312,6 +425,30 @@ export class UsersGetService {
     if (user.role === UserRole.USER) {
       const result = await this.detachAndRemoveClient(id);
       return { ...result, releasedProjects };
+    }
+
+    // Timecards cascade from User, so a hard delete would take this person's
+    // whole payroll history with them and quietly change every figure the
+    // Financial Tracker adds up. Nothing can move a timecard off its owner —
+    // `userId` is what says whose hours these were — so an account with any
+    // payroll history is deactivated instead. The projects have already gone
+    // back to the owner above, so the member is out of the way either way.
+    const timecardCount = await this.prisma.timecard.count({
+      where: { userId: id },
+    });
+
+    if (timecardCount > 0) {
+      await this.prisma.user.update({
+        where: { id },
+        data: { isActive: false },
+      });
+      return {
+        success: true,
+        message: `${releasedProjects ? `${releasedProjects} project${releasedProjects === 1 ? '' : 's'} released for reassignment. ` : ''}This member has ${timecardCount} timecard${timecardCount === 1 ? '' : 's'} on record, so their account was deactivated rather than deleted — they can no longer sign in, and the Financial Tracker keeps their hours.`,
+        deactivated: true,
+        releasedProjects,
+        preservedTimecards: timecardCount,
+      };
     }
 
     try {

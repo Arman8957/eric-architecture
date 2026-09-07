@@ -11,6 +11,9 @@ export class AuthResponseDto {
     avatar?: string | null; // Optional for consistency
     isEmailVerified: boolean;
 
+    /** Dashboard tabs an EMPLOYEE may open; empty for every other role. */
+    dashboardSections?: string[];
+
     // Profile — the client stores this whole object and reads it back in
     // Profile Settings and when prefilling the New Project client step, so it
     // has to travel with the login/refresh response.

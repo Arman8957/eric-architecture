@@ -1,9 +1,17 @@
 // modules/auth/dto/login.dto.ts
-import { IsEmail, IsNotEmpty, IsString, MinLength } from 'class-validator';
+import { IsNotEmpty, IsString, MinLength } from 'class-validator';
 
 export class LoginDto {
-  @IsEmail({}, { message: 'Invalid email format' })
-  @IsNotEmpty({ message: 'Email is required' })
+  /**
+   * Email *or* username — whatever was typed into the "Email / Username" box.
+   *
+   * Deliberately not `@IsEmail()`: the service matches this against both
+   * columns, and validating it as an address rejected every username with
+   * "Invalid email format" before the lookup ever ran. Kept under the name
+   * `email` so the existing client payload keeps working.
+   */
+  @IsString()
+  @IsNotEmpty({ message: 'Email or username is required' })
   email!: string;
 
   @IsString()
