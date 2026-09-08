@@ -799,7 +799,14 @@ export class FinancialService {
     this.logger.debug('getActiveProjects called');
     const projects = await this.prisma.projectRequest.findMany({
       where: {
-        isArchived: false,
+        // Archiving hides a project from the working list, but a finished job
+        // is exactly what the Completed filter is for — archiving one used to
+        // drop it out of the financial record entirely. Archived projects that
+        // are *not* completed stay hidden, as before.
+        OR: [{ isArchived: false }, { status: 'COMPLETED' }],
+        // A deleted project is not part of the firm's book of work and must
+        // not be counted in the totals beside the filter.
+        deletedAt: null,
       },
       include: {
         proposals: {
@@ -1014,6 +1021,10 @@ export class FinancialService {
         title: true,
         projectName: true,
         totalAmount: true,
+        // Phase rows are priced from the service lines, which are net of tax.
+        // The valuation in the header is the tax-inclusive contract total, so
+        // without this the two disagree by exactly the tax and look wrong.
+        taxAmount: true,
         services: {
           select: { id: true, name: true, amount: true },
           orderBy: { order: 'asc' },
@@ -1053,18 +1064,30 @@ export class FinancialService {
       0,
     );
 
-    const amendmentDetails = amendmentProposals.map((ap) => ({
-      id: ap.id,
-      proposalNumber: ap.proposalNumber,
-      title: ap.title || ap.projectName,
-      amount: Number(ap.totalAmount || 0),
-      paid: paidAmendmentProposalIds.has(ap.id),
-      services: ap.services.map((s) => ({
-        id: s.id,
-        name: s.name,
-        amount: Number(s.amount || 0),
-      })),
-    }));
+    const amendmentDetails = amendmentProposals.map((ap) => {
+      const servicesSubtotal = ap.services.reduce(
+        (sum, s) => sum + Number(s.amount || 0),
+        0,
+      );
+      return {
+        id: ap.id,
+        proposalNumber: ap.proposalNumber,
+        title: ap.title || ap.projectName,
+        amount: Number(ap.totalAmount || 0),
+        // The service lines listed beside this amount are net of tax, so on a
+        // taxed amendment they never add up to it — three lines totalling
+        // $6,500 shown against "$7,020" reads as a mistake. Both parts travel
+        // now so the column can show its own subtotal and tax.
+        servicesSubtotal,
+        taxAmount: Number((ap as any).taxAmount || 0),
+        paid: paidAmendmentProposalIds.has(ap.id),
+        services: ap.services.map((s) => ({
+          id: s.id,
+          name: s.name,
+          amount: Number(s.amount || 0),
+        })),
+      };
+    });
 
     const grossOriginalCost = Number(proposal.totalAmount || 0);
     const grossProjectCost = grossOriginalCost + totalAmendmentAmount;
@@ -1278,24 +1301,102 @@ export class FinancialService {
     const amountBurned = burnedFee + totalOverheadBurned; // top "Amount Burned" card
 
     // ─── Phase profit tracking, grouped by contract ───
-    // A timesheet line belongs to a phase when it points at the phase's stage
-    // id, or (no stage id) names the phase on the right contract.
-    const phaseEntriesFor = (
-      entries: any[],
-      stage: any,
-      contractProposalId: string,
-      isOriginal: boolean,
-    ) =>
-      entries.filter((ent: any) => {
-        if (ent.stageId) return ent.stageId === stage.id;
-        const onThisContract = isOriginal
-          ? !ent.proposalId || ent.proposalId === contractProposalId
-          : ent.proposalId === contractProposalId;
-        return onThisContract && ent.phaseName === stage.name;
-      });
+    //
+    // Every timesheet line is assigned to exactly one phase, once, up front.
+    // The rows then read their entries out of that assignment.
+    //
+    // This replaces a per-row filter that asked each phase "is this line
+    // mine?" independently. Two things were wrong with that:
+    //
+    //  - An amendment phase demanded `ent.proposalId === contractProposalId`.
+    //    Timesheet lines written before the form recorded a contract have a
+    //    null proposalId, so that test was false for every one of them and
+    //    hours booked to an amendment phase could never appear in its row —
+    //    they showed only in the Grand Total.
+    //  - Nothing stopped two phases claiming the same line, so a name shared
+    //    by the original contract and an amendment could double count.
+    //
+    // Resolving centrally fixes both: a line lands in one row or in none, and
+    // what lands nowhere is reported rather than quietly dropped.
+    const buildEntryAssignment = (entries: any[], allStages: any[]) => {
+      const stageById = new Map(allStages.map((s) => [s.stage.id, s]));
+
+      // Name lookup, original contract first so a name shared with an
+      // amendment resolves to the original — the same precedence the old
+      // `!ent.proposalId` test gave it.
+      const byName = new Map<string, any[]>();
+      for (const s of allStages) {
+        const key = String(s.stage.name || '').trim().toLowerCase();
+        if (!byName.has(key)) byName.set(key, []);
+        byName.get(key)!.push(s);
+      }
+      for (const list of byName.values()) {
+        list.sort((a, b) => Number(a.isAmendment) - Number(b.isAmendment));
+      }
+
+      const assignment = new Map<string, string>(); // entry id -> stage id
+      const unassigned: any[] = [];
+
+      for (const ent of entries) {
+        // 1. An explicit stage id is definitive.
+        if (ent.stageId && stageById.has(ent.stageId)) {
+          assignment.set(ent.id, ent.stageId);
+          continue;
+        }
+
+        const candidates =
+          byName.get(String(ent.phaseName || '').trim().toLowerCase()) || [];
+        if (candidates.length === 0) {
+          // No phase of that name on any accepted contract — usually a phase
+          // that was renamed or removed after the time was logged.
+          unassigned.push(ent);
+          continue;
+        }
+
+        // 2. A contract id narrows a shared name to the right contract.
+        const onContract = ent.proposalId
+          ? candidates.find((c) => c.contractProposalId === ent.proposalId)
+          : undefined;
+
+        // 3. Otherwise take the first candidate — original before amendment.
+        const chosen = onContract ?? candidates[0];
+        assignment.set(ent.id, chosen.stage.id);
+      }
+
+      return { assignment, unassigned };
+    };
 
     const hoursOf = (entries: any[]) =>
       entries.reduce((sum, e: any) => sum + Number(e.totalHours || 0), 0);
+
+    // Every stage across every accepted contract, tagged with the contract it
+    // belongs to — the input the assignment above resolves names against.
+    const allStageRefs = [
+      ...(proposal.projectStages || []).map((stage: any) => ({
+        stage,
+        contractProposalId: proposal.id,
+        isAmendment: false,
+      })),
+      ...(amendmentProposals as any[]).flatMap((ap: any) =>
+        (ap.projectStages || []).map((stage: any) => ({
+          stage,
+          contractProposalId: ap.id,
+          isAmendment: true,
+        })),
+      ),
+    ];
+
+    const billableAssignment = buildEntryAssignment(billableEntries, allStageRefs);
+    const nonBillableAssignment = buildEntryAssignment(
+      projNonBillableEntries,
+      allStageRefs,
+    );
+
+    const entriesForStage = (
+      entries: any[],
+      assignment: Map<string, string>,
+      stageId: string,
+    ) => entries.filter((ent: any) => assignment.get(ent.id) === stageId);
 
     const buildPhaseGroup = (
       stages: any[],
@@ -1310,8 +1411,16 @@ export class FinancialService {
         .map((stage: any) => {
           const svc = (services || []).find((s: any) => s.name === stage.name);
           const price = svc ? Number(svc.amount || 0) : 0;
-          const phaseBillable = phaseEntriesFor(billableEntries, stage, contractProposalId, !isAmendment);
-          const phaseNonBillable = phaseEntriesFor(projNonBillableEntries, stage, contractProposalId, !isAmendment);
+          const phaseBillable = entriesForStage(
+            billableEntries,
+            billableAssignment.assignment,
+            stage.id,
+          );
+          const phaseNonBillable = entriesForStage(
+            projNonBillableEntries,
+            nonBillableAssignment.assignment,
+            stage.id,
+          );
           const billableHours = hoursOf(phaseBillable);
           const nonBillableHours = hoursOf(phaseNonBillable);
           const laborBurned = burnOf(phaseBillable);
@@ -1366,14 +1475,81 @@ export class FinancialService {
     }
     const phases = [...originalPhaseRows, ...amendmentPhaseRows];
 
+    // ─── Time that belongs to no phase on the contract ───
+    //
+    // Hours logged against a phase that was later renamed or removed have
+    // nowhere to go. They are real hours and they are already in the Grand
+    // Total, so reporting them as their own row is what makes the columns add
+    // up; leaving them out is what made the table look wrong.
+    const unassignedBillable = billableAssignment.unassigned;
+    const unassignedNonBillable = nonBillableAssignment.unassigned;
+    const unassignedBillableHours = hoursOf(unassignedBillable);
+    const unassignedNonBillableHours = hoursOf(unassignedNonBillable);
+    const unassignedLaborBurned = burnOf(unassignedBillable);
+    const unassignedOverheadBurned = burnOf(unassignedNonBillable);
+
+    // The distinct phase names behind it, so the row can say what they were.
+    const unassignedPhaseNames = Array.from(
+      new Set(
+        [...unassignedBillable, ...unassignedNonBillable]
+          .map((e: any) => (e.phaseName || '').trim())
+          .filter(Boolean),
+      ),
+    );
+
+    const unassignedRow =
+      unassignedBillableHours > 0 || unassignedNonBillableHours > 0
+        ? {
+            id: '__unassigned__',
+            name: 'Unassigned time',
+            // Named rather than blamed: the phase existed when the hours were
+            // logged, it just isn't on the contract now.
+            note: unassignedPhaseNames.length
+              ? `Logged against ${unassignedPhaseNames.join(', ')} — no longer on this contract`
+              : 'No phase recorded on the timesheet line',
+            contractLabel: 'Unassigned',
+            isAmendment: false,
+            isUnassigned: true,
+            price: 0,
+            accumulatedTime: 0,
+            billableHours: unassignedBillableHours,
+            nonBillableHours: unassignedNonBillableHours,
+            laborBurned: unassignedLaborBurned,
+            overheadBurned: unassignedOverheadBurned,
+            profit: -(unassignedLaborBurned + unassignedOverheadBurned),
+            profitMargin: 0,
+            status: null,
+            progress: 0,
+            assignedTo: null,
+            actualHours: unassignedBillableHours,
+            burned: unassignedLaborBurned,
+            overhead: unassignedOverheadBurned,
+            laborCost: unassignedLaborBurned,
+          }
+        : null;
+
     const sumBy = (arr: any[], key: string) =>
       arr.reduce((s, x) => s + (Number(x[key]) || 0), 0);
 
-    // The Grand Total is the authoritative row: it uses the project-wide hour
-    // totals (which always reconcile with the Direct Labor Breakdown), not the
-    // per-phase sums, which fall short when a timesheet line never named a
-    // phase. Its original/amendment split comes from the same entry-level
-    // contract tag the labor breakdown uses.
+    // ─── Fee columns vs the header valuation ───
+    //
+    // A phase row is priced from its service line, which is net of tax, while
+    // the valuation at the top of the card is the tax-inclusive contract total
+    // less refunds. Both are right; they simply measure different things, and
+    // the card never said so — a $6,500 amendment reading "+$7,020" up top
+    // looks like an arithmetic error. These carry the difference so the table
+    // can show its own reconciliation.
+    const contractTaxAmount =
+      Number((proposal as any).taxAmount || 0) +
+      (amendmentProposals as any[]).reduce(
+        (sum, ap: any) => sum + Number(ap.taxAmount || 0),
+        0,
+      );
+
+    // The Grand Total's hour and burn columns are the project-wide totals,
+    // which reconcile with the Direct Labor Breakdown. They now also equal the
+    // sum of the rows, because time that matches no phase gets its own row
+    // above rather than being dropped.
     const grandPrice = sumBy(phases, 'price'); // every phase, original + amendments
     const grandLaborBurned = burnedFee; // totalProjectBillableHours × firmRate
     const grandOverheadBurned = totalOverheadBurned; // totalProjectNonBillableHours × firmRate
@@ -1483,6 +1659,17 @@ export class FinancialService {
       profitMargin: projectCost > 0 ? (profit / projectCost) * 100 : 0,
 
       phases,
+      // Rendered as its own row under the phases, so the hour and burn columns
+      // visibly add up to the Grand Total. Null when everything matched.
+      unassignedPhaseRow: unassignedRow,
+      // What separates the fee column from the valuation in the header:
+      //   sum of phase fees + contract tax − approved refunds = net valuation
+      feeReconciliation: {
+        phaseFeeTotal: grandPrice,
+        contractTaxAmount,
+        approvedRefunds: totalProjectRefunds,
+        netValuation: grandPrice + contractTaxAmount - totalProjectRefunds,
+      },
       grandTotals,
       employees,
       laborBreakdownTotals,

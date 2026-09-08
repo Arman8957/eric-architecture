@@ -139,7 +139,9 @@ export class AuthController {
   @HttpCode(HttpStatus.OK)
   async resendClaim(@Body('email') email: string) {
     const result = await this.authService.resendClaimByEmail(email);
-    return { success: true, message: result.message };
+    // `status` travels too, so the client can tell "sent" from "you already
+    // have an account" rather than showing one success toast for both.
+    return { success: true, status: result.status, message: result.message };
   }
 
   @Post('resend-verification')

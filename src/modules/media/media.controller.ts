@@ -27,6 +27,7 @@ import {
   CreateMediaContentDto,
 } from './dto/create-media-content.dto';
 import { UpdateMediaContentDto } from './dto/update-media-content.dto';
+import { UpdateMediaAssetDto } from './dto/update-media-asset.dto';
 import { MediaQueryDto } from './dto/media-query.dto';
 import { CurrentUser } from 'src/common/decorators/current-user.decorator';
 import * as client from '@prisma/client';
@@ -250,6 +251,39 @@ export class MediaController {
       }
       throw new HttpException(
         { status: 'error', message: 'Failed to update media content' },
+        HttpStatus.INTERNAL_SERVER_ERROR,
+      );
+    }
+  }
+
+  @Patch(':id/assets/:assetId')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(...MediaRoles)
+  async updateAsset(
+    @Param('id') id: string,
+    @Param('assetId') assetId: string,
+    @Body() dto: UpdateMediaAssetDto,
+    @CurrentUser() user: client.User,
+  ) {
+    try {
+      const updated = await this.mediaService.updateAsset(
+        id,
+        assetId,
+        dto,
+        user.id,
+        user.role,
+      );
+
+      return {
+        status: 'success',
+        message: 'Image updated successfully',
+        data: updated,
+      };
+    } catch (error) {
+      if (error instanceof HttpException) throw error;
+
+      throw new HttpException(
+        { status: 'error', message: 'Failed to update image' },
         HttpStatus.INTERNAL_SERVER_ERROR,
       );
     }

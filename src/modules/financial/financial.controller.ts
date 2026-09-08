@@ -17,7 +17,9 @@ import { FinancialService } from './financial.service';
 import { MercuryService } from './mercury.service';
 import { JwtAuthGuard } from '../../common/guards/auth.guard';
 import { RolesGuard } from '../../common/guards/roles.guard';
+import { SectionGuard } from '../../common/guards/section.guard';
 import { Roles } from '../../common/decorators/roles.decorator';
+import { Section } from '../../common/decorators/section.decorator';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import * as client from '@prisma/client';
 import { CreateOverheadExpenseDto, UpdateOverheadExpenseDto } from './dto/overhead-expense.dto';
@@ -89,9 +91,13 @@ export class FinancialController {
   // FINANCIAL OVERVIEW
   // ═══════════════════════════════════════════════════
 
+  // Reading the firm's figures is open to an employee who has been given the
+  // financials area; changing any of them is not — every write below still
+  // admits only SUPER_ADMIN, ADMIN and FINANCE.
   @Get('overview')
-  @UseGuards(RolesGuard)
-  @Roles(client.UserRole.SUPER_ADMIN, client.UserRole.ADMIN, client.UserRole.FINANCE)
+  @UseGuards(RolesGuard, SectionGuard)
+  @Roles(client.UserRole.SUPER_ADMIN, client.UserRole.ADMIN, client.UserRole.FINANCE, client.UserRole.EMPLOYEE)
+  @Section('financials')
   async getFinancialOverview(
     @Query('scope') scope?: 'all' | 'year',
     @Query('year') year?: string,
@@ -158,8 +164,9 @@ export class FinancialController {
   }
 
   @Get('timecards/all')
-  @UseGuards(RolesGuard)
-  @Roles(client.UserRole.SUPER_ADMIN, client.UserRole.ADMIN, client.UserRole.FINANCE)
+  @UseGuards(RolesGuard, SectionGuard)
+  @Roles(client.UserRole.SUPER_ADMIN, client.UserRole.ADMIN, client.UserRole.FINANCE, client.UserRole.EMPLOYEE)
+  @Section('financials')
   async getAllTimecards(
     @Query('status') status?: client.TimecardStatus,
     @Query('includeArchived') includeArchived?: string,
@@ -217,8 +224,9 @@ export class FinancialController {
   // ═══════════════════════════════════════════════════
 
   @Get('timecards/pay-period')
-  @UseGuards(RolesGuard)
-  @Roles(client.UserRole.SUPER_ADMIN, client.UserRole.ADMIN, client.UserRole.FINANCE)
+  @UseGuards(RolesGuard, SectionGuard)
+  @Roles(client.UserRole.SUPER_ADMIN, client.UserRole.ADMIN, client.UserRole.FINANCE, client.UserRole.EMPLOYEE)
+  @Section('financials')
   async getTimecardsByPayPeriod(
     @Query('year') year: string,
     @Query('period') period: string,
@@ -231,8 +239,9 @@ export class FinancialController {
   }
 
   @Get('timecards/pending')
-  @UseGuards(RolesGuard)
-  @Roles(client.UserRole.SUPER_ADMIN, client.UserRole.ADMIN, client.UserRole.FINANCE)
+  @UseGuards(RolesGuard, SectionGuard)
+  @Roles(client.UserRole.SUPER_ADMIN, client.UserRole.ADMIN, client.UserRole.FINANCE, client.UserRole.EMPLOYEE)
+  @Section('financials')
   async getPendingTimecards() {
     const timecards = await this.financialService.getPendingTimecards();
     return { success: true, data: timecards };
@@ -340,8 +349,9 @@ export class FinancialController {
   }
 
   @Get('archived-summary')
-  @UseGuards(RolesGuard)
-  @Roles(client.UserRole.SUPER_ADMIN, client.UserRole.ADMIN, client.UserRole.FINANCE)
+  @UseGuards(RolesGuard, SectionGuard)
+  @Roles(client.UserRole.SUPER_ADMIN, client.UserRole.ADMIN, client.UserRole.FINANCE, client.UserRole.EMPLOYEE)
+  @Section('financials')
   async getArchivedSummary() {
     const summary = await this.financialService.getArchivedProjectsSummary();
     return { success: true, data: summary };

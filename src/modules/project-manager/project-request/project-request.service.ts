@@ -75,6 +75,41 @@ const zonedDateKey = (date: Date, timeZone: string): string =>
     day: '2-digit',
   }).format(date);
 
+const WEEKDAY_INDEX: Record<string, number> = {
+  Sun: 0,
+  Mon: 1,
+  Tue: 2,
+  Wed: 3,
+  Thu: 4,
+  Fri: 5,
+  Sat: 6,
+};
+
+/**
+ * Day of week for `date` read in `timeZone`, 0 = Sunday … 6 = Saturday.
+ *
+ * Read in the studio's zone for the same reason the clock is: an instant that
+ * is Friday evening in California is already Saturday in Dhaka, and the open
+ * days are the studio's days.
+ */
+const zonedWeekday = (date: Date, timeZone: string): number => {
+  const short = new Intl.DateTimeFormat('en-US', {
+    timeZone,
+    weekday: 'short',
+  }).format(date);
+  return WEEKDAY_INDEX[short] ?? date.getDay();
+};
+
+const WEEKDAY_NAMES = [
+  'Sunday',
+  'Monday',
+  'Tuesday',
+  'Wednesday',
+  'Thursday',
+  'Friday',
+  'Saturday',
+];
+
 @Injectable()
 export class ProjectRequestService {
   private readonly logger = new Logger(ProjectRequestService.name);
@@ -113,6 +148,25 @@ export class ProjectRequestService {
 
   private isAdminOrManager(user: User): boolean {
     return user.role === UserRole.SUPER_ADMIN || user.role === UserRole.ADMIN || user.role === UserRole.PROJECT_MANAGER;
+  }
+
+  /**
+   * Staff who may read the whole pipeline but write none of it.
+   *
+   * These accounts are read-only, not restricted: the dashboard hides every
+   * control that writes, and the write endpoints here refuse them by role
+   * regardless. So there is nothing to protect by narrowing what they can
+   * *see*, and narrowing it was actively wrong — the list and its counts were
+   * filtered to projects whose team the user belonged to, which meant a newly
+   * created employee, who is on no team yet, opened the Studio tab to zeros
+   * across the board.
+   *
+   * Team membership answers "which of these are mine", which is what the Your
+   * Projects row is for. It is not what decides whether the firm's pipeline is
+   * visible at all.
+   */
+  private isReadOnlyStaff(user: User): boolean {
+    return user.role === UserRole.DRAFTER || user.role === UserRole.EMPLOYEE;
   }
 
 
@@ -158,12 +212,10 @@ export class ProjectRequestService {
       { OR: [{ inquiryStatus: null }, { NOT: { inquiryStatus: 'DECLINED' } }] },
     ];
 
-    // If staff (Drafter/Employee), only show projects assigned to their teams
-    if (isStaff && !this.isAdminOrManager(user)) {
-      conditions.push({
-        teams: { some: { members: { some: { id: user.id } } } }
-      });
-    }
+    // Drafters and employees see the whole pipeline, same as a manager does.
+    // This used to be narrowed to `teams.some(members.some(id === user.id))`,
+    // which left anyone not yet on a team with an empty Studio tab — see
+    // isReadOnlyStaff. Their restriction is that they cannot change any of it.
 
     if (query.archivedOnly) {
       conditions.push({ isArchived: true });
@@ -301,6 +353,9 @@ export class ProjectRequestService {
             name: true,
             email: true,
             avatar: true,
+            // The client's project view lists their manager's contact details;
+            // without this the phone row could never render.
+            phoneNumber: true,
           },
         },
         teams: {
@@ -329,6 +384,12 @@ export class ProjectRequestService {
             credits: true,
             projectStages: {
               orderBy: { order: 'asc' },
+            },
+            // The project manager who drew the contract up. The client's
+            // Proposal Details modal has always had a "Created By" section but
+            // this was never selected, so it read N/A for every proposal.
+            createdBy: {
+              select: { id: true, name: true, email: true },
             },
           },
         },
@@ -361,7 +422,15 @@ export class ProjectRequestService {
       team.members?.some(member => member.id === user.id)
     );
 
-    if (!this.canManageRequests(user) && request.userId !== user.id && !isTeamMember) {
+    // Read-only staff are allowed in without being on the team — the list they
+    // reached this from shows the whole pipeline, so refusing the detail would
+    // leave every row a dead end.
+    if (
+      !this.canManageRequests(user) &&
+      !this.isReadOnlyStaff(user) &&
+      request.userId !== user.id &&
+      !isTeamMember
+    ) {
       throw new ForbiddenException('Access denied');
     }
 
@@ -390,9 +459,9 @@ export class ProjectRequestService {
       // Declined account-less inquiries are out of the pipeline.
       OR: [{ inquiryStatus: null }, { NOT: { inquiryStatus: 'DECLINED' } }],
     };
-    if (isStaff && !canManage) {
-      baseGlobal.teams = { some: { members: { some: { id: user.id } } } };
-    }
+    // No team narrowing here either: "Firm Projects" means the firm's, and it
+    // has to agree with the list and tabs below it, which no longer narrow.
+    // Only the Your Projects row further down is scoped to the viewer.
 
     const [pipelineCounts, activeCount, doneCount] = await Promise.all([
       this.prisma.projectRequest.groupBy({
@@ -427,7 +496,7 @@ export class ProjectRequestService {
     ]);
 
     const globalStats = {
-      total: activeCount + doneCount,
+      total: 0,
       inquiry: 0,
       bidding: 0,
       active: activeCount,
@@ -445,6 +514,18 @@ export class ProjectRequestService {
         globalStats.bidding += count;
       }
     });
+
+    // Summed after the loop, and over all four buckets.
+    //
+    // This was `activeCount + doneCount`, computed before inquiry and bidding
+    // had been counted at all — so the Total card left out every project still
+    // in the pipeline and read far lower than the four cards beside it and the
+    // "All (n)" tab under them, which cover the same population.
+    globalStats.total =
+      globalStats.inquiry +
+      globalStats.bidding +
+      globalStats.active +
+      globalStats.done;
 
     // 2. Assigned Stats - For "only assigned projects' stat"
     const assignedWhere: Prisma.ProjectRequestWhereInput = {
@@ -3082,6 +3163,20 @@ export class ProjectRequestService {
     const sameDay =
       zonedDateKey(start, STUDIO_TIME_ZONE) ===
       zonedDateKey(end, STUDIO_TIME_ZONE);
+
+    // The studio's weekday, not the client's — a Saturday morning in Dhaka is
+    // still Friday in California, and it is the studio's week that is open or
+    // closed. An empty list would mean nothing is ever bookable, so it is
+    // treated as unset rather than as a firm-wide shutdown.
+    const openDays = hours.days?.length ? hours.days : null;
+    const weekday = zonedWeekday(start, STUDIO_TIME_ZONE);
+
+    if (openDays && !openDays.includes(weekday)) {
+      const openNames = openDays.map((d) => WEEKDAY_NAMES[d]).join(', ');
+      throw new BadRequestException(
+        `The office is closed on ${WEEKDAY_NAMES[weekday]}. Meetings can be booked on: ${openNames}.`,
+      );
+    }
 
     if (
       !sameDay ||

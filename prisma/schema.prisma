@@ -503,6 +503,13 @@ model MediaAsset {
   blurHash String?
   sizes    Json? // {thumbnail, medium, large}
 
+  // Which part of the photo to show when the frame it has to fill is a
+  // different shape from the photo itself. Two rectangles, because a hero is
+  // wide on a desktop and tall on a phone and one rectangle cannot serve both:
+  // {wide?: {x, y, width, height}, tall?: {...}}, each 0..1 of the original.
+  // Null, or a missing side, leaves that shape to the client's automatic fit.
+  crop Json?
+
   // Video specific
   streamingUrl String?
   duration     Int?

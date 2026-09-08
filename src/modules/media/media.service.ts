@@ -8,6 +8,7 @@ import {
 import {
   MediaContentType,
   MediaStatus,
+  Prisma,
   UserRole,
   AssetType,
   ProjectCategory,
@@ -20,6 +21,11 @@ import {
   CreateMediaContentDto,
 } from './dto/create-media-content.dto';
 import { UpdateMediaContentDto } from './dto/update-media-content.dto';
+import {
+  AssetCropDto,
+  CropRectDto,
+  UpdateMediaAssetDto,
+} from './dto/update-media-asset.dto';
 
 @Injectable()
 export class MediaService {
@@ -164,6 +170,95 @@ export class MediaService {
             ? JSON.stringify(dto.coordinates)
             : undefined,
       },
+    });
+  }
+
+  /**
+   * Pins a crop rectangle inside the picture and trims it to a sane precision.
+   *
+   * The editor sends what a pointer produced, so a corner can land a hair
+   * outside the frame or carry fifteen decimal places of float noise. Both end
+   * up in a delivery URL, where a stray digit is a cache miss and an
+   * out-of-range value is an error from the CDN — so they are dealt with here,
+   * once, rather than trusted from the client.
+   */
+  private normalizeCropRect(rect: CropRectDto) {
+    const round = (value: number) => Math.round(value * 10000) / 10000;
+
+    // Never the full extent: Cloudinary reads 1.0 as one pixel, not 100%.
+    const width = Math.min(Math.max(rect.width, 0.01), 0.9999);
+    const height = Math.min(Math.max(rect.height, 0.01), 0.9999);
+    const x = Math.min(Math.max(rect.x, 0), 1 - width);
+    const y = Math.min(Math.max(rect.y, 0), 1 - height);
+
+    return {
+      x: round(x),
+      y: round(y),
+      width: round(width),
+      height: round(height),
+    };
+  }
+
+  /** Drops a side that was sent empty, so `{}` is stored as no crop at all. */
+  private normalizeCrop(crop: AssetCropDto): Prisma.InputJsonValue | null {
+    const normalized: Record<string, ReturnType<typeof this.normalizeCropRect>> =
+      {};
+
+    if (crop.wide) normalized.wide = this.normalizeCropRect(crop.wide);
+    if (crop.tall) normalized.tall = this.normalizeCropRect(crop.tall);
+
+    return Object.keys(normalized).length > 0 ? normalized : null;
+  }
+
+  /**
+   * Edit one image's presentation without re-uploading it. Only the crop and
+   * the alt text: the file itself is immutable once Cloudinary has it.
+   */
+  async updateAsset(
+    mediaId: string,
+    assetId: string,
+    dto: UpdateMediaAssetDto,
+    userId: string,
+    userRole: UserRole,
+  ) {
+    const media = await this.prisma.mediaContent.findUnique({
+      where: { id: mediaId },
+      select: { id: true, createdById: true },
+    });
+
+    if (!media) throw new NotFoundException('Media content not found');
+
+    if (!this.allowedMediaRoles.has(userRole) && media.createdById !== userId) {
+      throw new ForbiddenException('Not authorized to edit this media');
+    }
+
+    const asset = await this.prisma.mediaAsset.findUnique({
+      where: { id: assetId },
+      select: { id: true, mediaContentId: true },
+    });
+
+    if (!asset || asset.mediaContentId !== mediaId) {
+      throw new NotFoundException('Asset not found on this media item');
+    }
+
+    const data: Prisma.MediaAssetUpdateInput = {};
+
+    // Absent means "leave it alone"; null means "clear it". A JSON column needs
+    // DbNull to reach SQL NULL — a bare null would be the JSON literal.
+    if (dto.crop !== undefined) {
+      const crop = dto.crop === null ? null : this.normalizeCrop(dto.crop);
+      data.crop = crop ?? Prisma.DbNull;
+    }
+
+    if (dto.altText !== undefined) data.altText = dto.altText;
+
+    if (Object.keys(data).length === 0) {
+      throw new BadRequestException('Nothing to update');
+    }
+
+    return this.prisma.mediaAsset.update({
+      where: { id: assetId },
+      data,
     });
   }
 
@@ -478,6 +573,7 @@ export class MediaService {
               cdnUrl: true,
               width: true,
               height: true,
+              crop: true,
             },
           },
           tags: {
@@ -753,6 +849,7 @@ export class MediaService {
               cdnUrl: true,
               width: true,
               height: true,
+              crop: true,
             },
           },
           tags: {

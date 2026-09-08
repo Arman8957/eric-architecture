@@ -3,10 +3,15 @@ import {
   Get,
   Patch,
   Body,
+  Query,
   UseGuards,
   BadRequestException,
 } from '@nestjs/common';
-import { SiteSettingsService, parseTimeToMinutes } from './site-settings.service';
+import {
+  SiteSettingsService,
+  parseTimeToMinutes,
+  normaliseWeekdays,
+} from './site-settings.service';
 import { JwtAuthGuard } from 'src/common/guards/auth.guard';
 import { RolesGuard } from 'src/common/guards/roles.guard';
 import { Roles } from 'src/common/decorators/roles.decorator';
@@ -51,12 +56,41 @@ export class SiteSettingsController {
     return { success: true, data: hours };
   }
 
+  /**
+   * Time off and confirmed meetings on the consultation calendar, so the New
+   * Project wizard can grey those days out. Public for the same reason office
+   * hours are — the wizard runs before sign-up — and returns only start/end,
+   * never a title or a client name.
+   */
+  @Get('consultation-availability')
+  async getConsultationAvailability(
+    @Query('from') from: string,
+    @Query('to') to: string,
+  ) {
+    const fromDate = new Date(from);
+    const toDate = new Date(to);
+
+    if (Number.isNaN(fromDate.getTime()) || Number.isNaN(toDate.getTime())) {
+      throw new BadRequestException('from and to must be ISO date strings');
+    }
+    if (toDate <= fromDate) {
+      throw new BadRequestException('to must be after from');
+    }
+
+    const busy = await this.siteSettingsService.getConsultationBusy(
+      fromDate,
+      toDate,
+    );
+    return { success: true, data: busy };
+  }
+
   @Patch('office-hours')
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles(client.UserRole.SUPER_ADMIN)
   async updateOfficeHours(
     @Body('start') start: string,
     @Body('end') end: string,
+    @Body('days') days?: unknown,
   ) {
     const startMinutes = parseTimeToMinutes(start);
     const endMinutes = parseTimeToMinutes(end);
@@ -71,7 +105,30 @@ export class SiteSettingsController {
       throw new BadRequestException('Office hours must end after they start');
     }
 
-    const hours = await this.siteSettingsService.setOfficeHours({ start, end });
+    // Sent as 0 (Sunday) through 6 (Saturday). Anything outside that is
+    // dropped rather than stored, so a bad value can't quietly close a day.
+    if (days !== undefined && !Array.isArray(days)) {
+      throw new BadRequestException(
+        'days must be an array of weekday numbers, 0 (Sunday) to 6 (Saturday)',
+      );
+    }
+
+    const normalisedDays = normaliseWeekdays(days);
+
+    // Saving with nothing ticked would take the calendar offline entirely and
+    // read, to a client, as though booking were broken. Refused here so the
+    // mistake surfaces at the point it is made.
+    if (normalisedDays.length === 0) {
+      throw new BadRequestException(
+        'Pick at least one day the office is open, otherwise no meeting can ever be booked',
+      );
+    }
+
+    const hours = await this.siteSettingsService.setOfficeHours({
+      start,
+      end,
+      days: normalisedDays,
+    });
     return { success: true, data: hours };
   }
 

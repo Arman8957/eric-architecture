@@ -31,6 +31,7 @@ export class JwtStrategy extends PassportStrategy(Strategy, 'jwt') {
         avatar: true,
         emailVerified: true,
         isActive: true,
+        dashboardSections: true,
       },
     });
 
@@ -54,6 +55,10 @@ export class JwtStrategy extends PassportStrategy(Strategy, 'jwt') {
       avatar: user.avatar,
       isEmailVerified: user.emailVerified,
       isActive: user.isActive,
+      // Read fresh on every request rather than baked into the token, so
+      // revoking an employee's section takes effect immediately instead of
+      // waiting for their access token to expire.
+      dashboardSections: user.dashboardSections,
     };
   }
 }

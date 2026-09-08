@@ -24,6 +24,7 @@ import { FindAllOptions } from './constant';
 import {
   hashClaimToken,
   issueClaimToken,
+  CLAIM_TOKEN_TTL_DAYS,
 } from 'src/common/claim-token.util';
 
 @Injectable()
@@ -328,11 +329,28 @@ export class AuthService {
    * inquiry on this email and re-send the invite. Response is intentionally
    * generic so this cannot be used to probe for accepted inquiries.
    */
+  /**
+   * Issue a fresh signup link for an accepted inquiry and email it out.
+   *
+   * The outcome is reported honestly. This used to answer "if an accepted
+   * inquiry exists, a link has been sent" in every case — including when the
+   * lookup found nothing, and including when the mail send threw, which was
+   * caught and swallowed. A client clicking "Send me a new link" therefore saw
+   * success whatever happened, and had no way to tell that no email was coming.
+   *
+   * The one case still answered vaguely is an address with no accepted
+   * inquiry: saying so plainly would turn this public endpoint into a way to
+   * test whether a given person is a client of the firm.
+   */
   async resendClaimByEmail(email: string) {
     const genericMessage =
-      'If an accepted inquiry exists for that email, a new signup link has been sent.';
+      'If an accepted inquiry exists for that email, a new signup link has been sent. Check your inbox and spam folder.';
     const normalizedEmail = (email || '').toLowerCase().trim();
-    if (!normalizedEmail) return { message: genericMessage };
+    if (!normalizedEmail) {
+      throw new BadRequestException(
+        'Enter the email address your inquiry was submitted with.',
+      );
+    }
 
     const request = await this.prisma.projectRequest.findFirst({
       where: {
@@ -342,18 +360,33 @@ export class AuthService {
       },
       orderBy: { inquiryDecidedAt: 'desc' },
     });
-    if (!request) return { message: genericMessage };
+
+    if (!request) {
+      // An inquiry that has already been claimed is a different situation, and
+      // one worth naming: the reader has an account and needs to sign in, not
+      // sign up. Telling them that is not a disclosure — they are the account
+      // holder, and the login page would tell them the same thing.
+      const alreadyClaimed = await this.prisma.projectRequest.findFirst({
+        where: {
+          email: normalizedEmail,
+          inquiryStatus: 'CONVERTED',
+          deletedAt: null,
+        },
+        select: { id: true },
+      });
+
+      if (alreadyClaimed) {
+        return {
+          status: 'ALREADY_REGISTERED' as const,
+          message:
+            'That email already has an account. Sign in instead — or use "Forgot password" if you cannot get in.',
+        };
+      }
+
+      return { status: 'NOT_FOUND' as const, message: genericMessage };
+    }
 
     const { raw, hash, expiresAt } = issueClaimToken();
-    await this.prisma.projectRequest.update({
-      where: { id: request.id },
-      data: {
-        claimTokenHash: hash,
-        claimTokenExpiresAt: expiresAt,
-        claimInviteSentAt: new Date(),
-        claimInviteCount: { increment: 1 },
-      },
-    });
 
     try {
       await this.mailer.sendInquiryAccepted(
@@ -366,9 +399,29 @@ export class AuthService {
         `Failed to resend claim link to ${normalizedEmail}`,
         err,
       );
+      // Surfaced rather than swallowed, and the old token is left in place —
+      // rotating it on a failed send would invalidate a link the client may
+      // still be holding, leaving them worse off than before they asked.
+      throw new BadRequestException(
+        'We could not send the email just now. Please try again in a moment, or contact us.',
+      );
     }
 
-    return { message: genericMessage };
+    // Only once the mail is away: the new token is the one in that message.
+    await this.prisma.projectRequest.update({
+      where: { id: request.id },
+      data: {
+        claimTokenHash: hash,
+        claimTokenExpiresAt: expiresAt,
+        claimInviteSentAt: new Date(),
+        claimInviteCount: { increment: 1 },
+      },
+    });
+
+    return {
+      status: 'SENT' as const,
+      message: `A new signup link is on its way to ${request.email}. It is valid for ${CLAIM_TOKEN_TTL_DAYS} days.`,
+    };
   }
 
   async registerStaff(
