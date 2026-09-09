@@ -9,9 +9,11 @@ import { NotificationModule } from '../notification/notification.module';
 import { PaymentModule } from '../payment/payment.module';
 import { CloudinaryStrategy } from 'src/upload/strategies/cloudinary.strategy';
 import { FileOptimizerService } from 'src/utils/optimizer/file-optimizer.service';
+import { MailerModule } from 'src/utils/email/email.module';
 
 @Module({
-  imports: [PrismaModule, NotificationModule, PaymentModule],
+  // MailerModule: the studio mailbox is emailed when a new inquiry arrives.
+  imports: [PrismaModule, NotificationModule, PaymentModule, MailerModule],
   controllers: [ProjectRequestController, UsersGetController],
   providers: [
     ProjectRequestService,

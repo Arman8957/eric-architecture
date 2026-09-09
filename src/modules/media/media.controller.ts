@@ -32,6 +32,8 @@ import { MediaQueryDto } from './dto/media-query.dto';
 import { CurrentUser } from 'src/common/decorators/current-user.decorator';
 import * as client from '@prisma/client';
 import { MediaRoles } from 'src/common/constant/roles.constant';
+import { SectionGuard } from 'src/common/guards/section.guard';
+import { Section } from 'src/common/decorators/section.decorator';
 import { JwtAuthGuard } from 'src/common/guards/auth.guard';
 import { UserRole } from '@prisma/client';
 import { JwtOptionalAuthGuard } from 'src/common/guards/optional-auth.guard';
@@ -359,9 +361,28 @@ export class MediaController {
 
 
 
+  /**
+   * The one media route an employee can reach, and only to read.
+   *
+   * An employee given the media area browses the library — drafts included,
+   * which is why it is this listing rather than the public one — but creates
+   * and changes nothing: every other route in this controller stays on
+   * MediaRoles, so uploads, edits, deletes and featuring are all refused.
+   *
+   * EMPLOYEE is not a media role in itself; access is ticked per person. The
+   * `@Section('media')` pairing is what narrows it to the employees actually
+   * granted the area, and without it this would open the library to every
+   * employee in the firm.
+   */
   @Get('admin/all-statuses')
-  @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles(UserRole.SUPER_ADMIN, UserRole.ADMIN, UserRole.MEDIA_MANAGER)
+  @UseGuards(JwtAuthGuard, RolesGuard, SectionGuard)
+  @Roles(
+    UserRole.SUPER_ADMIN,
+    UserRole.ADMIN,
+    UserRole.MEDIA_MANAGER,
+    UserRole.EMPLOYEE,
+  )
+  @Section('media')
   async findAllAnyStatus(
     @Query() query: MediaQueryDto,
     @CurrentUser() user: client.User,

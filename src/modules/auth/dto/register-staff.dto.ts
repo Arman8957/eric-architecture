@@ -2,11 +2,11 @@
 import {
   IsEmail,
   IsString,
-  MinLength,
   IsOptional,
   IsEnum,
   IsArray,
   IsIn,
+  IsUrl,
 } from 'class-validator';
 import { UserRole } from '@prisma/client';
 
@@ -18,13 +18,27 @@ export class RegisterStaffDto {
   @IsEmail()
   email!: string;
 
-  @IsString()
-  @MinLength(8)
-  password!: string;
+  /**
+   * No password field. A new member sets their own from the link in the
+   * welcome email, so the account is created without one and cannot be signed
+   * into until they do — nobody but them ever knows it.
+   */
 
   @IsString()
   @IsOptional()
   name?: string;
+
+  /**
+   * Shared folder holding their hiring paperwork. Optional here because the
+   * folder often does not exist yet when the account is made; it can be saved
+   * on its own afterwards (PATCH /auth/staff/:id/hiring-documents).
+   */
+  @IsUrl(
+    { require_protocol: true },
+    { message: 'Hiring documents must be a full URL, e.g. https://…' },
+  )
+  @IsOptional()
+  hiringDocumentsUrl?: string;
 
   /**
    * Optional second handle the member can sign in with, alongside their email.

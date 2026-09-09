@@ -27,6 +27,15 @@ import {
   CLAIM_TOKEN_TTL_DAYS,
 } from 'src/common/claim-token.util';
 
+/**
+ * How long a new staff member has to follow the setup link in their welcome
+ * email. A week rather than the hour a password *reset* gets: this is
+ * onboarding — often opened days after it is sent, sometimes before the person
+ * has started — and an expired link costs a support request rather than buying
+ * any real safety. The token is single-use and dies the moment it is used.
+ */
+const STAFF_SETUP_TOKEN_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+
 @Injectable()
 export class AuthService {
   private readonly logger = new Logger(AuthService.name);
@@ -471,15 +480,19 @@ export class AuthService {
       }
     }
 
-    const hashed = await bcrypt.hash(dto.password, 12);
+    // Created with no password at all. The member sets their own from the link
+    // in the welcome email, which is also what verifies their address — so
+    // there is never a temporary credential for someone else to know, hand
+    // over, or forget to change.
     const user = await this.prisma.user.create({
       data: {
         email: normalizedEmail,
         name: dto.name?.trim() ?? undefined,
         username: normalizedUsername,
-        password: hashed,
+        password: null,
         role: dto.role,
         emailVerified: false,
+        hiringDocumentsUrl: dto.hiringDocumentsUrl?.trim() || undefined,
         // The Add Team Member form collects these; they were previously
         // dropped, leaving a new staff member with no address on file.
         phoneNumber: dto.phoneNumber ?? dto.phone ?? undefined,
@@ -504,14 +517,80 @@ export class AuthService {
       },
     });
 
-    await this.sendVerificationEmail(user, frontendUrl);
+    await this.sendStaffWelcome(user, frontendUrl);
     this.logger.log(
       `Staff created: ${user.email} (${dto.role}) by ${requestingUser.email}`,
     );
 
     return {
-      message: `Staff account created (${dto.role}). Verification email sent.`,
+      message: `Staff account created (${dto.role}). Welcome email sent.`,
       user: this.sanitizeUser(user),
+    };
+  }
+
+  /**
+   * Issues the account-setup link and sends the welcome email.
+   *
+   * The link rides on the same `passwordResetToken` the reset flow uses, so
+   * following it lands on `resetPassword`, which sets the password, marks the
+   * address verified and clears the token in one go — exactly what activating
+   * a new account needs, and one code path to keep correct rather than two.
+   *
+   * The window is a week rather than the usual hour: this is onboarding, often
+   * read days later, and an expired link is a support request rather than a
+   * security win. Re-sending issues a fresh one.
+   */
+  private async sendStaffWelcome(user: User, frontendUrl: string) {
+    const token = crypto.randomBytes(32).toString('hex');
+    const expiry = new Date(Date.now() + STAFF_SETUP_TOKEN_TTL_MS);
+
+    await this.prisma.user.update({
+      where: { id: user.id },
+      data: { passwordResetToken: token, passwordResetExpiry: expiry },
+    });
+
+    const base = frontendUrl.replace(/\/$/, '');
+
+    try {
+      await this.mailer.sendStaffWelcome(user.email, {
+        name: user.name ?? user.firstName ?? 'there',
+        setupUrl: `${base}/create-password?token=${token}&email=${encodeURIComponent(user.email)}`,
+        hiringDocumentsUrl: user.hiringDocumentsUrl ?? null,
+      });
+    } catch (error) {
+      // A live token with no email to reach it is worse than none: clear it so
+      // the account cannot be claimed by a link nobody was ever sent.
+      await this.prisma.user.update({
+        where: { id: user.id },
+        data: { passwordResetToken: null, passwordResetExpiry: null },
+      });
+      this.logger.error(`Failed to send welcome email to ${user.email}`, error);
+      throw new InternalServerErrorException(
+        'The account was created but the welcome email could not be sent. Delete the account and create it again once mail is working.',
+      );
+    }
+  }
+
+  /**
+   * Attaches or clears a staff member's hiring-documents folder after the fact.
+   *
+   * Separate from creating the account because the folder is usually made
+   * later; the welcome email simply omits that step when there is no link yet.
+   */
+  async updateHiringDocuments(userId: string, url: string | null | undefined) {
+    const user = await this.prisma.user.findUnique({ where: { id: userId } });
+    if (!user) throw new NotFoundException('Staff member not found');
+
+    const updated = await this.prisma.user.update({
+      where: { id: userId },
+      data: { hiringDocumentsUrl: url?.trim() || null },
+    });
+
+    return {
+      message: updated.hiringDocumentsUrl
+        ? 'Hiring documents link saved.'
+        : 'Hiring documents link removed.',
+      user: this.sanitizeUser(updated),
     };
   }
 
@@ -805,13 +884,25 @@ export class AuthService {
       );
     }
 
+    // Checked ahead of the email one, because a member who has not set a
+    // password yet is also unverified — setting it is what verifies them. The
+    // generic "verify your email" would send them hunting for a verification
+    // mail that was never sent, instead of the welcome mail that was.
+    if (!user.password) {
+      throw new UnauthorizedException(
+        user.googleId
+          ? 'This account signs in with Google.'
+          : 'Your account is not set up yet. Use the link in your welcome email to create a password.',
+      );
+    }
+
     if (!user.emailVerified) {
       throw new UnauthorizedException(
         'Please verify your email before logging in.',
       );
     }
 
-    if (!user.password || !(await bcrypt.compare(password, user.password))) {
+    if (!(await bcrypt.compare(password, user.password))) {
       throw new UnauthorizedException('Invalid credentials.');
     }
 

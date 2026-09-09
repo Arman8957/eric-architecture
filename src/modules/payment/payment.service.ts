@@ -12,6 +12,7 @@ import {
 } from '@prisma/client';
 import { ConfigService } from '@nestjs/config';
 import { clientProjectLink } from 'src/common/notification-links';
+import { InvoiceService } from '../project-manager/invoice/invoice.service';
 
 @Injectable()
 export class PaymentService {
@@ -22,6 +23,10 @@ export class PaymentService {
     private stripeService: StripeService,
     private notificationService: NotificationService,
     private config: ConfigService,
+    // Invoices settle through this module's webhook but live in their own —
+    // Stripe posts one endpoint, and splitting it would mean a second one to
+    // register and keep in step.
+    private invoices: InvoiceService,
   ) {}
 
   /**
@@ -109,13 +114,24 @@ export class PaymentService {
     this.logger.log(`Received Stripe webhook event: ${event.type}`);
 
     let paymentId: string | undefined;
+    let invoiceId: string | undefined;
 
     if (event.type === 'checkout.session.completed') {
       const session = event.data.object;
       paymentId = session.metadata?.paymentId;
+      invoiceId = session.metadata?.invoiceId;
     } else if (event.type === 'payment_intent.succeeded') {
       const paymentIntent = event.data.object;
       paymentId = paymentIntent.metadata?.paymentId;
+      invoiceId = paymentIntent.metadata?.invoiceId;
+    }
+
+    // Invoices settle through the same webhook but are not Payment rows —
+    // they carry no proposal, so they were never a contract payment. The
+    // metadata key is what tells the two apart.
+    if (invoiceId) {
+      await this.settleInvoice(invoiceId, event);
+      return;
     }
 
     if (paymentId) {
@@ -157,6 +173,43 @@ export class PaymentService {
 
       this.logger.log(`Webhook: Payment ${paymentId} marked as COMPLETED successfully`);
     }
+  }
+
+  /**
+   * Settles an invoice from a Stripe event and tells the client.
+   *
+   * `markPaid` is idempotent, so a redelivered event is harmless — Stripe
+   * retries, and counting the money twice would move the firm's revenue.
+   */
+  private async settleInvoice(invoiceId: string, event: any) {
+    const paymentIntentId =
+      event.data.object.payment_intent || event.data.object.id;
+
+    const invoice = await this.invoices.markPaid(invoiceId, paymentIntentId);
+    this.logger.log(`Webhook: invoice ${invoiceId} marked as PAID`);
+
+    const full = await this.prisma.invoice.findUnique({
+      where: { id: invoiceId },
+      select: {
+        name: true,
+        amount: true,
+        projectRequestId: true,
+        projectRequest: { select: { userId: true } },
+      },
+    });
+
+    if (full?.projectRequest?.userId) {
+      await this.notificationService.createNotification({
+        userId: full.projectRequest.userId,
+        type: 'PAYMENT_CONFIRMED',
+        title: 'Invoice Paid',
+        message: `Your payment of $${Number(full.amount)} for "${full.name}" has been confirmed.`,
+        link: clientProjectLink(full.projectRequestId, 'meetings'),
+        projectRequestId: full.projectRequestId,
+      });
+    }
+
+    return invoice;
   }
 
   /**

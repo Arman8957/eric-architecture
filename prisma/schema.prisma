@@ -46,6 +46,33 @@ enum ProposalType {
   AMENDMENT
 }
 
+/// What an invoice is billing the client for. The two behave differently in
+/// the accounts, which is the whole reason they are distinguished:
+///
+/// REIMBURSABLE_EXPENSE — the firm paid something on the client's behalf to
+///   keep the project moving (permit fees and the like) and is billing it
+///   back. The money left the firm when the invoice was raised, so it is a
+///   cost from that moment; the client's repayment is revenue against it, and
+///   the pair nets to nothing once settled.
+///
+/// ADDITIONAL_SERVICE — work beyond the contracted scope. Nothing left the
+///   firm, so there is no cost: it is revenue, and only once the client pays.
+enum InvoiceType {
+  REIMBURSABLE_EXPENSE
+  ADDITIONAL_SERVICE
+}
+
+/// SENT   — with the client and awaiting payment. The PM may still cancel it,
+///          which is the point of the state: things change before money moves.
+/// PAID   — settled, and locked. Only a SUPER_ADMIN can cancel from here,
+///          because doing so unwinds money that has already been received.
+/// CANCELLED — withdrawn. Counts for nothing in the accounts.
+enum InvoiceStatus {
+  SENT
+  PAID
+  CANCELLED
+}
+
 enum StageStatus {
   NOT_STARTED
   IN_PROGRESS
@@ -226,6 +253,15 @@ model User {
   /// safe way round for a dashboard that carries payroll figures.
   dashboardSections    String[]           @default([])
 
+  /// Shared folder holding this member's hiring paperwork — a Drive, Dropbox
+  /// or Mega link, whatever the firm uses. The welcome email points the new
+  /// starter at it to download, sign and re-upload their federal tax forms.
+  ///
+  /// Optional, and settable after the fact: the account is often created
+  /// before the folder exists, so it has its own save rather than being part
+  /// of the create form.
+  hiringDocumentsUrl   String?
+
   // ── Profile ────────────────────────────────────────────────────────────
   // Maintained from Profile Settings. When a client starts a new project from
   // the portal these prefill the Client Information step.
@@ -297,6 +333,8 @@ model User {
   requestedConsultationRefunds ConsultationRefund[] @relation("RequestedConsultationRefunds")
   processedConsultationRefunds ConsultationRefund[] @relation("ProcessedConsultationRefunds")
   payments             Payment[]
+  createdInvoices      Invoice[]           @relation("CreatedInvoices")
+  cancelledInvoices    Invoice[]           @relation("CancelledInvoices")
   createdAttachments   ProjectAttachment[]
   uploadedProjectDocuments ProjectDocument[]
   scheduleBlocks       ScheduleBlock[]     @relation("ScheduleBlockOwner")
@@ -728,6 +766,7 @@ model ProjectRequest {
   totalDurationMonths  Float?
   refundRequests       RefundRequest[]
   payments             Payment[]
+  invoices             Invoice[]
   attachments          ProjectAttachment[]
   documents            ProjectDocument[]
 
@@ -858,6 +897,9 @@ model Proposal {
 
   userId String? // The client this proposal is for
   user   User?   @relation(fields: [userId], references: [id])
+
+  /// Bills raised against this contract that are not part of it — see Invoice.
+  invoices Invoice[]
 
   proposalNumber String  @unique
   title          String
@@ -1679,6 +1721,62 @@ model RefundRequest {
   @@index([projectRequestId])
   @@index([refundStatus])
   @@map("refund_requests")
+}
+
+// ──────────────────────────────────────────────────────────────
+// Invoices – bills raised against a project outside the contract
+// ──────────────────────────────────────────────────────────────
+/// A bill to the client that is not part of a signed contract: money the firm
+/// laid out on their behalf, or work done beyond the agreed scope.
+///
+/// Kept apart from Proposal deliberately. A proposal is an agreement the
+/// client accepts; an invoice is a demand for payment against an agreement
+/// that already exists. Folding them together would have put unaccepted bills
+/// into the contract totals.
+model Invoice {
+  id               String         @id @default(uuid())
+  projectRequestId String
+  projectRequest   ProjectRequest @relation(fields: [projectRequestId], references: [id], onDelete: Cascade)
+
+  /// Which contract this invoice extends — the original, or one amendment.
+  /// The Financial Summary rolls every invoice into one figure regardless,
+  /// but the client's portal shows an invoice beside the contract it belongs
+  /// to, and "what did this amendment really cost" needs the link.
+  proposalId String?
+  proposal   Proposal? @relation(fields: [proposalId], references: [id], onDelete: SetNull)
+
+  name        String
+  description String?       @db.Text
+  type        InvoiceType
+  amount      Decimal       @db.Decimal(10, 2)
+  status      InvoiceStatus @default(SENT)
+
+  /// Who raised it, and who cancelled it if anyone did. A cancellation after
+  /// payment is a SUPER_ADMIN action that reverses received money, so it is
+  /// worth being able to say who did it.
+  createdById String
+  createdBy   User   @relation("CreatedInvoices", fields: [createdById], references: [id])
+
+  cancelledById String?
+  cancelledBy   User?     @relation("CancelledInvoices", fields: [cancelledById], references: [id])
+  cancelledAt   DateTime?
+  cancelReason  String?
+
+  /// When the client's payment settled. This — not createdAt — is the date the
+  /// money is attributed to, so a December bill paid in January is January's
+  /// revenue.
+  paidAt                DateTime?
+  stripeSessionId       String?   @unique
+  stripePaymentIntentId String?   @unique
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([projectRequestId])
+  @@index([proposalId])
+  @@index([status])
+  @@index([paidAt])
+  @@map("invoices")
 }
 
 // ──────────────────────────────────────────────────────────────

@@ -17,6 +17,7 @@ import { MailerModule } from './utils/email/email.module';
 import { ProjectRequestModule } from './modules/users/user.module';
 import { MediaModule } from './modules/media/media.module';
 import { ProposalModule } from './modules/project-manager/proposal/proposal.module';
+import { InvoiceModule } from './modules/project-manager/invoice/invoice.module';
 import { ProjectStageModule } from './modules/project-manager/project-stage/project-stage.module';
 import { ProjectAdminRequestModule } from './modules/project-manager/project-request/project-request.module';
 import { NotificationModule } from './modules/notification/notification.module';
@@ -57,6 +58,7 @@ import { ProjectDocumentModule } from './modules/project-manager/project-documen
     ProjectRequestModule,
     MediaModule,
     ProposalModule,
+    InvoiceModule,
     ProjectStageModule,
     ProjectAdminRequestModule,
     NotificationModule,

@@ -8,8 +8,9 @@ import { $Enums, RequestStatus } from '@prisma/client';
  * Which mailbox an email goes out from.
  * - `contact` → contactus@architecturesimple.com (contact form / general enquiries)
  * - `project` → studio@architecturesimple.com (meetings, project & proposal flows)
+ * - `finance` → finance@architecturesimple.com (hiring & payroll correspondence)
  */
-export type Mailbox = 'contact' | 'project';
+export type Mailbox = 'contact' | 'project' | 'finance';
 
 const DEFAULT_MAILBOX: Mailbox = 'project';
 
@@ -47,6 +48,15 @@ export class MailerService {
     this.mailboxes = {
       contact: this.buildMailbox('contact', 'CONTACT'),
       project: this.buildMailbox('project', 'PROJECT'),
+      // Given an explicit default so it cannot quietly inherit the shared
+      // MAIL_FROM. Without one, a missing FINANCE_MAIL_FROM would send hiring
+      // mail from the studio address — which is the exact thing this mailbox
+      // exists to stop, and it would fail silently.
+      finance: this.buildMailbox(
+        'finance',
+        'FINANCE',
+        'finance@architecturesimple.com',
+      ),
     };
 
     if (this.graphEnabled()) {
@@ -73,7 +83,16 @@ export class MailerService {
    * `<PREFIX>_MAIL_FROM` and `<PREFIX>_MAIL_FROM_NAME`, falling back to the shared
    * SMTP_* / MAIL_FROM* variables so a single-mailbox setup keeps working.
    */
-  private buildMailbox(mailbox: Mailbox, prefix: string): MailboxConfig {
+  private buildMailbox(
+    mailbox: Mailbox,
+    prefix: string,
+    /**
+     * Address to use when `<PREFIX>_MAIL_FROM` is unset, instead of falling
+     * back to the shared MAIL_FROM. For a mailbox that exists precisely to
+     * send as itself, inheriting the shared address is never the right answer.
+     */
+    defaultFrom?: string,
+  ): MailboxConfig {
     const isDev = this.config.get('NODE_ENV') === 'development';
     const port = Number(this.config.get('SMTP_PORT', 587));
     const user =
@@ -82,11 +101,19 @@ export class MailerService {
     const pass =
       this.config.get<string>(`${prefix}_SMTP_PASS`) ??
       this.config.get<string>('SMTP_PASS');
+    const configuredFrom = this.config.get<string>(`${prefix}_MAIL_FROM`);
     const from =
-      this.config.get<string>(`${prefix}_MAIL_FROM`) ??
+      configuredFrom ??
+      defaultFrom ??
       this.config.get<string>('MAIL_FROM') ??
       user ??
       '';
+
+    if (!configuredFrom && defaultFrom) {
+      this.logger.warn(
+        `${prefix}_MAIL_FROM is not set — the "${mailbox}" mailbox will send as ${defaultFrom}.`,
+      );
+    }
     const fromName =
       this.config.get<string>(`${prefix}_MAIL_FROM_NAME`) ??
       this.config.get<string>('MAIL_FROM_NAME') ??
@@ -649,6 +676,170 @@ If this wasn't you, ignore this email.
       subject: `Reset Your Password - ${this.getAppName()}`,
       html,
       text,
+    });
+  }
+
+  /**
+   * The one email a new staff member gets: set up your account, then complete
+   * your hiring paperwork.
+   *
+   * Replies go to the principal and to finance rather than to the sending
+   * mailbox, because the last step asks the recipient to reply confirming both
+   * are done — and that confirmation is of no use sitting in a no-reply inbox.
+   *
+   * The hiring-documents step is omitted entirely when no folder has been
+   * attached yet, rather than shipping an empty link: the account is often
+   * created before the folder exists, and a step pointing nowhere reads as a
+   * broken email.
+   */
+  async sendStaffWelcome(
+    to: string,
+    data: {
+      name: string;
+      setupUrl: string;
+      hiringDocumentsUrl?: string | null;
+    },
+  ): Promise<void> {
+    const appName = this.getAppName();
+    const replyTo = this.config
+      .get<string>(
+        'HIRING_REPLY_TO',
+        'eric@architecturesimple.com,finance@architecturesimple.com',
+      )
+      .split(',')
+      .map((address) => address.trim())
+      .filter(Boolean);
+
+    const hiringHtml = data.hiringDocumentsUrl
+      ? `
+        <h3 style="color: #1a365d; margin: 32px 0 8px;">2. Complete Your Hiring Documents</h3>
+        <p style="margin: 0 0 12px;">
+          For legal hiring in the US, federal tax forms are required. Please use the shared folder below:
+        </p>
+        <p style="margin: 0 0 16px;">
+          <a href="${data.hiringDocumentsUrl}" style="color: #2b6cb0; word-break: break-all;">
+            Hiring Documents Folder
+          </a>
+        </p>
+        <p style="margin: 0 0 8px; font-weight: bold;">Instructions:</p>
+        <ol style="margin: 0 0 16px; padding-left: 20px;">
+          <li>Download the blank PDF forms from the folder</li>
+          <li>Complete and sign them</li>
+          <li>Upload the signed versions back into the same folder</li>
+        </ol>
+        <h3 style="color: #1a365d; margin: 32px 0 8px;">Next Step</h3>
+        <p style="margin: 0 0 16px;">
+          After you've finished both steps above, please reply to this email confirming that you've completed them.
+        </p>`
+      : `
+        <h3 style="color: #1a365d; margin: 32px 0 8px;">Next Step</h3>
+        <p style="margin: 0 0 16px;">
+          After you've set up your account, please reply to this email confirming that you've done so.
+          We'll follow up separately with your hiring documents.
+        </p>`;
+
+    const html = `
+      <div style="font-family: Arial, Helvetica, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; color: #1a202c;">
+        <p style="margin: 0 0 16px;">Hi ${data.name || 'there'},</p>
+        <p style="margin: 0 0 16px;">
+          Welcome to the ${appName} team! We're excited to have you on board.
+        </p>
+        <p style="margin: 0 0 16px;">To get started, please complete the steps below:</p>
+
+        <h3 style="color: #1a365d; margin: 32px 0 8px;">1. Create Your Account</h3>
+        <p style="margin: 0 0 16px;">
+          Click the button below to set up and activate your employee account:
+        </p>
+        <div style="text-align: center; margin: 24px 0;">
+          <a href="${data.setupUrl}"
+             style="background: #1a365d; color: #ffffff; padding: 14px 32px; text-decoration: none; border-radius: 6px; font-weight: bold; font-size: 16px; display: inline-block;">
+            Activate Account
+          </a>
+        </div>
+        <p style="font-size: 14px; margin: 0 0 16px;">
+          Or use this link:<br />
+          <a href="${data.setupUrl}" style="color: #2b6cb0; word-break: break-all;">${data.setupUrl}</a>
+        </p>
+        <p style="margin: 0 0 16px;">
+          Once completed, you'll have access to the Architect's Dashboard based on your role and permissions.
+        </p>
+
+        ${hiringHtml}
+
+        <p style="margin: 0 0 16px;">If you have any questions, feel free to reach out.</p>
+        <p style="margin: 0 0 24px;">Looking forward to working with you!</p>
+
+        <p style="margin: 0;">Best,</p>
+        <p style="margin: 0;"><strong>Eric Rivera</strong></p>
+        <p style="margin: 0; color: #4a5568;">Principal/Founder</p>
+        <p style="margin: 0; color: #4a5568;">${appName}</p>
+
+        <p style="font-size: 13px; color: #718096; margin-top: 32px;">
+          This account setup link expires in 7 days.
+        </p>
+      </div>
+    `;
+
+    const hiringText = data.hiringDocumentsUrl
+      ? `2. Complete Your Hiring Documents
+
+For legal hiring in the US, federal tax forms are required. Please use the shared folder below:
+
+${data.hiringDocumentsUrl}
+
+Instructions:
+1. Download the blank PDF forms from the folder
+2. Complete and sign them
+3. Upload the signed versions back into the same folder
+
+Next Step
+
+After you've finished both steps above, please reply to this email confirming that you've completed them.`
+      : `Next Step
+
+After you've set up your account, please reply to this email confirming that you've done so. We'll follow up separately with your hiring documents.`;
+
+    const text = `Hi ${data.name || 'there'},
+
+Welcome to the ${appName} team! We're excited to have you on board.
+
+To get started, please complete the steps below:
+
+1. Create Your Account
+
+Click the link below to set up and activate your employee account:
+
+${data.setupUrl}
+
+Once completed, you'll have access to the Architect's Dashboard based on your role and permissions.
+
+${hiringText}
+
+Your reply will go to ${replyTo.join(' and ')}.
+
+If you have any questions, feel free to reach out.
+
+Looking forward to working with you!
+
+Best,
+
+Eric Rivera
+Principal/Founder
+${appName}
+
+This account setup link expires in 7 days.`;
+
+    await this.sendMail({
+      to,
+      subject: `Welcome to ${appName} – Please Complete Your Account Setup`,
+      html,
+      text,
+      replyTo: replyTo.join(', '),
+      // Hiring correspondence comes from finance, not the studio mailbox that
+      // handles projects and meetings. Under Graph this also puts the sent
+      // copy in finance's own Sent Items, so the thread lives where whoever
+      // chases the paperwork will look for it.
+      mailbox: 'finance',
     });
   }
 

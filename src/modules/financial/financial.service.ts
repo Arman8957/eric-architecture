@@ -10,7 +10,15 @@ import { PrismaService } from '../../prisma/prisma.service';
 import { CreateOverheadExpenseDto, UpdateOverheadExpenseDto } from './dto/overhead-expense.dto';
 import { CreateTimecardDto, UpdateTimecardDto, RejectTimecardDto } from './dto/timecard.dto';
 import { UpdateEmployeeProfileDto } from './dto/employee-profile.dto';
-import { Prisma, TimecardStatus, UserRole, ProposalStatus } from '@prisma/client';
+import { InvoiceService } from '../project-manager/invoice/invoice.service';
+import { SiteSettingsService } from '../site-settings/site-settings.service';
+import {
+  Prisma,
+  TimecardStatus,
+  UserRole,
+  ProposalStatus,
+  PaymentStatus,
+} from '@prisma/client';
 import { NotificationService } from '../notification/notification.service';
 
 const MS_PER_DAY = 1000 * 60 * 60 * 24;
@@ -162,6 +170,11 @@ export class FinancialService {
   constructor(
     private prisma: PrismaService,
     private notification: NotificationService,
+    // Both read rather than recalculated: the invoice figures and the
+    // consultation fee each have one owner, and copying their logic here is
+    // how the dashboard ends up disagreeing with the pages it summarises.
+    private invoices: InvoiceService,
+    private siteSettings: SiteSettingsService,
   ) { }
 
   // ═══════════════════════════════════════════════════
@@ -494,7 +507,97 @@ export class FinancialService {
       return sum + Number(r.amount || 0) * share;
     }, 0);
 
-    const totalRevenue = grossRevenue - totalRefunds;
+    // ─── Paid-basis revenue ─────────────────────────────────────────────
+    // What the firm has actually been paid, as against what it has been
+    // promised. The contracted figures above keep their own lines, so signed
+    // and collected can be read side by side — but Gross Revenue is now the
+    // money in, which is also what makes the monthly chart reconcile with this
+    // panel: both count the same payments.
+    //
+    // Year scope is by the date the money arrived, not by the life of the
+    // contract it settles. A 2025 contract paid in 2026 is 2026 income.
+    const scopedToYear = isYearScope
+      ? { createdAt: { gte: yearStart, lte: yearEnd } }
+      : {};
+
+    const paymentRows = await this.prisma.payment.findMany({
+      where: { paymentStatus: 'COMPLETED', ...scopedToYear },
+      select: { amount: true, proposalId: true },
+    });
+
+    // `Payment.proposalId` is a bare column rather than a relation, so the
+    // contracts it points at are fetched separately and matched up here.
+    const paidProposalIds = [
+      ...new Set(paymentRows.map((p) => p.proposalId).filter(Boolean)),
+    ];
+    const paidProposals = paidProposalIds.length
+      ? await this.prisma.proposal.findMany({
+          where: { id: { in: paidProposalIds } },
+          select: { id: true, proposalType: true },
+        })
+      : [];
+    const proposalTypeById = new Map(
+      paidProposals.map((p) => [p.id, p.proposalType]),
+    );
+
+    let originalClientPaid = 0;
+    let amendmentClientPaid = 0;
+    for (const payment of paymentRows) {
+      const amount = Number(payment.amount || 0);
+      if (proposalTypeById.get(payment.proposalId) === 'AMENDMENT') {
+        amendmentClientPaid += amount;
+      } else {
+        // Anything whose contract can no longer be identified is treated as
+        // paid against the original — losing the proposal row must not lose
+        // the money.
+        originalClientPaid += amount;
+      }
+    }
+
+    // Consultation fees. There is no timestamp on the payment itself, so the
+    // inquiry's own createdAt stands in for it — the fee is taken as the
+    // request is submitted, so the two are the same day in practice.
+    const consultationFeeUsd = await this.siteSettings.getConsultationFeeUsd();
+    const [consultationsPaid, consultationsRefunded] = await Promise.all([
+      this.prisma.projectRequest.count({
+        where: {
+          deletedAt: null,
+          consultationPaymentId: { not: null },
+          ...scopedToYear,
+        },
+      }),
+      // PROCESSED, not PENDING: a refund only stops being income once it has
+      // actually been paid back.
+      this.prisma.consultationRefund.count({
+        where: {
+          status: 'PROCESSED',
+          projectRequest: { deletedAt: null, ...scopedToYear },
+        },
+      }),
+    ]);
+    const consultationFees =
+      Math.max(consultationsPaid - consultationsRefunded, 0) *
+      consultationFeeUsd;
+
+    // Invoices. Only additional services are income — a reimbursement is the
+    // firm's own money returning, and booking it as revenue would turn a
+    // permit fee into profit. The outlay itself lands under costs below.
+    const invoiceTotals = await this.invoices.getInvoiceTotals(
+      isYearScope ? { start: yearStart, end: yearEnd } : undefined,
+    );
+
+    const clientPaidTotal =
+      originalClientPaid + amendmentClientPaid + invoiceTotals.clientPaid;
+
+    // Gross Revenue = every pound the client actually handed over that counts
+    // as income, less refunds already approved.
+    const paidGrossRevenue =
+      originalClientPaid +
+      amendmentClientPaid +
+      invoiceTotals.revenue +
+      consultationFees;
+
+    const totalRevenue = paidGrossRevenue - totalRefunds;
 
     // ─── Labor overhead ─────────────────────────────────────────────────
     // The dashboard's Labor Overhead is the sum of every project's own
@@ -609,7 +712,16 @@ export class FinancialService {
     });
 
     // 4. Profit
-    const totalProfit = totalRevenue - totalOverhead - totalLaborCost;
+    //
+    // Reimbursables are a third cost alongside labour and overhead: money the
+    // firm laid out on a client's behalf and has not yet been repaid. It falls
+    // out of the sum on its own once the client settles — no reversing entry,
+    // the invoice simply stops counting as outstanding — which is why the
+    // repayment is not booked as revenue as well. Counting both would show a
+    // permit fee as profit.
+    const reimbursableCost = invoiceTotals.reimbursableCost;
+    const totalProfit =
+      totalRevenue - totalOverhead - totalLaborCost - reimbursableCost;
 
     // ─── Project counts ────────────────────────────────────────────────
     // Active    = ACTIVE at some point during the scope year — a project that
@@ -677,15 +789,53 @@ export class FinancialService {
         expenseCount: overheadExpenses.length,
       },
       revenue: {
+        // Gross Revenue is now money received, not money contracted.
         total: totalRevenue,
-        grossRevenue,
-        originalRevenue,
-        amendmentRevenue,
+        grossRevenue: paidGrossRevenue,
+
+        // What was signed for, kept alongside so the panel can show promised
+        // against collected. These are the pro-rated contract figures that
+        // Gross Revenue used to be.
+        contracted: grossRevenue,
+        contractedOriginal: originalRevenue,
+        contractedAmendments: amendmentRevenue,
+
+        // What the client actually paid, split by what it settled.
+        clientPaidTotal,
+        originalClientPaid,
+        amendmentClientPaid,
+        invoiceClientPaid: invoiceTotals.clientPaid,
+
+        // Consultation fees sit inside the original contract's paid figure on
+        // the panel, with this available to break the two apart.
+        consultationFees,
+        consultationsPaid,
+        consultationsRefunded,
+        consultationFeeUsd,
+
+        // Invoices: billed is everything raised, revenue only the part that
+        // counts as income (additional services), outstanding the difference.
+        invoiceBilled: invoiceTotals.billed,
+        invoiceRevenue: invoiceTotals.revenue,
+        invoiceOutstanding: invoiceTotals.outstanding,
+        invoiceByType: invoiceTotals.byType,
+
         totalRefunds,
         activeProjectCount,
         completedProjectCount,
         proposalCount: acceptedProposalCount,
         amendmentCount: amendmentProposalCount,
+      },
+      /**
+       * Money laid out on clients' behalf and not yet repaid. Its own line in
+       * the cost breakdown rather than buried in overhead: it is not a cost of
+       * running the firm, it is a debt owed to it, and it returns to zero when
+       * the client settles.
+       */
+      reimbursable: {
+        total: reimbursableCost,
+        billed: invoiceTotals.byType.reimbursable.billed,
+        clientPaid: invoiceTotals.byType.reimbursable.clientPaid,
       },
       projectFinancials: {
         totalBurned: totalProjectBurned,
@@ -2445,7 +2595,15 @@ export class FinancialService {
       lastMonth = new Date(now.getFullYear(), now.getMonth(), 1);
     } else {
       firstMonth = new Date(year, 0, 1);
-      lastMonth = new Date(year, 11, 1);
+      // A year still in progress stops at the month we are in. Carrying the
+      // remaining months as zeros is not "no revenue yet", it is no data — and
+      // plotting them pulled the curve to the floor for half the year and
+      // dragged every average down with it. The final point is the month in
+      // progress, so it keeps moving as timecards and payments land.
+      lastMonth =
+        year === now.getFullYear()
+          ? new Date(year, now.getMonth(), 1)
+          : new Date(year, 11, 1);
     }
 
     const months: { start: Date; end: Date; label: string; year: number; monthNum: number }[] = [];
@@ -2466,19 +2624,44 @@ export class FinancialService {
       cursor.setMonth(cursor.getMonth() + 1);
     }
 
+    // The same every month, so it is read once rather than re-queried twelve
+    // times inside the loop below.
+    const overheadExpenses = await this.prisma.overheadExpense.findMany();
+    const monthlyOverhead = overheadExpenses.reduce((sum, exp) => {
+      const amount = Number(exp.amount);
+      if (exp.frequency === 'monthly') return sum + amount;
+      if (exp.frequency === 'semi-annually') return sum + amount / 6;
+      if (exp.frequency === 'yearly') return sum + amount / 12;
+      return sum;
+    }, 0);
+
     const history = await Promise.all(
       months.map(async (month) => {
-        // 1. Revenue (Accepted proposals in this month)
-        const proposals = await this.prisma.proposal.findMany({
+        // 1. Revenue = money actually received this month.
+        //
+        // Was the face value of every proposal accepted in the month, which
+        // counted a contract in full the day it was signed whether or not a
+        // penny had been paid — so the curve moved on signatures rather than
+        // on income, and never reconciled with anything.
+        //
+        // Bucketed on createdAt: the row is written when the client goes
+        // through checkout, and there is no separate settled-at timestamp to
+        // use instead. Only COMPLETED counts — pending and failed attempts are
+        // not income, and refunds are handled as their own deduction.
+        const payments = await this.prisma.payment.findMany({
           where: {
-            status: ProposalStatus.ACCEPTED,
-            respondedAt: {
+            paymentStatus: PaymentStatus.COMPLETED,
+            createdAt: {
               gte: month.start,
               lte: month.end,
             },
           },
+          select: { amount: true },
         });
-        const revenue = proposals.reduce((sum, p) => sum + Number(p.totalAmount || 0), 0);
+        const revenue = payments.reduce(
+          (sum, p) => sum + Number(p.amount || 0),
+          0,
+        );
 
         // 2. Labor Costs - all approved timecards (billable part)
         let laborCost = 0;
@@ -2497,25 +2680,18 @@ export class FinancialService {
           }
         });
 
-        allTimecards.forEach(tc => {
-          laborCost += Number(tc.billableHours || 0) * hourlyRateOf(tc);
+        // Gross: every approved hour on the card, billable or not. Billable
+        // hours alone understated what the month actually cost — the rest of
+        // the wage was being carried under overhead, which made labour look
+        // cheaper than it was and split one payroll figure across two lines.
+        allTimecards.forEach((tc) => {
+          laborCost += Number(tc.totalHours || 0) * hourlyRateOf(tc);
         });
 
-        // 3. Overhead: Fixed Expenses + Non-billable employee time
-        let overheadCost = 0;
-        const overheadExpenses = await this.prisma.overheadExpense.findMany();
-        overheadExpenses.forEach((exp) => {
-          const amount = Number(exp.amount);
-          if (exp.frequency === 'monthly') overheadCost += amount;
-          else if (exp.frequency === 'semi-annually') overheadCost += amount / 6;
-          else if (exp.frequency === 'yearly') overheadCost += amount / 12;
-        });
-
-        allTimecards.forEach(tc => {
-          const ohHours = Number(tc.totalHours || 0) - Number(tc.billableHours || 0);
-          // Non-billable hours cost the same rate the card was approved under.
-          if (ohHours > 0) overheadCost += ohHours * hourlyRateOf(tc);
-        });
+        // 3. Overhead: the fixed expenses, and only those. Non-billable time
+        // used to be added here as well — but it is inside the timecard gross
+        // above now, and counting it in both places charged those hours twice.
+        const overheadCost = monthlyOverhead;
 
         const profit = revenue - laborCost - overheadCost;
 

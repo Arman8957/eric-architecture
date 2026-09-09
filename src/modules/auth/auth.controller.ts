@@ -2,6 +2,7 @@
 import {
   Controller,
   Post,
+  Patch,
   Body,
   Get,
   Res,
@@ -35,6 +36,7 @@ import { RegisterSuperAdminDto } from './dto/register-super-admin.dto';
 import { ForgotPasswordDto } from './dto/forgot-password.dto';
 import { ResetPasswordDto } from './dto/reset-password.dto';
 import { ChangePasswordDto } from './dto/change-password.dto';
+import { UpdateHiringDocumentsDto } from './dto/update-hiring-documents.dto';
 
 import { CurrentUser } from 'src/common/decorators/current-user.decorator';
 import { ProjectRequestService } from '../users/user-service/project-request.service';
@@ -103,6 +105,34 @@ export class AuthController {
     );
 
     return res.status(HttpStatus.CREATED).json({
+      success: true,
+      message: result.message,
+      data: { user: result.user },
+    });
+  }
+
+  /**
+   * Attach or clear a staff member's hiring-documents folder.
+   *
+   * Its own endpoint rather than part of staff creation: the folder is usually
+   * made after the person is, and onboarding should not wait on it. Same roles
+   * that may create staff, since this is the same hiring paperwork.
+   */
+  @Patch('staff/:id/hiring-documents')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(client.UserRole.SUPER_ADMIN, client.UserRole.ADMIN, client.UserRole.FINANCE)
+  @HttpCode(HttpStatus.OK)
+  async updateHiringDocuments(
+    @Param('id') id: string,
+    @Body() dto: UpdateHiringDocumentsDto,
+    @Res({ passthrough: true }) res: express.Response,
+  ) {
+    const result = await this.authService.updateHiringDocuments(
+      id,
+      dto.hiringDocumentsUrl,
+    );
+
+    return res.status(HttpStatus.OK).json({
       success: true,
       message: result.message,
       data: { user: result.user },

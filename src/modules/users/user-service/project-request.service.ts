@@ -15,6 +15,7 @@ import { NotificationService } from '../../notification/notification.service';
 import { Express } from 'express';
 import { PaymentService } from '../../payment/payment.service';
 import { staffProjectLink } from 'src/common/notification-links';
+import { MailerService } from 'src/utils/email/email.service';
 
 /**
  * The meeting address columns for a create, derived from the submitted DTO.
@@ -73,7 +74,58 @@ export class ProjectRequestService {
     private prisma: PrismaService,
     private notificationService: NotificationService,
     private paymentService: PaymentService,
+    private mailer: MailerService,
   ) {}
+
+  /**
+   * Tells the studio mailbox a new inquiry has arrived.
+   *
+   * In-app notifications already reach admins and PMs, but nothing reached the
+   * shared inbox — so an inquiry landing out of hours sat unseen until someone
+   * happened to open the dashboard.
+   *
+   * Studio only, deliberately: this is the address the firm watches, and
+   * copying every manager would duplicate a notification they already have.
+   * Best effort — an inquiry that saved must not fail because mail did.
+   */
+  private async notifyStudioOfNewInquiry(request: {
+    id: string;
+    projectName: string;
+    clientFirstName: string;
+    clientLastName: string;
+    email: string;
+    phone?: string | null;
+  }) {
+    const studio = this.mailer.mailboxAddress('project');
+    const clientName =
+      `${request.clientFirstName} ${request.clientLastName}`.trim();
+
+    try {
+      await this.mailer.sendMail({
+        to: studio,
+        subject: `New Project Inquiry: ${request.projectName}`,
+        html: `
+          <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+            <h2 style="color: #1a365d;">New Project Inquiry</h2>
+            <p><strong>${clientName}</strong> has submitted a new project inquiry.</p>
+            <div style="background: #f3f4f6; padding: 20px; border-radius: 8px; margin: 20px 0;">
+              <p><strong>Project:</strong> ${request.projectName}</p>
+              <p><strong>Client:</strong> ${clientName}</p>
+              <p><strong>Email:</strong> ${request.email}</p>
+              ${request.phone ? `<p><strong>Phone:</strong> ${request.phone}</p>` : ''}
+            </div>
+            <p>Open the dashboard to review and respond to it.</p>
+          </div>
+        `,
+        text: `New project inquiry from ${clientName} — ${request.projectName} (${request.email})`,
+      });
+    } catch (error) {
+      this.logger.error(
+        `Failed to email the studio about inquiry ${request.id}`,
+        error as Error,
+      );
+    }
+  }
 
   private readonly allowedTransitions: Record<RequestStatus, RequestStatus[]> =
     {
@@ -181,6 +233,8 @@ export class ProjectRequestService {
       } catch (notifError) {
         this.logger.error('Failed to send notifications', notifError);
       }
+
+      await this.notifyStudioOfNewInquiry(request);
 
       return request;
     } catch (error) {
@@ -294,6 +348,8 @@ export class ProjectRequestService {
     } catch (notifError) {
       this.logger.error('Failed to send notifications', notifError);
     }
+
+    await this.notifyStudioOfNewInquiry(request);
 
     return {
       success: true,

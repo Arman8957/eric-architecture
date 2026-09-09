@@ -2827,8 +2827,23 @@ export class ProjectRequestService {
       data: notificationData,
     });
 
-    // 5. Send email to managers
-    for (const manager of managers) {
+    // 5. Send email to managers, and to the studio mailbox itself.
+    //
+    // The shared mailbox was only ever the *sender* of these — it appeared in
+    // the From line and never in the To, so nothing landed in the inbox anyone
+    // actually watches. Taken from the mailbox config rather than written out,
+    // so it follows STUDIO/PROJECT_MAIL_FROM instead of drifting from it.
+    const studioMailbox = this.mailer.mailboxAddress('project');
+    const recipients = [
+      ...managers.map((m) => ({ email: m.email, name: m.name })),
+      ...(managers.some(
+        (m) => m.email.toLowerCase() === studioMailbox.toLowerCase(),
+      )
+        ? []
+        : [{ email: studioMailbox, name: 'Studio' }]),
+    ];
+
+    for (const manager of recipients) {
       try {
         await this.mailer.sendMail({
           to: manager.email,

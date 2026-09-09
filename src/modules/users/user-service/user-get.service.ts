@@ -31,6 +31,9 @@ export class UsersGetService {
     // Which dashboard tabs an EMPLOYEE may open. Needed by the Edit Team
     // Member form so the checkboxes come back ticked as they were saved.
     dashboardSections: true,
+    // Needed by the Edit Team Member form, which prefills the field so the
+    // link can be seen, replaced or cleared after the account was made.
+    hiringDocumentsUrl: true,
     isActive: true,
     createdAt: true,
     lastLoginAt: true,
