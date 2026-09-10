@@ -640,6 +640,60 @@ export class ProposalService {
   //   });
   // }
 
+  /**
+   * Which service lines on a contract the client has actually paid for.
+   *
+   * A payment records the phase it settles differently depending on which
+   * contract raised it, so both conventions have to be read here. An amendment
+   * bills each ProposalService directly, so `stageId` holds the service's own
+   * id. The base contract bills ProjectStages instead, whose ids have nothing
+   * to do with the services that price them — there, the cached `stageName`
+   * bridges the two, and pairing stage to service by position is the last
+   * resort. That pairing is the same one the client portal already prices
+   * phases with, so a phase reading "Paid" here reads "Paid" there too.
+   *
+   * Only COMPLETED payments are passed in: an abandoned checkout is an
+   * intention, not money.
+   */
+  private paidServiceIds(
+    services: { id: string; name: string }[],
+    stages: { id: string }[],
+    payments: { stageId: string | null; stageName: string | null; paymentType: string }[],
+    isLumpSum: boolean,
+  ): Set<string> {
+    const paid = new Set<string>();
+    if (payments.length === 0) return paid;
+
+    // Lump sum is a single payment for the whole contract, so settling it
+    // settles every line on it. Checked by payment type as well as by the
+    // contract's own flag, because older contracts predate paymentMethod.
+    if (isLumpSum || payments.some((p) => p.paymentType === 'LUMP_SUM')) {
+      services.forEach((s) => paid.add(s.id));
+      return paid;
+    }
+
+    const paidStageIds = new Set(
+      payments.map((p) => p.stageId).filter((id): id is string => !!id),
+    );
+    const norm = (v: string | null) => (v || '').trim().toLowerCase();
+    const paidStageNames = new Set(
+      payments.map((p) => norm(p.stageName)).filter((n) => n.length > 0),
+    );
+
+    services.forEach((service, idx) => {
+      const pairedStage = stages[idx];
+      if (
+        paidStageIds.has(service.id) ||
+        paidStageNames.has(norm(service.name)) ||
+        (pairedStage && paidStageIds.has(pairedStage.id))
+      ) {
+        paid.add(service.id);
+      }
+    });
+
+    return paid;
+  }
+
   async findAll(user: User, includeApprovalStatus: boolean = true, projectRequestId?: string) {
     const isStaff = user.role === UserRole.DRAFTER || user.role === UserRole.EMPLOYEE;
     const isManager = this.canManage(user);
@@ -761,6 +815,45 @@ export class ProposalService {
       orderBy: { createdAt: 'desc' },
     });
 
+    // What the client has actually handed over against each contract.
+    //
+    // One query for the whole page rather than a lookup per proposal, and only
+    // COMPLETED rows: a pending checkout is an intention, not money. This is
+    // the same basis the Financial Summary's Client Paid uses, so the All
+    // Proposals table and the dashboard can be added up against each other.
+    //
+    // The rows are read rather than summed in the database because each one
+    // also says which phase it settled, which is what marks a service Paid.
+    const paymentsByProposal = new Map<
+      string,
+      { amount: number; stageId: string | null; stageName: string | null; paymentType: string }[]
+    >();
+    if (proposals.length > 0) {
+      const paidRows = await this.prisma.payment.findMany({
+        where: {
+          paymentStatus: 'COMPLETED',
+          proposalId: { in: proposals.map((p) => p.id) },
+        },
+        select: {
+          proposalId: true,
+          amount: true,
+          stageId: true,
+          stageName: true,
+          paymentType: true,
+        },
+      });
+      for (const row of paidRows) {
+        const list = paymentsByProposal.get(row.proposalId) || [];
+        list.push({
+          amount: Number(row.amount || 0),
+          stageId: row.stageId,
+          stageName: row.stageName,
+          paymentType: row.paymentType,
+        });
+        paymentsByProposal.set(row.proposalId, list);
+      }
+    }
+
     // Add approval statistics
     const proposalsWithStats = proposals.map((proposal) => {
       const pendingApprovals = proposal.services.filter(
@@ -775,8 +868,39 @@ export class ProposalService {
         (s) => s.approvalStatus === 'REJECTED',
       ).length;
 
+      const payments = paymentsByProposal.get(proposal.id) || [];
+      const isLumpSum =
+        proposal.paymentMethod === 'lumpSum' ||
+        proposal.paymentMethod === 'LUMP_SUM' ||
+        proposal.paymentType === 'LUMP_SUM';
+      const paidIds = this.paidServiceIds(
+        proposal.services,
+        proposal.projectStages,
+        payments,
+        isLumpSum,
+      );
+
+      const services = proposal.services.map((s) => ({
+        ...s,
+        /** The client has settled this phase. Drives the Paid badge. */
+        paid: paidIds.has(s.id),
+      }));
+
       return {
         ...proposal,
+        services,
+        /** Completed payments against this contract. */
+        paidAmount: payments.reduce((sum, p) => sum + p.amount, 0),
+        /**
+         * The same figure read off the phases instead of the receipts: the
+         * value of every line the client has paid for. It cannot exceed the
+         * contract total however many times a phase is charged, so it is the
+         * safer basis of the two — see the note on the Paid columns.
+         */
+        phasePaidAmount: services.reduce(
+          (sum, s) => sum + (s.paid ? Number(s.amount || 0) : 0),
+          0,
+        ),
         approvalStats: {
           pendingApprovals,
           approvedServices,

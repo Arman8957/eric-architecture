@@ -62,6 +62,36 @@ export class PaymentService {
       );
     }
 
+    // Nothing may be paid for twice.
+    //
+    // There was no check here at all, so a client who came back to a stale
+    // Stripe link, double-clicked Pay, or simply revisited a settled contract
+    // could pay it again — and every completed row is summed into the firm's
+    // revenue. One contract in this database had been paid six times over,
+    // inflating Client Paid by $2.1m against a $420k contract.
+    //
+    // The slot is the contract for a lump sum, or one phase of it for an
+    // installment, which is exactly how getPaymentStatus decides what shows as
+    // paid. PENDING rows are deliberately not blocking: an abandoned checkout
+    // leaves one behind, and treating that as settled would lock the client out
+    // of paying at all.
+    const alreadyPaid = await this.prisma.payment.findFirst({
+      where: {
+        proposalId: dto.proposalId,
+        paymentStatus: PaymentStatus.COMPLETED,
+        ...(dto.stageId ? { stageId: dto.stageId } : { paymentType }),
+      },
+      select: { id: true, stageName: true },
+    });
+
+    if (alreadyPaid) {
+      throw new BadRequestException(
+        alreadyPaid.stageName
+          ? `"${alreadyPaid.stageName}" has already been paid.`
+          : 'This contract has already been paid in full.',
+      );
+    }
+
     // Create the payment record first
     const payment = await this.prisma.payment.create({
       data: {
@@ -248,6 +278,21 @@ export class PaymentService {
   }
 
   /**
+   * What a contract is billed at: its service lines added up.
+   *
+   * Falls back to the stored total for a proposal that carries no lines at all
+   * — there is nothing else to quote there, and returning zero would tell a
+   * client they owe nothing.
+   */
+  private sumOfServices(
+    services: { amount: unknown }[],
+    storedTotal: unknown,
+  ): number {
+    if (!services?.length) return Number(storedTotal || 0);
+    return services.reduce((sum, s) => sum + Number(s.amount || 0), 0);
+  }
+
+  /**
    * Get payment status for all stages of a project
    */
   async getPaymentStatus(projectRequestId: string, userId: string) {
@@ -423,7 +468,16 @@ export class PaymentService {
 
     // Build amendment payment status
     const amendmentPayments = amendmentProposals.map((ap) => {
-      const amountDue = Number(ap.totalAmount);
+      // Amount Due is the sum of the lines the client is actually billed for,
+      // not `totalAmount`.
+      //
+      // `totalAmount` carries tax on top of the service lines, but every Pay
+      // button charges a line amount — so a by-phase amendment collected the
+      // subtotal, marked itself settled, and left the tax uncharged while the
+      // header had been quoting the larger figure all along. Quoting the same
+      // number the buttons charge makes the two agree for every project,
+      // whatever its lines add up to.
+      const amountDue = this.sumOfServices(ap.services, ap.totalAmount);
       const amendmentIsLumpSum =
         ap.paymentMethod === 'lumpSum' ||
         ap.paymentMethod === 'LUMP_SUM' ||
@@ -471,7 +525,11 @@ export class PaymentService {
 
     return {
       paymentMethod: isLumpSum ? 'LUMP_SUM' : 'INSTALLMENT',
-      totalAmount: proposal ? Number(proposal.totalAmount) : 0,
+      // Same basis as the amendments above: what the Pay buttons will actually
+      // charge, so the contract header and its phases reconcile.
+      totalAmount: proposal
+        ? this.sumOfServices(proposal.services, proposal.totalAmount)
+        : 0,
       // Paired with totalAmount above, which is the base contract only.
       totalPaid: baseProposalPayments.reduce((sum, p) => sum + Number(p.amount), 0),
       totalPaidIncludingAmendments: completedPayments.reduce(

@@ -630,9 +630,21 @@ export class FinancialService {
     const totalOverhead = annualOverheadExpenses + laborOverhead;
 
     // ─── Project financials (currently-active projects) ─────────────────
-    // "Total Burned" / "Total Project Labor" for the projects that are ACTIVE
-    // right now (and, in year scope, overlapped the scope year). Timecard
-    // hours are counted only for the scope year.
+    // "Total Burned" for the projects that are ACTIVE right now (and, in year
+    // scope, overlapped the scope year). Timecard hours are counted only for
+    // the scope year.
+    //
+    // This used to carry a "Total Project Labor" figure alongside it, built as
+    // each project's billable hours multiplied by the *summed* hourly rates of
+    // everyone attached to it — manager, stage assignees and every team member.
+    // That is not a cost: it valued every hour at the whole roster's combined
+    // rate, so it grew whenever somebody was added to a team even if they never
+    // booked an hour, and ignored who actually did the work. It has been
+    // removed rather than corrected; Labor and Labor Overhead already report
+    // real cost, each person's hours at their own rate.
+    //
+    // The manager / stage / team includes went with it — they existed only to
+    // total up those rates.
     const activeProjectRequests = await this.prisma.projectRequest.findMany({
       where: {
         deletedAt: null,
@@ -640,21 +652,10 @@ export class FinancialService {
         proposals: { some: { status: 'ACCEPTED' } },
         ...(isYearScope ? { id: { in: scopeProjectIds } } : {}),
       },
-      include: {
-        assignedManager: {
-          select: { id: true, employeeProfile: { select: { hourlyRate: true } } },
-        },
-        stages: {
-          select: { assignedTo: { select: { id: true, employeeProfile: { select: { hourlyRate: true } } } } },
-        },
-        teams: {
-          include: { members: { select: { id: true, employeeProfile: { select: { hourlyRate: true } } } } },
-        },
-      },
+      select: { id: true },
     });
 
     let totalProjectBurned = 0;
-    let totalProjectLabor = 0;
 
     // One read for every active project's billable time, rather than a query
     // per project. Each line burns at the rate its own timecard was approved
@@ -674,12 +675,10 @@ export class FinancialService {
       },
     });
 
-    const billableHoursByProject = new Map<string, number>();
     const burnedByProject = new Map<string, number>();
     for (const be of activeBillableEntries) {
       const hours = Number(be.totalHours || 0);
       const pid = be.projectRequestId;
-      billableHoursByProject.set(pid, (billableHoursByProject.get(pid) || 0) + hours);
       burnedByProject.set(
         pid,
         (burnedByProject.get(pid) || 0) + hours * billingRateOf(be.timecard, firmBillingRate),
@@ -687,21 +686,7 @@ export class FinancialService {
     }
 
     for (const pr of activeProjectRequests) {
-      const staffMap = new Map<string, number>();
-      if (pr.assignedManager) {
-        staffMap.set(pr.assignedManager.id, Number(pr.assignedManager.employeeProfile?.hourlyRate || 0));
-      }
-      pr.stages.forEach((s) => {
-        if (s.assignedTo) staffMap.set(s.assignedTo.id, Number(s.assignedTo.employeeProfile?.hourlyRate || 0));
-      });
-      pr.teams.forEach((t) => {
-        t.members.forEach((m) => staffMap.set(m.id, Number(m.employeeProfile?.hourlyRate || 0)));
-      });
-      const totalStaffRate = Array.from(staffMap.values()).reduce((s, r) => s + r, 0);
-
-      const projBillableHours = billableHoursByProject.get(pr.id) || 0;
       totalProjectBurned += burnedByProject.get(pr.id) || 0;
-      totalProjectLabor += projBillableHours * totalStaffRate;
     }
 
     // Expense breakdown by category (monthly-equivalent basis).
@@ -839,7 +824,6 @@ export class FinancialService {
       },
       projectFinancials: {
         totalBurned: totalProjectBurned,
-        totalLabor: totalProjectLabor,
         totalProjectOverhead: laborOverhead,
         firmBillingRate,
       },

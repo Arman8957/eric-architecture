@@ -66,6 +66,44 @@ const zonedMinutes = (date: Date, timeZone: string): number => {
   return valueOf('hour') * 60 + valueOf('minute');
 };
 
+/**
+ * "Thursday, September 10, 2026 at 02:00 PM PDT" — on the studio's own clock.
+ *
+ * Every scheduling decision in this file is made in STUDIO_TIME_ZONE, but the
+ * outgoing emails were formatted with no `timeZone` at all, which means the
+ * server's. On a UTC host a 2 PM San Diego meeting was announced as 9 PM, and
+ * the reader had no way to tell which clock they were being shown.
+ *
+ * The zone name is printed for the same reason: a bare time invites the
+ * recipient to assume it is theirs.
+ */
+const studioDateTime = (date: Date | string): string =>
+  new Date(date).toLocaleString('en-US', {
+    timeZone: STUDIO_TIME_ZONE,
+    weekday: 'long',
+    year: 'numeric',
+    month: 'long',
+    day: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+    timeZoneName: 'short',
+  });
+
+/**
+ * "Thursday, September 10, 2026" in studio time.
+ *
+ * Also has to be zoned, not just the time: a late-afternoon Pacific meeting is
+ * already the next day in UTC, so an unzoned date could name the wrong day.
+ */
+const studioDate = (date: Date | string): string =>
+  new Date(date).toLocaleDateString('en-US', {
+    timeZone: STUDIO_TIME_ZONE,
+    weekday: 'long',
+    year: 'numeric',
+    month: 'long',
+    day: 'numeric',
+  });
+
 /** `YYYY-MM-DD` for `date` in `timeZone`, for comparing calendar days. */
 const zonedDateKey = (date: Date, timeZone: string): string =>
   new Intl.DateTimeFormat('en-CA', {
@@ -2817,7 +2855,7 @@ export class ProjectRequestService {
       userId: manager.id,
       type: 'MEETING_REQUEST',
       title: 'New Meeting Request',
-      message: `${clientName} has requested a meeting for project "${projectRequest.projectName}" on ${new Date(dto.scheduledAt).toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })}`,
+      message: `${clientName} has requested a meeting for project "${projectRequest.projectName}" on ${studioDate(start)}`,
       // Opens the project on the Meeting Request tab.
       link: staffProjectLink(projectRequestId, 'meeting'),
       projectRequestId,
@@ -2834,14 +2872,34 @@ export class ProjectRequestService {
     // actually watches. Taken from the mailbox config rather than written out,
     // so it follows STUDIO/PROJECT_MAIL_FROM instead of drifting from it.
     const studioMailbox = this.mailer.mailboxAddress('project');
-    const recipients = [
+
+    // The manager actually assigned to this project, named explicitly rather
+    // than left to the role sweep above. That query asks for every active
+    // SUPER_ADMIN / ADMIN / PROJECT_MANAGER and never looks at
+    // `assignedManagerId` — so the one person responsible for the project only
+    // received the mail if their role happened to be on that list, and was
+    // silently missed otherwise. They are the recipient who most needs it.
+    const assignedManager = projectRequest.assignedManagerId
+      ? await this.prisma.user.findUnique({
+          where: { id: projectRequest.assignedManagerId },
+          select: { email: true, name: true },
+        })
+      : null;
+
+    // Deduplicated by address: the assigned manager is usually in the role
+    // sweep as well, and nobody should get two copies of the same request.
+    const recipients: { email: string; name: string | null }[] = [];
+    const seen = new Set<string>();
+    for (const candidate of [
+      ...(assignedManager ? [assignedManager] : []),
+      { email: studioMailbox, name: 'Studio' },
       ...managers.map((m) => ({ email: m.email, name: m.name })),
-      ...(managers.some(
-        (m) => m.email.toLowerCase() === studioMailbox.toLowerCase(),
-      )
-        ? []
-        : [{ email: studioMailbox, name: 'Studio' }]),
-    ];
+    ]) {
+      const key = candidate.email?.toLowerCase();
+      if (!key || seen.has(key)) continue;
+      seen.add(key);
+      recipients.push(candidate);
+    }
 
     for (const manager of recipients) {
       try {
@@ -2856,7 +2914,7 @@ export class ProjectRequestService {
             
             <div style="background: #f3f4f6; padding: 20px; border-radius: 8px; margin: 20px 0;">
               <p><strong>Project:</strong> ${projectRequest.projectName}</p>
-              <p><strong>Requested Date:</strong> ${new Date(dto.scheduledAt).toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric', hour: '2-digit', minute: '2-digit' })}</p>
+              <p><strong>Requested Date:</strong> ${studioDateTime(start)}</p>
               ${dto.notes ? `<p><strong>Notes:</strong> ${dto.notes}</p>` : ''}
               <p><strong>Client Email:</strong> ${projectRequest.email}</p>
             </div>
