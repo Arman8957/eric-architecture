@@ -90,6 +90,33 @@ export class InvoiceController {
   }
 
   /**
+   * Settles an invoice the client has just paid, by checking with Stripe.
+   *
+   * The client lands back here from the checkout page; this is what makes the
+   * bill read Paid without waiting on a webhook that may be slow, or — on a
+   * developer's machine, which Stripe cannot call — never arrive. Safe to call
+   * at any time and from either side: it only ever asks Stripe, and settling
+   * is idempotent.
+   *
+   * No @Roles, for the same reason as checkout above: it is the client's own
+   * bill, and the service checks they own the project.
+   */
+  @Post(':invoiceId/confirm')
+  @HttpCode(HttpStatus.OK)
+  async confirm(
+    @Param('projectId') projectId: string,
+    @Param('invoiceId') invoiceId: string,
+    @CurrentUser() user: client.User,
+  ) {
+    const invoice = await this.invoiceService.confirmPayment(
+      projectId,
+      invoiceId,
+      user,
+    );
+    return { success: true, data: invoice };
+  }
+
+  /**
    * Cancelling a *paid* invoice narrows to SUPER_ADMIN inside the service —
    * the roles here are the outer gate, and the status decides the rest.
    */

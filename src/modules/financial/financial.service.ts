@@ -575,9 +575,14 @@ export class FinancialService {
         },
       }),
     ]);
-    const consultationFees =
-      Math.max(consultationsPaid - consultationsRefunded, 0) *
-      consultationFeeUsd;
+    // Net of refunds, and the count is netted with it: at 24 paid and 2 since
+    // refunded the firm has 22 fees, and a panel that labels $110 as "(24)"
+    // invites exactly the subtraction that does not reconcile.
+    const consultationsNet = Math.max(
+      consultationsPaid - consultationsRefunded,
+      0,
+    );
+    const consultationFees = consultationsNet * consultationFeeUsd;
 
     // Invoices. Only additional services are income — a reimbursement is the
     // firm's own money returning, and booking it as revenue would turn a
@@ -586,16 +591,26 @@ export class FinancialService {
       isYearScope ? { start: yearStart, end: yearEnd } : undefined,
     );
 
-    const clientPaidTotal =
-      originalClientPaid + amendmentClientPaid + invoiceTotals.clientPaid;
+    // The consultation fee is money paid against the original engagement, so it
+    // belongs inside that contract's paid figure — which is where the panel
+    // shows it, breaking it back out as a sub-line underneath.
+    //
+    // It used to be added to Gross Revenue as a separate term while this figure
+    // was returned without it. Nothing was double counted, but the panel's own
+    // arithmetic stopped working: Client Paid read $110 short of what Gross
+    // Revenue had used, so the two contract lines no longer summed to the
+    // total above them, and the "Contract payments" sub-line — derived by
+    // subtracting the fees from this — came out $110 light as well.
+    const originalClientPaidWithFees = originalClientPaid + consultationFees;
 
-    // Gross Revenue = every pound the client actually handed over that counts
-    // as income, less refunds already approved.
+    const clientPaidTotal =
+      originalClientPaidWithFees + amendmentClientPaid + invoiceTotals.clientPaid;
+
+    // Gross Revenue = every dollar the client actually handed over that counts
+    // as income, less refunds already approved. Each term is a line on the
+    // panel, so Gross Revenue is exactly the sum of what is shown beneath it.
     const paidGrossRevenue =
-      originalClientPaid +
-      amendmentClientPaid +
-      invoiceTotals.revenue +
-      consultationFees;
+      originalClientPaidWithFees + amendmentClientPaid + invoiceTotals.revenue;
 
     const totalRevenue = paidGrossRevenue - totalRefunds;
 
@@ -787,13 +802,16 @@ export class FinancialService {
 
         // What the client actually paid, split by what it settled.
         clientPaidTotal,
-        originalClientPaid,
+        originalClientPaid: originalClientPaidWithFees,
         amendmentClientPaid,
         invoiceClientPaid: invoiceTotals.clientPaid,
 
-        // Consultation fees sit inside the original contract's paid figure on
-        // the panel, with this available to break the two apart.
+        // Consultation fees sit inside the original contract's paid figure
+        // above, with these available to break the two apart. `consultationsNet`
+        // is the count the money corresponds to — paid less refunded — so
+        // count × fee lands on `consultationFees` exactly.
         consultationFees,
+        consultationsNet,
         consultationsPaid,
         consultationsRefunded,
         consultationFeeUsd,

@@ -296,6 +296,77 @@ export class InvoiceService {
   }
 
   /**
+   * Settles an invoice on the client's return from Stripe, by asking Stripe
+   * directly rather than waiting to be told.
+   *
+   * The webhook is the primary path and stays so. But it is a call *into* this
+   * server, which means it does not arrive at all unless Stripe can reach it —
+   * it cannot reach a laptop, so in local development an invoice paid on
+   * Stripe's own page simply stayed SENT. In production it is the missed
+   * delivery, the signature mismatch, the minutes of retries.
+   *
+   * Checking on return closes both. The client is already being sent back to a
+   * URL naming this invoice, so the answer is one API call away, and Stripe is
+   * the authority either way. Idempotent by way of `markPaid`, so whichever of
+   * the two arrives second changes nothing.
+   */
+  async confirmPayment(projectId: string, invoiceId: string, user: User) {
+    const invoice = await this.prisma.invoice.findUnique({
+      where: { id: invoiceId },
+      select: {
+        id: true,
+        projectRequestId: true,
+        status: true,
+        stripeSessionId: true,
+        projectRequest: { select: { userId: true } },
+      },
+    });
+
+    if (!invoice || invoice.projectRequestId !== projectId) {
+      throw new NotFoundException('Invoice not found on this project');
+    }
+
+    const isClient = invoice.projectRequest.userId === user.id;
+    if (!isClient && !INVOICE_MANAGERS.has(user.role)) {
+      throw new ForbiddenException('Not authorized to view this invoice');
+    }
+
+    // Already settled, or never sent to Stripe: nothing to ask about.
+    if (invoice.status !== InvoiceStatus.SENT || !invoice.stripeSessionId) {
+      return this.prisma.invoice.findUnique({
+        where: { id: invoiceId },
+        select: this.invoiceSelect,
+      });
+    }
+
+    try {
+      const session = await this.stripe.retrieveSession(invoice.stripeSessionId);
+      if (session.payment_status === 'paid') {
+        const paymentIntentId =
+          typeof session.payment_intent === 'string'
+            ? session.payment_intent
+            : session.payment_intent?.id;
+        this.logger.log(
+          `Invoice ${invoiceId} settled on return from Stripe (session ${invoice.stripeSessionId})`,
+        );
+        return await this.markPaid(invoiceId, paymentIntentId);
+      }
+    } catch (error) {
+      // An unreachable Stripe must not fail the client's page. The invoice is
+      // unchanged, and the webhook remains free to settle it.
+      this.logger.error(
+        `Could not verify invoice ${invoiceId} with Stripe`,
+        error as Error,
+      );
+    }
+
+    return this.prisma.invoice.findUnique({
+      where: { id: invoiceId },
+      select: this.invoiceSelect,
+    });
+  }
+
+  /**
    * The firm-wide invoice figures behind the Financial Summary.
    *
    * Cancelled invoices count for nothing. The two types are not symmetrical,
